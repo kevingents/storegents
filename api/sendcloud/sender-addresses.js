@@ -3,7 +3,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
-  setCorsHeaders(res, ['GET', 'OPTIONS']); 
+  setCorsHeaders(res, ['GET', 'OPTIONS']);
 
   if (req.method !== 'GET') {
     return res.status(405).json({
