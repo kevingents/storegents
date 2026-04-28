@@ -18,7 +18,7 @@ export default async function handler(req, res) {
   }
 
   const shop = process.env.SHOPIFY_STORE_URL;
-  const token = process.env.SHOPIFY_ADMIN_TOKEN;
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (!shop || !token) {
     return res.status(500).json({ error: 'Shopify configuratie ontbreekt' });
