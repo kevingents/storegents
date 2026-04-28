@@ -25,7 +25,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const declarations = getDeclarations();
+    const declarations = await getDeclarations();
 
     return res.status(200).json({
       success: true,
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       success: false,
-      message: 'Administratie declaraties konden niet worden opgehaald.'
+      message: error.message || 'Administratie declaraties konden niet worden opgehaald.'
     });
   }
 }
