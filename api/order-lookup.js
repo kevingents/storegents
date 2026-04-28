@@ -8,21 +8,36 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({
+      error: 'Method not allowed'
+    });
   }
 
   const { order, check } = req.query;
 
   if (!order) {
-    return res.status(400).json({ error: 'Ordernummer ontbreekt' });
+    return res.status(400).json({
+      error: 'Ordernummer ontbreekt'
+    });
   }
 
-  const shop = process.env.SHOPIFY_STORE_URL;
+  let shop = process.env.SHOPIFY_STORE_URL;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (!shop || !token) {
-    return res.status(500).json({ error: 'Shopify configuratie ontbreekt' });
+    return res.status(500).json({
+      error: 'Shopify configuratie ontbreekt',
+      missing: {
+        SHOPIFY_STORE_URL: !shop,
+        SHOPIFY_ACCESS_TOKEN: !token
+      }
+    });
   }
+
+  shop = shop
+    .replace('https://', '')
+    .replace('http://', '')
+    .replace(/\/$/, '');
 
   try {
     const searchUrl =
@@ -30,6 +45,7 @@ export default async function handler(req, res) {
       `?status=any&name=${encodeURIComponent(order)}`;
 
     const orderResponse = await fetch(searchUrl, {
+      method: 'GET',
       headers: {
         'X-Shopify-Access-Token': token,
         'Content-Type': 'application/json'
@@ -48,7 +64,9 @@ export default async function handler(req, res) {
     const shopifyOrder = orderData.orders && orderData.orders[0];
 
     if (!shopifyOrder) {
-      return res.status(404).json({ error: 'Geen order gevonden' });
+      return res.status(404).json({
+        error: 'Geen order gevonden'
+      });
     }
 
     const customerEmail = shopifyOrder.email || '';
@@ -57,7 +75,7 @@ export default async function handler(req, res) {
       shopifyOrder.billing_address?.zip ||
       '';
 
-    if (check) {
+    if (check && String(check).trim() !== '') {
       const normalizedCheck = String(check).toLowerCase().replace(/\s/g, '');
       const normalizedEmail = String(customerEmail).toLowerCase().replace(/\s/g, '');
       const normalizedZip = String(customerZip).toLowerCase().replace(/\s/g, '');
@@ -66,53 +84,157 @@ export default async function handler(req, res) {
       const matchesZip = normalizedZip && normalizedZip === normalizedCheck;
 
       if (!matchesEmail && !matchesZip) {
-        return res.status(403).json({ error: 'Controle komt niet overeen' });
+        return res.status(403).json({
+          error: 'Controle komt niet overeen'
+        });
       }
     }
 
-    const fulfillment = shopifyOrder.fulfillments && shopifyOrder.fulfillments[0];
-
-    const locationName =
-      fulfillment?.location_id
-        ? `Locatie ID ${fulfillment.location_id}`
-        : shopifyOrder.location_id
-          ? `Locatie ID ${shopifyOrder.location_id}`
-          : '-';
-
-    const items = (shopifyOrder.line_items || []).map((item) => {
-      const matchingFulfillmentLineItem = fulfillment?.line_items?.find(
-        (fulfilledItem) => fulfilledItem.id === item.id
-      );
-
-      return {
-        quantity: item.quantity,
-        name: item.name,
-        sku: item.sku,
-        variant: item.variant_title,
-        image: item.image?.src || item.product?.image?.src || '',
-        location: locationName,
-        fulfillmentStatus: matchingFulfillmentLineItem ? 'Verzonden' : 'Nog niet verzonden'
-      };
-    });
+    const fulfillments = shopifyOrder.fulfillments || [];
+    const firstFulfillment = fulfillments[0] || null;
 
     const trackingNumber =
-      fulfillment?.tracking_number ||
-      fulfillment?.tracking_numbers?.[0] ||
+      firstFulfillment?.tracking_number ||
+      firstFulfillment?.tracking_numbers?.[0] ||
       '';
 
     const trackingUrl =
-      fulfillment?.tracking_url ||
-      fulfillment?.tracking_urls?.[0] ||
+      firstFulfillment?.tracking_url ||
+      firstFulfillment?.tracking_urls?.[0] ||
       '';
+
+    const locationId =
+      firstFulfillment?.location_id ||
+      shopifyOrder.location_id ||
+      '';
+
+    let locationName = locationId ? `Locatie ID ${locationId}` : '-';
+
+    if (locationId) {
+      try {
+        const locationResponse = await fetch(
+          `https://${shop}/admin/api/2024-10/locations/${locationId}.json`,
+          {
+            method: 'GET',
+            headers: {
+              'X-Shopify-Access-Token': token,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        const locationData = await locationResponse.json();
+
+        if (locationResponse.ok && locationData.location?.name) {
+          locationName = locationData.location.name;
+        }
+      } catch (locationError) {
+        locationName = `Locatie ID ${locationId}`;
+      }
+    }
+
+    async function getProductImage(productId, variantId) {
+      if (!productId) return '';
+
+      try {
+        const productResponse = await fetch(
+          `https://${shop}/admin/api/2024-10/products/${productId}.json`,
+          {
+            method: 'GET',
+            headers: {
+              'X-Shopify-Access-Token': token,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        const productData = await productResponse.json();
+
+        if (!productResponse.ok || !productData.product) {
+          return '';
+        }
+
+        const product = productData.product;
+
+        if (variantId && product.images && product.images.length) {
+          const variantImage = product.images.find((image) => {
+            return image.variant_ids && image.variant_ids.includes(variantId);
+          });
+
+          if (variantImage?.src) {
+            return variantImage.src;
+          }
+        }
+
+        return product.image?.src || '';
+      } catch (error) {
+        return '';
+      }
+    }
+
+    const items = await Promise.all(
+      (shopifyOrder.line_items || []).map(async (item) => {
+        const matchingFulfillment = fulfillments.find((fulfillment) => {
+          return (fulfillment.line_items || []).some((fulfilledItem) => {
+            return fulfilledItem.id === item.id;
+          });
+        });
+
+        const itemLocationId =
+          matchingFulfillment?.location_id ||
+          locationId ||
+          '';
+
+        let itemLocationName = locationName;
+
+        if (itemLocationId && itemLocationId !== locationId) {
+          try {
+            const itemLocationResponse = await fetch(
+              `https://${shop}/admin/api/2024-10/locations/${itemLocationId}.json`,
+              {
+                method: 'GET',
+                headers: {
+                  'X-Shopify-Access-Token': token,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
+
+            const itemLocationData = await itemLocationResponse.json();
+
+            if (itemLocationResponse.ok && itemLocationData.location?.name) {
+              itemLocationName = itemLocationData.location.name;
+            }
+          } catch (error) {
+            itemLocationName = `Locatie ID ${itemLocationId}`;
+          }
+        }
+
+        const image = await getProductImage(item.product_id, item.variant_id);
+
+        return {
+          quantity: item.quantity,
+          name: item.name,
+          sku: item.sku || '',
+          variant: item.variant_title || '',
+          image: image,
+          location: itemLocationName,
+          fulfillmentStatus: matchingFulfillment ? 'Verzonden' : 'Nog niet verzonden'
+        };
+      })
+    );
+
+    const customerName =
+      `${shopifyOrder.customer?.first_name || ''} ${shopifyOrder.customer?.last_name || ''}`.trim() ||
+      shopifyOrder.shipping_address?.name ||
+      shopifyOrder.billing_address?.name ||
+      '-';
 
     return res.status(200).json({
       order: {
         id: shopifyOrder.id,
         name: shopifyOrder.name,
-        customer:
-          `${shopifyOrder.customer?.first_name || ''} ${shopifyOrder.customer?.last_name || ''}`.trim() ||
-          shopifyOrder.shipping_address?.name ||
-          '-',
+        customer: customerName,
         customerEmail: customerEmail,
         financialStatus: shopifyOrder.financial_status || '-',
         fulfillmentStatus: shopifyOrder.fulfillment_status || 'Nog niet verzonden',
@@ -120,8 +242,8 @@ export default async function handler(req, res) {
         warehouse: locationName,
         orderedAt: shopifyOrder.created_at,
         createdAt: shopifyOrder.created_at,
-        shippedAt: fulfillment?.created_at || '',
-        fulfilledAt: fulfillment?.created_at || '',
+        shippedAt: firstFulfillment?.created_at || '',
+        fulfilledAt: firstFulfillment?.created_at || '',
         tracking: trackingNumber,
         trackingUrl: trackingUrl,
         items: items
