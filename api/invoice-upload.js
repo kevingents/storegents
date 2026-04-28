@@ -1,5 +1,6 @@
 import formidable from 'formidable';
 import fs from 'fs';
+import { put } from '@vercel/blob';
 import { createDeclaration } from '../lib/declarations-store.js';
 import { sendDeclarationEmail } from '../lib/resend-mailer.js';
 import { handleCors, setCorsHeaders } from '../lib/cors.js';
@@ -42,6 +43,13 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function safeFileName(fileName) {
+  return String(fileName || 'factuur-upload')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['POST', 'OPTIONS']);
@@ -54,6 +62,13 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+      return res.status(500).json({
+        success: false,
+        message: 'BLOB_READ_WRITE_TOKEN ontbreekt in Vercel Environment Variables.'
+      });
+    }
+
     const { fields, files } = await parseForm(req);
 
     const store = field(fields.store).trim();
@@ -114,15 +129,23 @@ export default async function handler(req, res) {
     }
 
     const fileContent = fs.readFileSync(filePath);
+    const cleanFileName = safeFileName(fileName);
+    const blobPath = `declarations/files/${Date.now()}-${cleanFileName}`;
 
-    const declaration = createDeclaration({
+    const uploadedBlob = await put(blobPath, fileContent, {
+      access: 'public',
+      addRandomSuffix: false,
+      contentType: uploadedFile.mimetype || 'application/octet-stream'
+    });
+
+    const declaration = await createDeclaration({
       store,
       employeeName,
       responsible,
       purpose,
       notes,
       fileName,
-      fileUrl: ''
+      fileUrl: uploadedBlob.url
     });
 
     await sendDeclarationEmail({
