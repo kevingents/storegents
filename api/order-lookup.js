@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Ordernummer ontbreekt' });
   }
 
-  const shop = process.env.SHOPIFY_SHOP;
+  const shop = process.env.SHOPIFY_STORE_URL;
   const token = process.env.SHOPIFY_ADMIN_TOKEN;
 
   if (!shop || !token) {
