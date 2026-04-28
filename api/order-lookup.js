@@ -1,46 +1,91 @@
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  const { orderNumber } = req.query;
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-  if (!orderNumber) {
-    return res.status(400).json({ error: "Geen ordernummer" });
+  const rawOrder = req.query.order || req.query.orderNumber;
+
+  if (!rawOrder) {
+    return res.status(400).json({ error: "Geen ordernummer meegegeven" });
   }
 
-  try {
-    const response = await fetch(
-      `https://${process.env.SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?name=${orderNumber}`,
-      {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
-          "Content-Type": "application/json",
-        },
+  const orderNumber = rawOrder.startsWith("#") ? rawOrder : `#${rawOrder}`;
+
+  const query = `
+    query {
+      orders(first: 1, query: "name:${orderNumber}") {
+        edges {
+          node {
+            name
+            email
+            displayFinancialStatus
+            displayFulfillmentStatus
+            customer {
+              firstName
+              lastName
+              email
+            }
+            shippingAddress {
+              zip
+            }
+            lineItems(first: 20) {
+              edges {
+                node {
+                  title
+                  quantity
+                  sku
+                }
+              }
+            }
+            fulfillments {
+              trackingInfo {
+                number
+                url
+              }
+            }
+          }
+        }
       }
-    );
-
-    const data = await response.json();
-
-    if (!data.orders || data.orders.length === 0) {
-      return res.status(404).json({ error: "Order niet gevonden" });
     }
+  `;
 
-    const order = data.orders[0];
+  const shopifyRes = await fetch(
+    `https://${process.env.SHOPIFY_STORE_URL}/admin/api/2024-04/graphql.json`,
+    {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ query })
+    }
+  );
 
-    return res.status(200).json({
-      order: {
-        name: order.name,
-        customer: order.customer?.first_name || "",
-        customerEmail: order.email,
-        financialStatus: order.financial_status,
-        fulfillmentStatus: order.fulfillment_status,
-        items: order.line_items.map(item => ({
-          name: item.title,
-          quantity: item.quantity
-        }))
-      }
-    });
+  const json = await shopifyRes.json();
+  const edge = json?.data?.orders?.edges?.[0];
 
-  } catch (error) {
-    return res.status(500).json({ error: "Server error" });
+  if (!edge) {
+    return res.status(404).json({ error: "Order niet gevonden", searched: orderNumber });
   }
+
+  const order = edge.node;
+
+  return res.status(200).json({
+    order: {
+      name: order.name,
+      customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
+      customerEmail: order.email || order.customer?.email || "",
+      financialStatus: order.displayFinancialStatus,
+      fulfillmentStatus: order.displayFulfillmentStatus,
+      tracking: order.fulfillments?.[0]?.trackingInfo?.[0]?.number || "Nog geen tracking",
+      trackingUrl: order.fulfillments?.[0]?.trackingInfo?.[0]?.url || "",
+      items: order.lineItems.edges.map(item => ({
+        name: item.node.title,
+        quantity: item.node.quantity,
+        sku: item.node.sku
+      }))
+    }
+  });
 }
