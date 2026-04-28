@@ -2,6 +2,28 @@ import { getLabels, updateLabelsByParcelId } from '../../lib/sendcloud-labels-st
 import { getParcel } from '../../lib/sendcloud-client.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
+
+function getFixedLabelCost() {
+  const raw = String(process.env.SENDCLOUD_LABEL_FIXED_COST || '6.50').replace(',', '.');
+  const value = Number(raw);
+
+  if (!Number.isFinite(value)) {
+    return 6.50;
+  }
+
+  return Number(value.toFixed(2));
+}
+
+function getLabelCost(label) {
+  const stored = Number(label.shippingCost || 0);
+
+  if (Number.isFinite(stored) && stored > 0) {
+    return stored;
+  }
+
+  return getFixedLabelCost();
+}
+
 function isAuthorized(req) {
   const adminToken = process.env.ADMIN_TOKEN || '12345';
   return req.headers['x-admin-token'] === adminToken;
@@ -59,7 +81,7 @@ function buildStoreSummary(labels) {
       currency: label.shippingCurrency || 'EUR'
     };
 
-    const cost = Number(label.shippingCost || 0);
+    const cost = getLabelCost(label);
     const state = label.shipmentState || 'open';
 
     existing.totalLabels += 1;
@@ -136,12 +158,17 @@ export default async function handler(req, res) {
     }
 
     const summary = buildStoreSummary(labels);
-    const totalCost = Number(labels.reduce((sum, label) => sum + Number(label.shippingCost || 0), 0).toFixed(2));
+    const labelsWithCost = labels.map((label) => ({
+      ...label,
+      shippingCost: getLabelCost(label),
+      shippingCurrency: label.shippingCurrency || 'EUR'
+    }));
+    const totalCost = Number(labelsWithCost.reduce((sum, label) => sum + getLabelCost(label), 0).toFixed(2));
 
     return res.status(200).json({
       success: true,
       summary,
-      labels,
+      labels: labelsWithCost,
       totals: {
         totalLabels: labels.length,
         sentLabels: labels.filter((label) => label.shipmentState === 'verzonden').length,

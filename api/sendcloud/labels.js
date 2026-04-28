@@ -3,8 +3,7 @@ import {
   findDhlDropoffMethod,
   findSenderAddressForStore as findAddress,
   senderAddressToRecipient,
-  sendcloudRequest,
-  getShippingCostFromMethod
+  sendcloudRequest
 } from '../../lib/sendcloud-client.js';
 
 import { createLabelRecord, getLabels } from '../../lib/sendcloud-labels-store.js';
@@ -17,6 +16,18 @@ function field(value) {
 
 function cleanDutchPostalCode(value) {
   return String(value || '').toUpperCase().replace(/\s+/g, '');
+}
+
+
+function getFixedLabelCost() {
+  const raw = String(process.env.SENDCLOUD_LABEL_FIXED_COST || '6.50').replace(',', '.');
+  const value = Number(raw);
+
+  if (!Number.isFinite(value)) {
+    return 6.50;
+  }
+
+  return Number(value.toFixed(2));
 }
 
 function buildCustomerRecipient(body) {
@@ -154,7 +165,7 @@ export default async function handler(req, res) {
     */
     const senderAddress = await findSenderAddressForStore(store);
     const shippingMethod = await findDhlDropoffMethod(senderAddress.id);
-    const shippingCost = getShippingCostFromMethod(shippingMethod);
+    const shippingCost = getFixedLabelCost();
 
     let recipient;
 
