@@ -1,6 +1,6 @@
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM_EMAIL =
-  process.env.RESEND_FROM_EMAIL || "GENTS Winkelportaal <info@gents.nl>";
+  process.env.RESEND_FROM_EMAIL || "GENTS Winkelportaal <onboarding@resend.dev>";
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
