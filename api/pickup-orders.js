@@ -1,58 +1,45 @@
 import {
   setCors,
   handleError,
-  STORE_LOCATIONS,
+  getOrdersByName,
   getRecentOrders,
-  getFulfillmentOrders,
-  getPickupStatus,
-  getAssignedLocationIds,
-  isPickupFulfillmentOrder,
+  orderMatchesQuery,
   mapOrder,
+  getProductImage,
   mapLineItems
 } from './_shopify.js';
 
-function getWantedLocationIds(store) {
-  if (store === 'GENTS Brandstores') {
-    return Object.values(STORE_LOCATIONS);
-  }
+async function withProductImages(order) {
+  const productIds = Array.from(new Set((order.line_items || []).map((item) => item.product_id).filter(Boolean)));
+  const imageByProductId = {};
 
-  const id = STORE_LOCATIONS[store];
-  return id ? [id] : [];
-}
-
-function orderHasPickupText(order) {
-  const text = [
-    order.tags,
-    order.note,
-    order.shipping_address?.address1,
-    order.shipping_address?.address2,
-    ...(Array.isArray(order.note_attributes)
-      ? order.note_attributes.map((item) => `${item.name || ''} ${item.value || ''}`)
-      : []),
-    ...(Array.isArray(order.shipping_lines)
-      ? order.shipping_lines.map((item) => `${item.title || ''} ${item.code || ''} ${item.source || ''}`)
-      : [])
-  ].join(' ').toLowerCase();
-
-  return (
-    text.includes('pickup') ||
-    text.includes('pick up') ||
-    text.includes('afhalen') ||
-    text.includes('ophalen') ||
-    text.includes('ophaal')
+  await Promise.all(
+    productIds.map(async (productId) => {
+      imageByProductId[productId] = await getProductImage(productId);
+    })
   );
-}
-
-function mapPickupOrder(order, fulfillmentOrders) {
-  const pickup = getPickupStatus(order, fulfillmentOrders);
-  const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
 
   return mapOrder(order, {
-    assignedLocationIds,
-    pickupStatus: pickup.pickupStatus,
-    pickupStatusLabel: pickup.pickupStatusLabel,
-    items: mapLineItems(order)
+    items: mapLineItems(order, imageByProductId)
   });
+}
+
+function mapOrderSummary(order) {
+  const mapped = mapOrder(order);
+
+  return {
+    id: mapped.id,
+    name: mapped.name,
+    customer: mapped.customer,
+    customerEmail: mapped.customerEmail,
+    customerZip: mapped.customerZip,
+    orderedAt: mapped.orderedAt,
+    createdAt: mapped.createdAt,
+    financialStatus: mapped.financialStatus,
+    fulfillmentStatus: mapped.fulfillmentStatus,
+    totalPrice: mapped.totalPrice,
+    currency: mapped.currency
+  };
 }
 
 export default async function handler(req, res) {
@@ -64,59 +51,63 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Methode niet toegestaan' });
   }
 
-  const store = String(req.query.store || '').trim();
-  const statusFilter = String(req.query.status || 'all').trim();
+  const orderParam = String(req.query.order || '').trim();
+  const queryParam = String(req.query.query || req.query.check || '').trim();
 
-  if (!store) {
-    return res.status(400).json({ error: 'Winkel ontbreekt' });
-  }
-
-  const wantedLocationIds = getWantedLocationIds(store);
-
-  if (!wantedLocationIds.length && store !== 'GENTS Brandstores') {
+  if (!orderParam && !queryParam) {
     return res.status(400).json({
-      error: 'Onbekende Shopify locatie',
-      store
+      error: 'Vul een ordernummer, e-mail of postcode in'
     });
   }
 
   try {
+    if (orderParam) {
+      const cleanOrder = orderParam.replace('#', '');
+      const orders = await getOrdersByName(cleanOrder);
+
+      if (!orders.length) {
+        return res.status(404).json({
+          error: 'Geen order gevonden',
+          searchedFor: orderParam
+        });
+      }
+
+      const order = await withProductImages(orders[0]);
+
+      if (queryParam) {
+        const matchesCheck = orderMatchesQuery(orders[0], queryParam);
+
+        if (!matchesCheck) {
+          return res.status(404).json({
+            error: 'Order gevonden, maar klantcontrole klopt niet',
+            searchedFor: queryParam
+          });
+        }
+      }
+
+      return res.status(200).json({ order });
+    }
+
     const recentOrders = await getRecentOrders(250);
-    const mapped = [];
+    const matches = recentOrders.filter((order) => orderMatchesQuery(order, queryParam));
 
-    for (const order of recentOrders) {
-      const fulfillmentOrders = await getFulfillmentOrders(order.id);
-      const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
+    if (!matches.length) {
+      return res.status(404).json({
+        error: 'Geen order gevonden',
+        searchedFor: queryParam
+      });
+    }
 
-      const matchesLocation =
-        store === 'GENTS Brandstores' ||
-        assignedLocationIds.some((id) => wantedLocationIds.includes(String(id)));
-
-      if (!matchesLocation) continue;
-
-      const hasPickupFulfillment = fulfillmentOrders.some(isPickupFulfillmentOrder);
-
-      if (!hasPickupFulfillment && !orderHasPickupText(order)) {
-        continue;
-      }
-
-      const pickupOrder = mapPickupOrder(order, fulfillmentOrders);
-
-      if (statusFilter && statusFilter !== 'all' && pickupOrder.pickupStatus !== statusFilter) {
-        continue;
-      }
-
-      mapped.push(pickupOrder);
+    if (matches.length === 1) {
+      const order = await withProductImages(matches[0]);
+      return res.status(200).json({ order });
     }
 
     return res.status(200).json({
-      store,
-      locationIds: wantedLocationIds,
-      status: statusFilter,
-      count: mapped.length,
-      orders: mapped
+      count: matches.length,
+      orders: matches.map(mapOrderSummary)
     });
   } catch (error) {
-    return handleError(res, error, 'Ophaalorders konden niet worden geladen');
+    return handleError(res, error, 'Order kon niet worden opgezocht');
   }
 }
