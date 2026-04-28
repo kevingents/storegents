@@ -360,7 +360,7 @@ export default async function handler(req, res) {
   const statusFilter = String(req.query.status || "all").trim();
   const debug = String(req.query.debug || "") === "1";
   const strictPickupOnly = String(req.query.strictPickupOnly || "") === "1";
-  const days = Math.min(Math.max(Number(req.query.days || 30), 1), 60);
+  const days = Math.min(Math.max(Number(req.query.days || 7), 1), 60);
   const forceRefresh = String(req.query.refresh || "") === "1";
 
   if (!store) {
