@@ -171,8 +171,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const labelUrl = getLabelUrl(parcel);
-
+const proto = req.headers['x-forwarded-proto'] || 'https';
+const host = req.headers.host;
+const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${encodeURIComponent(parcel.id)}`;
     const record = await createLabelRecord({
       store,
       employeeName,
