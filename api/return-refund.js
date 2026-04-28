@@ -1,73 +1,233 @@
-import {
-  setCors,
-  handleError,
-  getOrderById,
-  shopifyRest,
-  addOrderTags
-} from './_shopify.js';
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-10";
+
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cleanShopUrl(url) {
+  return String(url || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
+}
+
+function shopifyUrl(path) {
+  const shop = cleanShopUrl(SHOPIFY_STORE_URL);
+  return `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`;
+}
+
+async function shopifyRequest(path, options = {}, attempt = 0) {
+  const response = await fetch(shopifyUrl(path), {
+    ...options,
+    headers: {
+      "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    data = { raw: text };
+  }
+
+  const rateLimited =
+    response.status === 429 ||
+    String(data.errors || data.error || data.raw || "")
+      .toLowerCase()
+      .includes("exceeded 20 calls per second");
+
+  if (rateLimited && attempt < 5) {
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const delay = retryAfter ? retryAfter * 1000 : 1200 + attempt * 800;
+    await sleep(delay);
+    return shopifyRequest(path, options, attempt + 1);
+  }
+
+  if (!response.ok) {
+    const error = new Error("Shopify API fout");
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+
+  return data;
+}
+
+async function getOrderById(orderId) {
+  const data = await shopifyRequest(`/orders/${orderId}.json?status=any`, {
+    method: "GET"
+  });
+
+  return data.order;
+}
+
+async function addOrderTag(order, tagToAdd) {
+  const existingTags = String(order.tags || "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  const tags = Array.from(new Set([...existingTags, tagToAdd]));
+
+  return shopifyRequest(`/orders/${order.id}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      order: {
+        id: order.id,
+        tags: tags.join(", ")
+      }
+    })
+  });
+}
+
+function normalizeBody(req) {
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch (error) {
+      return {};
+    }
+  }
+
+  return req.body || {};
+}
 
 function normalizeSelectedItems(items) {
   if (!Array.isArray(items)) return [];
 
   return items
-    .map((item) => ({
-      lineItemId: String(item.lineItemId || item.id || '').trim(),
-      quantity: Number(item.quantity || 0)
-    }))
+    .map((item) => {
+      return {
+        lineItemId: String(item.lineItemId || item.id || "").trim(),
+        quantity: Number(item.quantity || 0)
+      };
+    })
     .filter((item) => item.lineItemId && item.quantity > 0);
 }
 
+function safeError(error) {
+  return {
+    message: error.message || "Onbekende fout",
+    status: error.status || 500,
+    details: error.data || null
+  };
+}
+
 export default async function handler(req, res) {
-  setCors(res, 'POST, OPTIONS');
+  setCors(res);
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Methode niet toegestaan' });
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  const orderId = String(req.body?.orderId || req.body?.id || '').trim();
-  const employeeName = String(req.body?.employeeName || req.body?.medewerker || '').trim();
-  const reason = String(req.body?.reason || req.body?.reden || '').trim();
-  const note = String(req.body?.note || '').trim();
-  const store = String(req.body?.store || '').trim();
-  const confirm =
-    req.body?.confirm === true ||
-    req.body?.confirmed === true ||
-    req.body?.confirmation === true;
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      error: "Methode niet toegestaan"
+    });
+  }
+
+  if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
+    return res.status(500).json({
+      error: "Shopify configuratie ontbreekt",
+      expectedEnv: ["SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_URL"]
+    });
+  }
+
+  const body = normalizeBody(req);
+
+  const orderId = String(body.orderId || body.id || "").trim();
+  const employeeName = String(body.employeeName || body.medewerker || "").trim();
+  const reason = String(body.reason || body.reden || "").trim();
+  const note = String(body.note || "").trim();
+  const store = String(body.store || "").trim();
+
+  const confirmed =
+    body.confirm === true ||
+    body.confirmed === true ||
+    body.confirmation === true;
 
   const selectedItems = normalizeSelectedItems(
-    req.body?.items || req.body?.selectedItems || req.body?.refundItems
+    body.items || body.selectedItems || body.refundItems
   );
 
-  if (!confirm) {
-    return res.status(400).json({ error: 'Bevestiging ontbreekt' });
+  if (!confirmed) {
+    return res.status(400).json({
+      error: "Bevestiging ontbreekt. De medewerker moet bevestigen dat de klant terugbetaald mag worden."
+    });
   }
 
   if (!orderId) {
-    return res.status(400).json({ error: 'Order ID ontbreekt' });
+    return res.status(400).json({
+      error: "Order ID ontbreekt"
+    });
   }
 
   if (!employeeName) {
-    return res.status(400).json({ error: 'Naam medewerker ontbreekt' });
+    return res.status(400).json({
+      error: "Naam medewerker ontbreekt"
+    });
   }
 
   if (!reason) {
-    return res.status(400).json({ error: 'Retourreden ontbreekt' });
+    return res.status(400).json({
+      error: "Retourreden ontbreekt"
+    });
   }
 
   if (!selectedItems.length) {
-    return res.status(400).json({ error: 'Selecteer minimaal één product' });
+    return res.status(400).json({
+      error: "Selecteer minimaal één product"
+    });
   }
 
   try {
     const order = await getOrderById(orderId);
 
-    const refundLineItems = selectedItems.map((item) => ({
-      line_item_id: Number(item.lineItemId),
-      quantity: item.quantity,
-      restock_type: 'return'
-    }));
+    if (!order) {
+      return res.status(404).json({
+        error: "Order niet gevonden",
+        orderId
+      });
+    }
+
+    const validLineItems = order.line_items || [];
+
+    const refundLineItems = selectedItems.map((selectedItem) => {
+      const orderLineItem = validLineItems.find((lineItem) => {
+        return String(lineItem.id) === String(selectedItem.lineItemId);
+      });
+
+      if (!orderLineItem) {
+        return null;
+      }
+
+      const maxQuantity = Number(orderLineItem.quantity || 1);
+      const quantity = Math.min(Number(selectedItem.quantity || 1), maxQuantity);
+
+      return {
+        line_item_id: Number(selectedItem.lineItemId),
+        quantity,
+        restock_type: "return"
+      };
+    }).filter(Boolean);
+
+    if (!refundLineItems.length) {
+      return res.status(400).json({
+        error: "Geen geldige producten gevonden voor deze order"
+      });
+    }
 
     const calculatePayload = {
       refund: {
@@ -75,45 +235,66 @@ export default async function handler(req, res) {
       }
     };
 
-    const calculated = await shopifyRest(`/orders/${orderId}/refunds/calculate.json`, {
-      method: 'POST',
+    const calculated = await shopifyRequest(`/orders/${orderId}/refunds/calculate.json`, {
+      method: "POST",
       body: JSON.stringify(calculatePayload)
     });
 
     const calculatedRefund = calculated.refund || {};
-    const transactions = (calculatedRefund.transactions || []).map((transaction) => ({
-      parent_id: transaction.parent_id,
-      amount: transaction.amount,
-      kind: 'refund',
-      gateway: transaction.gateway
-    }));
+
+    const transactions = (calculatedRefund.transactions || [])
+      .filter((transaction) => Number(transaction.amount || 0) > 0)
+      .map((transaction) => {
+        return {
+          parent_id: transaction.parent_id,
+          amount: transaction.amount,
+          kind: "refund",
+          gateway: transaction.gateway
+        };
+      });
+
+    if (!transactions.length) {
+      return res.status(400).json({
+        error: "Geen terugbetaalbare transactie gevonden",
+        details: "Deze order is mogelijk al terugbetaald of heeft geen betaalbare transactie meer."
+      });
+    }
 
     const refundPayload = {
       refund: {
         notify: true,
-        note: `Retour verwerkt via winkelportaal door ${employeeName}. Winkel: ${store || '-'}. Reden: ${reason}${note ? `. Opmerking: ${note}` : ''}`,
+        note:
+          `Retour verwerkt via winkelportaal door ${employeeName}. ` +
+          `Winkel: ${store || "-"}. ` +
+          `Reden: ${reason}.` +
+          `${note ? ` Opmerking: ${note}` : ""}`,
         refund_line_items: refundLineItems,
         transactions
       }
     };
 
-    if (calculatedRefund.shipping) {
-      refundPayload.refund.shipping = calculatedRefund.shipping;
-    }
-
-    const created = await shopifyRest(`/orders/${orderId}/refunds.json`, {
-      method: 'POST',
+    const created = await shopifyRequest(`/orders/${orderId}/refunds.json`, {
+      method: "POST",
       body: JSON.stringify(refundPayload)
     });
 
-    await addOrderTags(order, ['winkelportaal_retour']);
+    try {
+      await addOrderTag(order, "winkelportaal_retour");
+    } catch (tagError) {
+      console.error("Tag toevoegen mislukt:", safeError(tagError));
+    }
 
     return res.status(200).json({
       success: true,
-      message: 'Terugbetaling verwerkt via Shopify',
+      message: "Terugbetaling verwerkt via Shopify",
       refund: created.refund
     });
   } catch (error) {
-    return handleError(res, error, 'Terugbetaling kon niet worden verwerkt');
+    console.error("Return refund error:", safeError(error));
+
+    return res.status(error.status || 500).json({
+      error: "Terugbetaling kon niet worden verwerkt",
+      details: error.data || error.message || "Onbekende fout"
+    });
   }
 }
