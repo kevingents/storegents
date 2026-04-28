@@ -1,8 +1,10 @@
 {
-  "name": "gents-backend",
+  "name": "gents-winkel-dashboard-api",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "dependencies": {
+    "@vercel/blob": "^2.0.0",
     "formidable": "^3.5.2",
     "resend": "^6.5.1"
   }
