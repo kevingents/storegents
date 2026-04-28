@@ -22,8 +22,11 @@ export default async function handler(req, res) {
       });
     }
 
-    const declarations = getDeclarations()
-      .filter((item) => item.store === store);
+    const allDeclarations = await getDeclarations();
+
+    const declarations = allDeclarations.filter((item) => {
+      return String(item.store || '').trim() === store;
+    });
 
     return res.status(200).json({
       success: true,
@@ -34,7 +37,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       success: false,
-      message: 'Declaraties konden niet worden opgehaald.'
+      message: error.message || 'Declaraties konden niet worden opgehaald.'
     });
   }
 }
