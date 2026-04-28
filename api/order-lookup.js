@@ -1,5 +1,4 @@
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
-const MAX_ORDER_SEARCH_PAGES = Number(process.env.MAX_ORDER_SEARCH_PAGES || 20);
 const MAX_QUERY_RESULTS = Number(process.env.MAX_QUERY_RESULTS || 25);
 
 function setCors(res) {
@@ -24,42 +23,21 @@ function getShopifyConfig() {
     };
   }
 
-  shop = shop
-    .replace('https://', '')
-    .replace('http://', '')
-    .replace(/\/$/, '');
+  shop = shop.replace('https://', '').replace('http://', '').replace(/\/$/, '');
 
   return { shop, token };
 }
 
 function normalize(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/\s/g, '')
-    .trim();
+  return String(value || '').toLowerCase().replace(/\s/g, '').trim();
 }
 
-function parseNextPageInfo(linkHeader) {
-  if (!linkHeader) return '';
+function numericIdFromGid(gid) {
+  return String(gid || '').split('/').pop();
+}
 
-  const links = linkHeader.split(',');
-
-  const nextLink = links.find((link) => {
-    return link.includes('rel="next"');
-  });
-
-  if (!nextLink) return '';
-
-  const match = nextLink.match(/<([^>]+)>/);
-
-  if (!match || !match[1]) return '';
-
-  try {
-    const url = new URL(match[1]);
-    return url.searchParams.get('page_info') || '';
-  } catch (error) {
-    return '';
-  }
+function isEmail(value) {
+  return String(value || '').includes('@');
 }
 
 async function shopifyFetch(shop, token, path, options = {}) {
@@ -85,15 +63,40 @@ async function shopifyFetch(shop, token, path, options = {}) {
   return { response, data };
 }
 
+async function shopifyGraphql(shop, token, query, variables) {
+  const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+    method: 'POST',
+    headers: {
+      'X-Shopify-Access-Token': token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const error = new Error('Shopify GraphQL request mislukt');
+    error.status = response.status;
+    error.details = data;
+    throw error;
+  }
+
+  if (data.errors && data.errors.length) {
+    const error = new Error(data.errors.map((item) => item.message).join(', '));
+    error.status = 500;
+    error.details = data.errors;
+    throw error;
+  }
+
+  return data.data;
+}
+
 async function getProductImage(shop, token, productId, variantId) {
   if (!productId) return '';
 
   try {
-    const { response, data } = await shopifyFetch(
-      shop,
-      token,
-      `/products/${productId}.json`
-    );
+    const { response, data } = await shopifyFetch(shop, token, `/products/${productId}.json`);
 
     if (!response.ok || !data.product) return '';
 
@@ -104,9 +107,7 @@ async function getProductImage(shop, token, productId, variantId) {
         return image.variant_ids && image.variant_ids.includes(Number(variantId));
       });
 
-      if (variantImage && variantImage.src) {
-        return variantImage.src;
-      }
+      if (variantImage && variantImage.src) return variantImage.src;
     }
 
     return product.image?.src || '';
@@ -119,11 +120,7 @@ async function getLocationName(shop, token, locationId) {
   if (!locationId) return '-';
 
   try {
-    const { response, data } = await shopifyFetch(
-      shop,
-      token,
-      `/locations/${locationId}.json`
-    );
+    const { response, data } = await shopifyFetch(shop, token, `/locations/${locationId}.json`);
 
     if (response.ok && data.location && data.location.name) {
       return data.location.name;
@@ -155,32 +152,13 @@ function orderMatchesCheck(shopifyOrder, check) {
   );
 }
 
-function orderMatchesSearch(shopifyOrder, search) {
-  if (!search) return true;
-
-  const normalizedSearch = normalize(search);
-
-  const name = normalize(shopifyOrder.name);
-  const orderNumber = normalize(String(shopifyOrder.order_number || ''));
-  const numericName = normalize(String(shopifyOrder.name || '').replace('#', ''));
-
-  const email = normalize(shopifyOrder.email);
-  const contactEmail = normalize(shopifyOrder.contact_email);
-  const customerEmail = normalize(shopifyOrder.customer?.email);
+function orderMatchesPostcode(shopifyOrder, postcode) {
+  const normalizedPostcode = normalize(postcode);
 
   const shippingZip = normalize(shopifyOrder.shipping_address?.zip);
   const billingZip = normalize(shopifyOrder.billing_address?.zip);
 
-  return (
-    name === normalizedSearch ||
-    orderNumber === normalizedSearch ||
-    numericName === normalizedSearch ||
-    email === normalizedSearch ||
-    contactEmail === normalizedSearch ||
-    customerEmail === normalizedSearch ||
-    shippingZip === normalizedSearch ||
-    billingZip === normalizedSearch
-  );
+  return normalizedPostcode === shippingZip || normalizedPostcode === billingZip;
 }
 
 async function findOrderByOrderNumber(shop, token, orderValue) {
@@ -208,44 +186,115 @@ async function findOrderByOrderNumber(shop, token, orderValue) {
   return data.orders && data.orders.length ? data.orders[0] : null;
 }
 
-async function findOrdersByEmailOrPostcode(shop, token, searchValue) {
-  let pageInfo = '';
-  let page = 0;
-  const matches = [];
-
-  while (page < MAX_ORDER_SEARCH_PAGES) {
-    page += 1;
-
-    const path = pageInfo
-      ? `/orders.json?limit=250&page_info=${encodeURIComponent(pageInfo)}`
-      : `/orders.json?status=any&limit=250&order=created_at desc`;
-
-    const { response, data } = await shopifyFetch(shop, token, path);
-
-    if (!response.ok) {
-      const error = new Error('Shopify order lookup mislukt');
-      error.status = response.status;
-      error.details = data;
-      throw error;
-    }
-
-    (data.orders || []).forEach((shopifyOrder) => {
-      if (orderMatchesSearch(shopifyOrder, searchValue)) {
-        matches.push(shopifyOrder);
+async function findOrdersByEmailFast(shop, token, email) {
+  const graphQuery = `
+    query FindOrdersByEmail($query: String!, $first: Int!) {
+      orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            createdAt
+            email
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            shippingAddress {
+              name
+              zip
+            }
+            billingAddress {
+              name
+              zip
+            }
+            customer {
+              firstName
+              lastName
+              email
+            }
+            lineItems(first: 10) {
+              edges {
+                node {
+                  id
+                  name
+                  quantity
+                  sku
+                  variantTitle
+                }
+              }
+            }
+          }
+        }
       }
-    });
-
-    pageInfo = parseNextPageInfo(response.headers.get('link'));
-
-    if (!pageInfo) {
-      break;
     }
-  }
+  `;
 
-  return matches;
+  const data = await shopifyGraphql(shop, token, graphQuery, {
+    query: `email:${email}`,
+    first: MAX_QUERY_RESULTS
+  });
+
+  return (data.orders?.edges || []).map((edge) => edge.node);
 }
 
-async function formatOrderForFrontend(shop, token, foundOrder) {
+async function findOrdersByPostcodeFallback(shop, token, postcode) {
+  const { response, data } = await shopifyFetch(
+    shop,
+    token,
+    `/orders.json?status=any&limit=250&order=created_at desc`
+  );
+
+  if (!response.ok) {
+    const error = new Error('Shopify order lookup mislukt');
+    error.status = response.status;
+    error.details = data;
+    throw error;
+  }
+
+  return (data.orders || []).filter((order) => orderMatchesPostcode(order, postcode)).slice(0, MAX_QUERY_RESULTS);
+}
+
+function formatGraphqlOrderSummary(order) {
+  const customerName =
+    `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
+    order.shippingAddress?.name ||
+    order.billingAddress?.name ||
+    '-';
+
+  return {
+    id: numericIdFromGid(order.id),
+    gid: order.id,
+    name: order.name,
+    customer: customerName,
+    customerEmail: order.email || order.customer?.email || '',
+    customerZip: order.shippingAddress?.zip || order.billingAddress?.zip || '',
+    financialStatus: order.displayFinancialStatus || '-',
+    fulfillmentStatus: order.displayFulfillmentStatus || '-',
+    orderedAt: order.createdAt,
+    createdAt: order.createdAt,
+    totalPrice: order.totalPriceSet?.shopMoney?.amount || '',
+    currency: order.totalPriceSet?.shopMoney?.currencyCode || '',
+    items: (order.lineItems?.edges || []).map((edge) => ({
+      id: numericIdFromGid(edge.node.id),
+      lineItemId: numericIdFromGid(edge.node.id),
+      quantity: edge.node.quantity,
+      refundableQuantity: edge.node.quantity,
+      name: edge.node.name,
+      sku: edge.node.sku || '',
+      variant: edge.node.variantTitle || '',
+      image: '',
+      location: '-',
+      fulfillmentStatus: '-'
+    }))
+  };
+}
+
+async function formatRestOrderForFrontend(shop, token, foundOrder) {
   const fulfillments = foundOrder.fulfillments || [];
   const firstFulfillment = fulfillments[0] || null;
 
@@ -299,7 +348,7 @@ async function formatOrderForFrontend(shop, token, foundOrder) {
         sku: item.sku || '',
         variant: item.variant_title || '',
         price: item.price || '',
-        image: image,
+        image,
         location: itemLocationName,
         fulfillmentStatus: matchingFulfillment ? 'Verzonden' : 'Nog niet verzonden'
       };
@@ -335,24 +384,20 @@ async function formatOrderForFrontend(shop, token, foundOrder) {
     shippedAt: firstFulfillment?.created_at || '',
     fulfilledAt: firstFulfillment?.created_at || '',
     tracking: trackingNumber,
-    trackingUrl: trackingUrl,
+    trackingUrl,
     totalPrice: foundOrder.total_price || '',
     currency: foundOrder.currency || '',
-    items: items
+    items
   };
 }
 
 export default async function handler(req, res) {
   setCors(res);
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method !== 'GET') {
-    return res.status(405).json({
-      error: 'Method not allowed'
-    });
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const order = String(req.query.order || '').trim();
@@ -380,9 +425,7 @@ export default async function handler(req, res) {
       const foundOrder = await findOrderByOrderNumber(shop, token, order);
 
       if (foundOrder && check && !orderMatchesCheck(foundOrder, check)) {
-        return res.status(403).json({
-          error: 'Controle komt niet overeen'
-        });
+        return res.status(403).json({ error: 'Controle komt niet overeen' });
       }
 
       if (!foundOrder) {
@@ -392,35 +435,48 @@ export default async function handler(req, res) {
         });
       }
 
-      const formattedOrder = await formatOrderForFrontend(shop, token, foundOrder);
+      const formattedOrder = await formatRestOrderForFrontend(shop, token, foundOrder);
+
+      return res.status(200).json({ order: formattedOrder });
+    }
+
+    if (isEmail(query || check)) {
+      const foundOrders = await findOrdersByEmailFast(shop, token, query || check);
+
+      if (!foundOrders.length) {
+        return res.status(404).json({
+          error: 'Geen order gevonden',
+          searchedFor: searchValue
+        });
+      }
 
       return res.status(200).json({
-        order: formattedOrder
+        orders: foundOrders.map(formatGraphqlOrderSummary),
+        count: foundOrders.length,
+        limitedTo: MAX_QUERY_RESULTS,
+        mode: 'email-fast'
       });
     }
 
-    const foundOrders = await findOrdersByEmailOrPostcode(shop, token, query || check);
+    const foundOrders = await findOrdersByPostcodeFallback(shop, token, query || check);
 
     if (!foundOrders.length) {
       return res.status(404).json({
         error: 'Geen order gevonden',
         searchedFor: searchValue,
-        note: `Er is gezocht in maximaal ${MAX_ORDER_SEARCH_PAGES * 250} orders. Verhoog MAX_ORDER_SEARCH_PAGES als je verder terug wilt zoeken.`
+        note: 'Postcode zoekt alleen in de laatste 250 orders. Gebruik ordernummer of e-mail voor sneller en breder zoeken.'
       });
     }
 
-    const limitedOrders = foundOrders.slice(0, MAX_QUERY_RESULTS);
-
     const formattedOrders = await Promise.all(
-      limitedOrders.map((shopifyOrder) => {
-        return formatOrderForFrontend(shop, token, shopifyOrder);
-      })
+      foundOrders.map((shopifyOrder) => formatRestOrderForFrontend(shop, token, shopifyOrder))
     );
 
     return res.status(200).json({
       orders: formattedOrders,
-      count: foundOrders.length,
-      limitedTo: MAX_QUERY_RESULTS
+      count: formattedOrders.length,
+      limitedTo: MAX_QUERY_RESULTS,
+      mode: 'postcode-fallback'
     });
   } catch (error) {
     return res.status(error.status || 500).json({
