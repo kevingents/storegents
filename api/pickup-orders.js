@@ -26,7 +26,7 @@ const STORE_LOCATIONS = {
   "GENTS Almere": "97249919293"
 };
 
-const CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = 5 * 60 * 1000;
 const memoryCache = globalThis.__GENTS_PICKUP_CACHE__ || new Map();
 globalThis.__GENTS_PICKUP_CACHE__ = memoryCache;
 
@@ -34,6 +34,10 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function cleanShopUrl(url) {
@@ -68,7 +72,7 @@ function getNextPageUrl(linkHeader) {
   return null;
 }
 
-async function shopifyGetUrl(url) {
+async function shopifyGetUrl(url, attempt = 0) {
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -85,6 +89,20 @@ async function shopifyGetUrl(url) {
     data = text ? JSON.parse(text) : {};
   } catch (error) {
     data = { raw: text };
+  }
+
+  const rateLimited =
+    response.status === 429 ||
+    String(data.errors || data.error || data.raw || "")
+      .toLowerCase()
+      .includes("exceeded 20 calls per second");
+
+  if (rateLimited && attempt < 5) {
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const delay = retryAfter ? retryAfter * 1000 : 1200 + attempt * 800;
+
+    await sleep(delay);
+    return shopifyGetUrl(url, attempt + 1);
   }
 
   if (!response.ok) {
@@ -241,16 +259,16 @@ function getPickupStatus(order, fulfillmentOrders) {
   ) {
     return {
       pickupStatus: "niet_opgehaald",
-      pickupStatusLabel: "Niet opgehaald"
+      pickupStatusLabel: "Klant geïnformeerd"
     };
   }
 
-  const foText = (fulfillmentOrders || [])
+  const fulfillmentText = (fulfillmentOrders || [])
     .map((fo) => `${fo.status || ""} ${fo.request_status || ""}`)
     .join(" ")
     .toLowerCase();
 
-  if (foText.includes("closed") || order.fulfillment_status === "fulfilled") {
+  if (fulfillmentText.includes("closed") || order.fulfillment_status === "fulfilled") {
     return {
       pickupStatus: "opgehaald",
       pickupStatusLabel: "Opgehaald"
@@ -259,7 +277,7 @@ function getPickupStatus(order, fulfillmentOrders) {
 
   return {
     pickupStatus: "nog_klaar_te_zetten",
-    pickupStatusLabel: "Nog klaar te zetten"
+    pickupStatusLabel: "Nieuwe ophaalorder"
   };
 }
 
@@ -291,6 +309,7 @@ function mapOrder(order, fulfillmentOrders) {
     pickupStatus: pickup.pickupStatus,
     pickupStatusLabel: pickup.pickupStatusLabel,
     tags: order.tags || "",
+    isPickup: true,
     items: (order.line_items || []).map((item) => ({
       id: item.id,
       lineItemId: item.id,
@@ -357,7 +376,11 @@ export default async function handler(req, res) {
   }
 
   const store = String(req.query.store || "").trim();
-  const statusFilter = String(req.query.status || "all").trim();
+
+  const statusFilter = String(
+    req.query.status || "nog_klaar_te_zetten"
+  ).trim();
+
   const debug = String(req.query.debug || "") === "1";
   const strictPickupOnly = String(req.query.strictPickupOnly || "") === "1";
   const days = Math.min(Math.max(Number(req.query.days || 7), 1), 60);
@@ -395,10 +418,12 @@ export default async function handler(req, res) {
 
   try {
     const startedAt = Date.now();
+
     const { orders, pageCount } = await getOrdersFromPeriod(days);
 
-    const enrichedOrders = await mapLimit(orders, 8, async (order) => {
+    const enrichedOrders = await mapLimit(orders, 2, async (order) => {
       const fulfillmentOrders = await getFulfillmentOrders(order.id);
+
       return {
         order,
         fulfillmentOrders
@@ -444,6 +469,7 @@ export default async function handler(req, res) {
       }
 
       if (!matchesLocation) continue;
+
       if (strictPickupOnly && !isPickup) continue;
 
       const mapped = mapOrder(order, fulfillmentOrders);
