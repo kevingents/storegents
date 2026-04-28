@@ -26,6 +26,10 @@ const STORE_LOCATIONS = {
   "GENTS Almere": "97249919293"
 };
 
+const CACHE_TTL_MS = 60 * 1000;
+const memoryCache = globalThis.__GENTS_PICKUP_CACHE__ || new Map();
+globalThis.__GENTS_PICKUP_CACHE__ = memoryCache;
+
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -43,9 +47,9 @@ function shopifyUrl(path) {
   return `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`;
 }
 
-function getOneMonthAgoIso() {
+function getDateMinIso(days) {
   const date = new Date();
-  date.setMonth(date.getMonth() - 1);
+  date.setDate(date.getDate() - days);
   return date.toISOString();
 }
 
@@ -100,11 +104,11 @@ async function shopifyGet(path) {
   return shopifyGetUrl(shopifyUrl(path));
 }
 
-async function getOrdersFromLastMonth() {
-  const createdAtMin = encodeURIComponent(getOneMonthAgoIso());
+async function getOrdersFromPeriod(days) {
+  const createdAtMin = encodeURIComponent(getDateMinIso(days));
 
   let nextUrl = shopifyUrl(
-    `/orders.json?status=any&limit=250&order=created_at desc&created_at_min=${createdAtMin}&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,line_items`
+    `/orders.json?status=any&limit=250&order=created_at desc&created_at_min=${createdAtMin}&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,line_items,fulfillments`
   );
 
   const allOrders = [];
@@ -131,6 +135,27 @@ async function getFulfillmentOrders(orderId) {
   } catch (error) {
     return [];
   }
+}
+
+async function mapLimit(items, limit, mapper) {
+  const results = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < items.length) {
+      const currentIndex = index;
+      index += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+
+  await Promise.all(workers);
+  return results;
 }
 
 function getAssignedLocationIds(fulfillmentOrders) {
@@ -277,6 +302,40 @@ function mapOrder(order, fulfillmentOrders) {
   };
 }
 
+function getCacheKey({ store, statusFilter, days, strictPickupOnly, debug }) {
+  return JSON.stringify({
+    store,
+    statusFilter,
+    days,
+    strictPickupOnly,
+    debug
+  });
+}
+
+function getCached(key) {
+  const cached = memoryCache.get(key);
+
+  if (!cached) return null;
+
+  if (Date.now() - cached.createdAt > CACHE_TTL_MS) {
+    memoryCache.delete(key);
+    return null;
+  }
+
+  return {
+    ...cached.data,
+    cached: true,
+    cacheAgeSeconds: Math.round((Date.now() - cached.createdAt) / 1000)
+  };
+}
+
+function setCached(key, data) {
+  memoryCache.set(key, {
+    createdAt: Date.now(),
+    data
+  });
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -301,6 +360,8 @@ export default async function handler(req, res) {
   const statusFilter = String(req.query.status || "all").trim();
   const debug = String(req.query.debug || "") === "1";
   const strictPickupOnly = String(req.query.strictPickupOnly || "") === "1";
+  const days = Math.min(Math.max(Number(req.query.days || 30), 1), 60);
+  const forceRefresh = String(req.query.refresh || "") === "1";
 
   if (!store) {
     return res.status(400).json({
@@ -317,14 +378,39 @@ export default async function handler(req, res) {
     });
   }
 
+  const cacheKey = getCacheKey({
+    store,
+    statusFilter,
+    days,
+    strictPickupOnly,
+    debug
+  });
+
+  if (!forceRefresh) {
+    const cached = getCached(cacheKey);
+    if (cached) {
+      return res.status(200).json(cached);
+    }
+  }
+
   try {
-    const { orders, pageCount } = await getOrdersFromLastMonth();
+    const startedAt = Date.now();
+    const { orders, pageCount } = await getOrdersFromPeriod(days);
+
+    const enrichedOrders = await mapLimit(orders, 8, async (order) => {
+      const fulfillmentOrders = await getFulfillmentOrders(order.id);
+      return {
+        order,
+        fulfillmentOrders
+      };
+    });
 
     const results = [];
     const debugRows = [];
 
-    for (const order of orders) {
-      const fulfillmentOrders = await getFulfillmentOrders(order.id);
+    for (const item of enrichedOrders) {
+      const order = item.order;
+      const fulfillmentOrders = item.fulfillmentOrders;
       const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
 
       const matchesLocation =
@@ -358,7 +444,6 @@ export default async function handler(req, res) {
       }
 
       if (!matchesLocation) continue;
-
       if (strictPickupOnly && !isPickup) continue;
 
       const mapped = mapOrder(order, fulfillmentOrders);
@@ -370,18 +455,25 @@ export default async function handler(req, res) {
       results.push(mapped);
     }
 
-    return res.status(200).json({
+    const data = {
       success: true,
       store,
       wantedLocationId: wantedLocationId || null,
       status: statusFilter,
-      range: "last_month",
+      range: `last_${days}_days`,
+      days,
       pagesScanned: pageCount,
       scanned: orders.length,
       count: results.length,
+      durationMs: Date.now() - startedAt,
+      cached: false,
       orders: results,
       debug: debug ? debugRows : undefined
-    });
+    };
+
+    setCached(cacheKey, data);
+
+    return res.status(200).json(data);
   } catch (error) {
     return res.status(error.status || 500).json({
       error: "Ophaalorders konden niet worden geladen",
