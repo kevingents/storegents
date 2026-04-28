@@ -2,6 +2,7 @@ import formidable from 'formidable';
 import fs from 'fs';
 import { createDeclaration } from '../lib/declarations-store.js';
 import { sendDeclarationEmail } from '../lib/resend-mailer.js';
+import { handleCors, setCorsHeaders } from '../lib/cors.js';
 
 export const config = {
   api: {
@@ -18,8 +19,11 @@ function parseForm(req) {
 
   return new Promise((resolve, reject) => {
     form.parse(req, (error, fields, files) => {
-      if (error) reject(error);
-      else resolve({ fields, files });
+      if (error) {
+        reject(error);
+      } else {
+        resolve({ fields, files });
+      }
     });
   });
 }
@@ -39,6 +43,9 @@ function escapeHtml(value) {
 }
 
 export default async function handler(req, res) {
+  if (handleCors(req, res, ['POST', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['POST', 'OPTIONS']);
+
   if (req.method !== 'POST') {
     return res.status(405).json({
       success: false,
@@ -140,7 +147,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       success: false,
-      message: 'Er ging iets mis bij het verwerken van de declaratie.'
+      message: error.message || 'Er ging iets mis bij het verwerken van de declaratie.'
     });
   }
 }
