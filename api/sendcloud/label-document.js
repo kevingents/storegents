@@ -73,7 +73,10 @@ export default async function handler(req, res) {
     const buffer = Buffer.from(arrayBuffer);
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="sendcloud-label-${parcelId}.pdf"`);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="sendcloud-label-${parcelId}.pdf"`
+    );
     res.setHeader('Cache-Control', 'private, max-age=300');
 
     return res.status(200).send(buffer);

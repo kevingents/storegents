@@ -77,6 +77,9 @@ export default async function handler(req, res) {
     const purpose = field(fields.purpose).trim();
     const notes = field(fields.notes).trim();
     const signed = field(fields.signed).trim();
+    const status = field(fields.status).trim() || 'Ingediend';
+    const paidAt = field(fields.paidAt).trim();
+    const paymentMethod = field(fields.paymentMethod).trim();
 
     const uploadedFile = Array.isArray(files.invoiceFile)
       ? files.invoiceFile[0]
@@ -106,6 +109,28 @@ export default async function handler(req, res) {
       return res.status(400).json({
         success: false,
         message: 'Ongeldige categorie.'
+      });
+    }
+
+    const allowedStatuses = [
+      'Ingediend',
+      'In behandeling',
+      'Goedgekeurd',
+      'Afgekeurd',
+      'Betaald'
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige status.'
+      });
+    }
+
+    if (status === 'Betaald' && (!paidAt || !paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Betaaldatum en betaalwijze zijn verplicht wanneer de factuur al betaald is.'
       });
     }
 
@@ -144,6 +169,9 @@ export default async function handler(req, res) {
       responsible,
       purpose,
       notes,
+      status,
+      paidAt,
+      paymentMethod,
       fileName,
       fileUrl: uploadedBlob.url
     });
