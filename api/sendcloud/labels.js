@@ -3,7 +3,8 @@ import {
   findDhlDropoffMethod,
   findSenderAddressForStore as findAddress,
   senderAddressToRecipient,
-  sendcloudRequest
+  sendcloudRequest,
+  getShippingCostFromMethod
 } from '../../lib/sendcloud-client.js';
 
 import { createLabelRecord, getLabels } from '../../lib/sendcloud-labels-store.js';
@@ -39,6 +40,46 @@ function getTrackingUrl(parcel) {
     parcel?.tracking_url_carrier ||
     ''
   );
+}
+
+function getParcelStatusMessage(parcel) {
+  return (
+    parcel?.status?.message ||
+    parcel?.status_message ||
+    parcel?.status ||
+    ''
+  );
+}
+
+function classifyShipmentState(statusText, trackingNumber) {
+  const value = String(statusText || '').toLowerCase();
+
+  if (
+    value.includes('delivered') ||
+    value.includes('bezorgd') ||
+    value.includes('transit') ||
+    value.includes('onderweg') ||
+    value.includes('sorting') ||
+    value.includes('gesorteerd') ||
+    value.includes('handed') ||
+    value.includes('ingeleverd') ||
+    value.includes('accepted')
+  ) {
+    return 'verzonden';
+  }
+
+  if (
+    value.includes('not printed') ||
+    value.includes('niet geprint') ||
+    value.includes('announced') ||
+    value.includes('aangemeld') ||
+    value.includes('ready') ||
+    value.includes('label created')
+  ) {
+    return 'open';
+  }
+
+  return trackingNumber ? 'open' : 'open';
 }
 
 function getOwnAndIncomingLabels(labels, store) {
@@ -106,8 +147,14 @@ export default async function handler(req, res) {
       });
     }
 
+    /*
+      Afzender is altijd de actieve winkel.
+      Als het label nog steeds GENTS B.V. Logistiek toont, staat de naam van het gekoppelde
+      Sendcloud sender address zelf zo ingesteld. De code kiest wel het winkeladres.
+    */
     const senderAddress = await findSenderAddressForStore(store);
     const shippingMethod = await findDhlDropoffMethod(senderAddress.id);
+    const shippingCost = getShippingCostFromMethod(shippingMethod);
 
     let recipient;
 
@@ -188,10 +235,14 @@ export default async function handler(req, res) {
     const proto = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers.host;
     const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${encodeURIComponent(parcel.id)}`;
+    const status = getParcelStatusMessage(parcel);
+    const trackingNumber = parcel.tracking_number || '';
 
     const record = await createLabelRecord({
       store,
       senderStore: store,
+      senderAddressId: senderAddress.id,
+      senderAddressName: senderAddress.company_name || senderAddress.name || senderAddress.contact_name || '',
       destinationStore: destinationType === 'Winkel' ? destinationStore : '',
       employeeName,
       reference,
@@ -201,12 +252,16 @@ export default async function handler(req, res) {
       recipientCity: recipient.city,
       recipientPostalCode: recipient.postal_code,
       parcelId: parcel.id,
-      trackingNumber: parcel.tracking_number || '',
+      trackingNumber,
       trackingUrl: getTrackingUrl(parcel),
       labelUrl,
       shippingMethod:
         parcel.shipment?.name || shippingMethod.name || 'DHL For You Dropoff - S',
-      status: parcel.status?.message || '',
+      shippingCost,
+      shippingCurrency: 'EUR',
+      costBreakdown: shippingMethod.price_breakdown || [],
+      status,
+      shipmentState: classifyShipmentState(status, trackingNumber),
       directionLabel:
         destinationType === 'Winkel'
           ? `Van ${store} naar ${destinationStore}`
