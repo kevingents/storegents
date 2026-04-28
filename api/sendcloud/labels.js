@@ -5,6 +5,7 @@ import {
   senderAddressToRecipient,
   sendcloudRequest
 } from '../../lib/sendcloud-client.js';
+
 import { createLabelRecord, getLabels } from '../../lib/sendcloud-labels-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
@@ -31,25 +32,29 @@ function buildCustomerRecipient(body) {
   };
 }
 
-function getLabelUrl(parcel) {
-  if (parcel?.documents?.length) {
-    const labelDoc = parcel.documents.find((doc) => doc.type === 'label') || parcel.documents[0];
-    if (labelDoc?.link) return labelDoc.link;
-  }
-
-  if (parcel?.label?.normal_printer?.length) {
-    return parcel.label.normal_printer[0];
-  }
-
-  if (parcel?.label?.label_printer) {
-    return parcel.label.label_printer;
-  }
-
-  return '';
+function getTrackingUrl(parcel) {
+  return (
+    parcel?.tracking_url ||
+    parcel?.tracking_url_tracking_page ||
+    parcel?.tracking_url_carrier ||
+    ''
+  );
 }
 
-function getTrackingUrl(parcel) {
-  return parcel?.tracking_url || parcel?.tracking_url_tracking_page || parcel?.tracking_url_carrier || '';
+function getOwnAndIncomingLabels(labels, store) {
+  return labels
+    .filter((label) => {
+      const createdByStore = label.store === store || label.senderStore === store;
+      const incomingToStore = label.destinationStore === store;
+      return createdByStore || incomingToStore;
+    })
+    .map((label) => ({
+      ...label,
+      directionLabel:
+        label.destinationStore === store && label.store !== store
+          ? `Onderweg naar ${store}`
+          : `Aangemaakt door ${label.store || store}`
+    }));
 }
 
 export default async function handler(req, res) {
@@ -64,9 +69,11 @@ export default async function handler(req, res) {
 
       return res.status(200).json({
         success: true,
-        labels: admin ? labels : labels.filter((label) => label.store === store)
+        labels: admin ? labels : getOwnAndIncomingLabels(labels, store)
       });
     } catch (error) {
+      console.error('Sendcloud get labels error:', error);
+
       return res.status(500).json({
         success: false,
         message: error.message || 'Labels konden niet worden opgehaald.'
@@ -118,7 +125,13 @@ export default async function handler(req, res) {
       recipient = buildCustomerRecipient(body);
     }
 
-    if (!recipient.name || !recipient.address || !recipient.house_number || !recipient.postal_code || !recipient.city) {
+    if (
+      !recipient.name ||
+      !recipient.address ||
+      !recipient.house_number ||
+      !recipient.postal_code ||
+      !recipient.city
+    ) {
       return res.status(400).json({
         success: false,
         message: 'Ontvangeradres is niet compleet.'
@@ -144,10 +157,11 @@ export default async function handler(req, res) {
         weight: weight || '1.000',
         order_number: reference,
         reference: reference,
-        shipping_method_checkout_name: shippingMethod.name || 'DHL For You Dropoff - S',
+        shipping_method_checkout_name:
+          shippingMethod.name || 'DHL For You Dropoff - S',
         data: {
           source: 'gents-winkelportaal',
-          store,
+          senderStore: store,
           employeeName,
           destinationType,
           destinationStore,
@@ -171,11 +185,14 @@ export default async function handler(req, res) {
       });
     }
 
-const proto = req.headers['x-forwarded-proto'] || 'https';
-const host = req.headers.host;
-const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${encodeURIComponent(parcel.id)}`;
+    const proto = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers.host;
+    const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${encodeURIComponent(parcel.id)}`;
+
     const record = await createLabelRecord({
       store,
+      senderStore: store,
+      destinationStore: destinationType === 'Winkel' ? destinationStore : '',
       employeeName,
       reference,
       destinationType,
@@ -187,8 +204,13 @@ const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${enc
       trackingNumber: parcel.tracking_number || '',
       trackingUrl: getTrackingUrl(parcel),
       labelUrl,
-      shippingMethod: parcel.shipment?.name || shippingMethod.name || 'DHL For You Dropoff - S',
-      status: parcel.status?.message || ''
+      shippingMethod:
+        parcel.shipment?.name || shippingMethod.name || 'DHL For You Dropoff - S',
+      status: parcel.status?.message || '',
+      directionLabel:
+        destinationType === 'Winkel'
+          ? `Van ${store} naar ${destinationStore}`
+          : `Van ${store} naar klant`
     });
 
     return res.status(200).json({
@@ -197,12 +219,19 @@ const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${enc
       label: record,
       parcel
     });
-  }   } catch (error) {
-    console.error('Sendcloud label error:', JSON.stringify({
-      message: error.message,
-      status: error.status,
-      data: error.data
-    }, null, 2));
+  } catch (error) {
+    console.error(
+      'Sendcloud label error:',
+      JSON.stringify(
+        {
+          message: error.message,
+          status: error.status,
+          data: error.data
+        },
+        null,
+        2
+      )
+    );
 
     return res.status(error.status || 500).json({
       success: false,
@@ -211,3 +240,4 @@ const labelUrl = `${proto}://${host}/api/sendcloud/label-document?parcelId=${enc
       details: error.data || null
     });
   }
+}
