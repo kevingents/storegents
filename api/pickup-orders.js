@@ -1,207 +1,122 @@
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
+import {
+  setCors,
+  handleError,
+  STORE_LOCATIONS,
+  getRecentOrders,
+  getFulfillmentOrders,
+  getPickupStatus,
+  getAssignedLocationIds,
+  isPickupFulfillmentOrder,
+  mapOrder,
+  mapLineItems
+} from './_shopify.js';
 
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-}
-
-function getShopifyConfig() {
-  let shop = process.env.SHOPIFY_STORE_URL;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN;
-
-  if (!shop || !token) {
-    return {
-      error: {
-        error: 'Shopify configuratie ontbreekt',
-        missing: {
-          SHOPIFY_STORE_URL: !shop,
-          SHOPIFY_ACCESS_TOKEN: !token
-        }
-      }
-    };
+function getWantedLocationIds(store) {
+  if (store === 'GENTS Brandstores') {
+    return Object.values(STORE_LOCATIONS);
   }
 
-  shop = shop
-    .replace('https://', '')
-    .replace('http://', '')
-    .replace(/\/$/, '');
-
-  return { shop, token };
+  const id = STORE_LOCATIONS[store];
+  return id ? [id] : [];
 }
 
-function normalize(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
+function orderHasPickupText(order) {
+  const text = [
+    order.tags,
+    order.note,
+    order.shipping_address?.address1,
+    order.shipping_address?.address2,
+    ...(Array.isArray(order.note_attributes)
+      ? order.note_attributes.map((item) => `${item.name || ''} ${item.value || ''}`)
+      : []),
+    ...(Array.isArray(order.shipping_lines)
+      ? order.shipping_lines.map((item) => `${item.title || ''} ${item.code || ''} ${item.source || ''}`)
+      : [])
+  ].join(' ').toLowerCase();
+
+  return (
+    text.includes('pickup') ||
+    text.includes('pick up') ||
+    text.includes('afhalen') ||
+    text.includes('ophalen') ||
+    text.includes('ophaal')
+  );
 }
 
-function tagList(order) {
-  return String(order.tags || '')
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
+function mapPickupOrder(order, fulfillmentOrders) {
+  const pickup = getPickupStatus(order, fulfillmentOrders);
+  const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
 
-function hasTag(order, tag) {
-  return tagList(order).includes(tag);
-}
-
-function getPickupStatus(order) {
-  if (hasTag(order, 'pickup_picked_up')) return 'opgehaald';
-  if (hasTag(order, 'pickup_notified') || normalize(order.fulfillment_status).includes('ready')) return 'niet_opgehaald';
-  return 'nog_klaar_te_zetten';
-}
-
-function statusLabel(value) {
-  if (value === 'opgehaald') return 'Opgehaald';
-  if (value === 'niet_opgehaald') return 'Niet opgehaald';
-  return 'Nog klaar te zetten';
-}
-
-async function shopifyFetch(shop, token, path, options = {}) {
-  const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`, {
-    ...options,
-    headers: {
-      'X-Shopify-Access-Token': token,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    }
+  return mapOrder(order, {
+    assignedLocationIds,
+    pickupStatus: pickup.pickupStatus,
+    pickupStatusLabel: pickup.pickupStatusLabel,
+    items: mapLineItems(order)
   });
-
-  const text = await response.text();
-  let data = null;
-
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (error) {
-    data = { raw: text };
-  }
-
-  return { response, data };
 }
 
 export default async function handler(req, res) {
-  setCors(res);
+  setCors(res, 'GET, OPTIONS');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ error: 'Methode niet toegestaan' });
   }
 
-  const { store, status } = req.query;
+  const store = String(req.query.store || '').trim();
+  const statusFilter = String(req.query.status || 'all').trim();
 
   if (!store) {
     return res.status(400).json({ error: 'Winkel ontbreekt' });
   }
 
-  const config = getShopifyConfig();
+  const wantedLocationIds = getWantedLocationIds(store);
 
-  if (config.error) {
-    return res.status(500).json(config.error);
+  if (!wantedLocationIds.length && store !== 'GENTS Brandstores') {
+    return res.status(400).json({
+      error: 'Onbekende Shopify locatie',
+      store
+    });
   }
 
-  const { shop, token } = config;
-
   try {
-    const { response, data } = await shopifyFetch(
-      shop,
-      token,
-      `/orders.json?status=open&limit=250&order=created_at desc`
-    );
+    const recentOrders = await getRecentOrders(250);
+    const mapped = [];
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: 'Shopify ophaalorders ophalen mislukt',
-        details: data
-      });
+    for (const order of recentOrders) {
+      const fulfillmentOrders = await getFulfillmentOrders(order.id);
+      const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
+
+      const matchesLocation =
+        store === 'GENTS Brandstores' ||
+        assignedLocationIds.some((id) => wantedLocationIds.includes(String(id)));
+
+      if (!matchesLocation) continue;
+
+      const hasPickupFulfillment = fulfillmentOrders.some(isPickupFulfillmentOrder);
+
+      if (!hasPickupFulfillment && !orderHasPickupText(order)) {
+        continue;
+      }
+
+      const pickupOrder = mapPickupOrder(order, fulfillmentOrders);
+
+      if (statusFilter && statusFilter !== 'all' && pickupOrder.pickupStatus !== statusFilter) {
+        continue;
+      }
+
+      mapped.push(pickupOrder);
     }
-
-    const selectedStore = normalize(store);
-
-    const orders = (data.orders || [])
-      .filter((order) => {
-        const shippingTitle = normalize(order.shipping_lines?.[0]?.title);
-        const note = normalize(order.note);
-        const tags = normalize(order.tags);
-        const attributes = (order.note_attributes || [])
-          .map((attr) => `${attr.name}: ${attr.value}`)
-          .join(' ')
-          .toLowerCase();
-
-        const pickupMatch =
-          shippingTitle.includes('pickup') ||
-          shippingTitle.includes('ophalen') ||
-          shippingTitle.includes('afhalen') ||
-          shippingTitle.includes('pickup in store') ||
-          tags.includes('pickup') ||
-          tags.includes('ophaal') ||
-          note.includes('pickup') ||
-          note.includes('ophalen') ||
-          note.includes('afhalen') ||
-          attributes.includes('pickup') ||
-          attributes.includes('ophalen') ||
-          attributes.includes('afhalen');
-
-        const storeMatch =
-          shippingTitle.includes(selectedStore) ||
-          note.includes(selectedStore) ||
-          tags.includes(selectedStore) ||
-          attributes.includes(selectedStore);
-
-        return pickupMatch && storeMatch;
-      })
-      .map((order) => {
-        const pickupStatus = getPickupStatus(order);
-
-        const customerName =
-          `${order.customer?.first_name || ''} ${order.customer?.last_name || ''}`.trim() ||
-          order.shipping_address?.name ||
-          order.billing_address?.name ||
-          '-';
-
-        return {
-          id: order.id,
-          name: order.name,
-          customer: customerName,
-          email: order.email || '',
-          phone: order.phone || order.shipping_address?.phone || '',
-          createdAt: order.created_at,
-          financialStatus: order.financial_status || '-',
-          fulfillmentStatus: order.fulfillment_status || 'Nog niet verzonden',
-          pickupStatus,
-          pickupStatusLabel: statusLabel(pickupStatus),
-          tags: tagList(order),
-          note: order.note || '',
-          items: (order.line_items || []).map((item) => ({
-            id: item.id,
-            lineItemId: item.id,
-            quantity: item.quantity,
-            name: item.name,
-            sku: item.sku || '',
-            variant: item.variant_title || ''
-          }))
-        };
-      })
-      .filter((order) => {
-        if (!status || status === 'all') return true;
-        return order.pickupStatus === status;
-      })
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
     return res.status(200).json({
       store,
-      count: orders.length,
-      orders
+      locationIds: wantedLocationIds,
+      status: statusFilter,
+      count: mapped.length,
+      orders: mapped
     });
   } catch (error) {
-    return res.status(500).json({
-      error: 'Ophaalorders konden niet worden geladen',
-      message: error.message
-    });
+    return handleError(res, error, 'Ophaalorders konden niet worden geladen');
   }
 }
