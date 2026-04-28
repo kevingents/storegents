@@ -43,8 +43,29 @@ function shopifyUrl(path) {
   return `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`;
 }
 
-async function shopifyGet(path) {
-  const response = await fetch(shopifyUrl(path), {
+function getOneMonthAgoIso() {
+  const date = new Date();
+  date.setMonth(date.getMonth() - 1);
+  return date.toISOString();
+}
+
+function getNextPageUrl(linkHeader) {
+  if (!linkHeader) return null;
+
+  const links = linkHeader.split(",");
+
+  for (const link of links) {
+    if (link.includes('rel="next"')) {
+      const match = link.match(/<([^>]+)>/);
+      return match ? match[1] : null;
+    }
+  }
+
+  return null;
+}
+
+async function shopifyGetUrl(url) {
+  const response = await fetch(url, {
     method: "GET",
     headers: {
       "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
@@ -55,6 +76,7 @@ async function shopifyGet(path) {
   const text = await response.text();
 
   let data;
+
   try {
     data = text ? JSON.parse(text) : {};
   } catch (error) {
@@ -68,12 +90,43 @@ async function shopifyGet(path) {
     throw err;
   }
 
-  return data;
+  return {
+    data,
+    nextPageUrl: getNextPageUrl(response.headers.get("link"))
+  };
+}
+
+async function shopifyGet(path) {
+  return shopifyGetUrl(shopifyUrl(path));
+}
+
+async function getOrdersFromLastMonth() {
+  const createdAtMin = encodeURIComponent(getOneMonthAgoIso());
+
+  let nextUrl = shopifyUrl(
+    `/orders.json?status=any&limit=250&order=created_at desc&created_at_min=${createdAtMin}&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,line_items`
+  );
+
+  const allOrders = [];
+  let pageCount = 0;
+
+  while (nextUrl && pageCount < 10) {
+    const { data, nextPageUrl } = await shopifyGetUrl(nextUrl);
+    allOrders.push(...(data.orders || []));
+
+    nextUrl = nextPageUrl;
+    pageCount += 1;
+  }
+
+  return {
+    orders: allOrders,
+    pageCount
+  };
 }
 
 async function getFulfillmentOrders(orderId) {
   try {
-    const data = await shopifyGet(`/orders/${orderId}/fulfillment_orders.json`);
+    const { data } = await shopifyGet(`/orders/${orderId}/fulfillment_orders.json`);
     return data.fulfillment_orders || [];
   } catch (error) {
     return [];
@@ -98,6 +151,7 @@ function isPickupFulfillmentOrder(fo) {
     fo.delivery_method?.method_type,
     fo.delivery_method?.method_name,
     fo.delivery_method?.presented_name,
+    fo.delivery_method?.service_code,
     fo.status,
     fo.request_status
   ]
@@ -109,7 +163,8 @@ function isPickupFulfillmentOrder(fo) {
     text.includes("pick up") ||
     text.includes("local") ||
     text.includes("afhalen") ||
-    text.includes("ophalen")
+    text.includes("ophalen") ||
+    text.includes("ophaal")
   );
 }
 
@@ -138,7 +193,8 @@ function orderHasPickupText(order) {
     text.includes("pick up") ||
     text.includes("afhalen") ||
     text.includes("ophalen") ||
-    text.includes("ophaal")
+    text.includes("ophaal") ||
+    text.includes("pickup in store")
   );
 }
 
@@ -155,7 +211,8 @@ function getPickupStatus(order, fulfillmentOrders) {
   if (
     tags.includes("pickup_ready") ||
     tags.includes("klaar_voor_afhalen") ||
-    tags.includes("klaar voor afhalen")
+    tags.includes("klaar voor afhalen") ||
+    tags.includes("ready for pickup")
   ) {
     return {
       pickupStatus: "niet_opgehaald",
@@ -168,7 +225,7 @@ function getPickupStatus(order, fulfillmentOrders) {
     .join(" ")
     .toLowerCase();
 
-  if (foText.includes("closed")) {
+  if (foText.includes("closed") || order.fulfillment_status === "fulfilled") {
     return {
       pickupStatus: "opgehaald",
       pickupStatusLabel: "Opgehaald"
@@ -243,7 +300,7 @@ export default async function handler(req, res) {
   const store = String(req.query.store || "").trim();
   const statusFilter = String(req.query.status || "all").trim();
   const debug = String(req.query.debug || "") === "1";
-  const limit = Math.min(Number(req.query.limit || 50), 100);
+  const strictPickupOnly = String(req.query.strictPickupOnly || "") === "1";
 
   if (!store) {
     return res.status(400).json({
@@ -261,11 +318,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const ordersData = await shopifyGet(
-      `/orders.json?status=any&limit=${limit}&order=created_at desc&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,line_items`
-    );
+    const { orders, pageCount } = await getOrdersFromLastMonth();
 
-    const orders = ordersData.orders || [];
     const results = [];
     const debugRows = [];
 
@@ -285,11 +339,14 @@ export default async function handler(req, res) {
         debugRows.push({
           order: order.name,
           orderId: order.id,
+          createdAt: order.created_at,
           assignedLocationIds,
           wantedLocationId,
           matchesLocation,
           pickupByFulfillmentOrder,
           pickupByText,
+          fulfillmentStatus: order.fulfillment_status,
+          tags: order.tags,
           fulfillmentOrders: fulfillmentOrders.map((fo) => ({
             id: fo.id,
             status: fo.status,
@@ -301,7 +358,8 @@ export default async function handler(req, res) {
       }
 
       if (!matchesLocation) continue;
-      if (!isPickup) continue;
+
+      if (strictPickupOnly && !isPickup) continue;
 
       const mapped = mapOrder(order, fulfillmentOrders);
 
@@ -317,6 +375,8 @@ export default async function handler(req, res) {
       store,
       wantedLocationId: wantedLocationId || null,
       status: statusFilter,
+      range: "last_month",
+      pagesScanned: pageCount,
       scanned: orders.length,
       count: results.length,
       orders: results,
