@@ -1,5 +1,6 @@
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 const MAX_ORDER_SEARCH_PAGES = Number(process.env.MAX_ORDER_SEARCH_PAGES || 20);
+const MAX_QUERY_RESULTS = Number(process.env.MAX_QUERY_RESULTS || 25);
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -141,12 +142,14 @@ function orderMatchesCheck(shopifyOrder, check) {
 
   const email = normalize(shopifyOrder.email);
   const contactEmail = normalize(shopifyOrder.contact_email);
+  const customerEmail = normalize(shopifyOrder.customer?.email);
   const shippingZip = normalize(shopifyOrder.shipping_address?.zip);
   const billingZip = normalize(shopifyOrder.billing_address?.zip);
 
   return (
     normalizedCheck === email ||
     normalizedCheck === contactEmail ||
+    normalizedCheck === customerEmail ||
     normalizedCheck === shippingZip ||
     normalizedCheck === billingZip
   );
@@ -163,7 +166,6 @@ function orderMatchesSearch(shopifyOrder, search) {
 
   const email = normalize(shopifyOrder.email);
   const contactEmail = normalize(shopifyOrder.contact_email);
-
   const customerEmail = normalize(shopifyOrder.customer?.email);
 
   const shippingZip = normalize(shopifyOrder.shipping_address?.zip);
@@ -206,9 +208,10 @@ async function findOrderByOrderNumber(shop, token, orderValue) {
   return data.orders && data.orders.length ? data.orders[0] : null;
 }
 
-async function findOrderByEmailOrPostcode(shop, token, searchValue) {
+async function findOrdersByEmailOrPostcode(shop, token, searchValue) {
   let pageInfo = '';
   let page = 0;
+  const matches = [];
 
   while (page < MAX_ORDER_SEARCH_PAGES) {
     page += 1;
@@ -226,13 +229,11 @@ async function findOrderByEmailOrPostcode(shop, token, searchValue) {
       throw error;
     }
 
-    const foundOrder = (data.orders || []).find((shopifyOrder) => {
-      return orderMatchesSearch(shopifyOrder, searchValue);
+    (data.orders || []).forEach((shopifyOrder) => {
+      if (orderMatchesSearch(shopifyOrder, searchValue)) {
+        matches.push(shopifyOrder);
+      }
     });
-
-    if (foundOrder) {
-      return foundOrder;
-    }
 
     pageInfo = parseNextPageInfo(response.headers.get('link'));
 
@@ -241,7 +242,7 @@ async function findOrderByEmailOrPostcode(shop, token, searchValue) {
     }
   }
 
-  return null;
+  return matches;
 }
 
 async function formatOrderForFrontend(shop, token, foundOrder) {
@@ -314,6 +315,7 @@ async function formatOrderForFrontend(shop, token, foundOrder) {
   return {
     id: foundOrder.id,
     name: foundOrder.name,
+    orderNumber: foundOrder.order_number,
     customer: customerName,
     customerEmail:
       foundOrder.email ||
@@ -334,6 +336,8 @@ async function formatOrderForFrontend(shop, token, foundOrder) {
     fulfilledAt: firstFulfillment?.created_at || '',
     tracking: trackingNumber,
     trackingUrl: trackingUrl,
+    totalPrice: foundOrder.total_price || '',
+    currency: foundOrder.currency || '',
     items: items
   };
 }
@@ -372,21 +376,32 @@ export default async function handler(req, res) {
   const { shop, token } = config;
 
   try {
-    let foundOrder = null;
-
     if (order) {
-      foundOrder = await findOrderByOrderNumber(shop, token, order);
+      const foundOrder = await findOrderByOrderNumber(shop, token, order);
 
       if (foundOrder && check && !orderMatchesCheck(foundOrder, check)) {
         return res.status(403).json({
           error: 'Controle komt niet overeen'
         });
       }
-    } else {
-      foundOrder = await findOrderByEmailOrPostcode(shop, token, query || check);
+
+      if (!foundOrder) {
+        return res.status(404).json({
+          error: 'Geen order gevonden',
+          searchedFor: searchValue
+        });
+      }
+
+      const formattedOrder = await formatOrderForFrontend(shop, token, foundOrder);
+
+      return res.status(200).json({
+        order: formattedOrder
+      });
     }
 
-    if (!foundOrder) {
+    const foundOrders = await findOrdersByEmailOrPostcode(shop, token, query || check);
+
+    if (!foundOrders.length) {
       return res.status(404).json({
         error: 'Geen order gevonden',
         searchedFor: searchValue,
@@ -394,10 +409,18 @@ export default async function handler(req, res) {
       });
     }
 
-    const formattedOrder = await formatOrderForFrontend(shop, token, foundOrder);
+    const limitedOrders = foundOrders.slice(0, MAX_QUERY_RESULTS);
+
+    const formattedOrders = await Promise.all(
+      limitedOrders.map((shopifyOrder) => {
+        return formatOrderForFrontend(shop, token, shopifyOrder);
+      })
+    );
 
     return res.status(200).json({
-      order: formattedOrder
+      orders: formattedOrders,
+      count: foundOrders.length,
+      limitedTo: MAX_QUERY_RESULTS
     });
   } catch (error) {
     return res.status(error.status || 500).json({
