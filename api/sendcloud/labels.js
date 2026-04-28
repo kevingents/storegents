@@ -196,11 +196,17 @@ export default async function handler(req, res) {
       label: record,
       parcel
     });
-  } catch (error) {
+  }   } catch (error) {
+    console.error('Sendcloud label error:', JSON.stringify({
+      message: error.message,
+      status: error.status,
+      data: error.data
+    }, null, 2));
+
     return res.status(error.status || 500).json({
       success: false,
       message: error.message || 'Sendcloud label kon niet worden aangemaakt.',
+      status: error.status || 500,
       details: error.data || null
     });
   }
-}
