@@ -26,7 +26,7 @@ export default async function handler(req, res) {
 
   try {
     const id = req.query.id;
-    const { status, paidAt, adminNote } = req.body || {};
+    const { status, paidAt, paymentMethod, adminNote } = req.body || {};
 
     const allowedStatuses = [
       'Ingediend',
@@ -34,6 +34,14 @@ export default async function handler(req, res) {
       'Goedgekeurd',
       'Afgekeurd',
       'Betaald'
+    ];
+
+    const allowedPaymentMethods = [
+      '',
+      'Nog niet betaald',
+      'Zelf voorgeschoten',
+      'Betaald uit kas',
+      'Anders'
     ];
 
     if (!id) {
@@ -50,6 +58,13 @@ export default async function handler(req, res) {
       });
     }
 
+    if (!allowedPaymentMethods.includes(paymentMethod || '')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige betaalmethode.'
+      });
+    }
+
     if (status === 'Betaald' && !paidAt) {
       return res.status(400).json({
         success: false,
@@ -57,9 +72,17 @@ export default async function handler(req, res) {
       });
     }
 
-    const updated = updateDeclaration(id, {
+    if (status === 'Betaald' && !paymentMethod) {
+      return res.status(400).json({
+        success: false,
+        message: 'Geef aan hoe de factuur betaald is.'
+      });
+    }
+
+    const updated = await updateDeclaration(id, {
       status,
       paidAt: status === 'Betaald' ? paidAt : '',
+      paymentMethod: status === 'Betaald' ? paymentMethod : '',
       adminNote: adminNote || ''
     });
 
@@ -79,7 +102,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       success: false,
-      message: 'Declaratie kon niet worden bijgewerkt.'
+      message: error.message || 'Declaratie kon niet worden bijgewerkt.'
     });
   }
 }
