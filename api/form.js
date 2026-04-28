@@ -1,7 +1,148 @@
-export default async function handler(req, res) {
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const RESEND_FROM_EMAIL =
+  process.env.RESEND_FROM_EMAIL || "GENTS Winkelportaal <info@gents.nl>";
+
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function getField(data, key) {
+  return String(data[key] || "").trim();
+}
+
+function getRecipient(data) {
+  const type = getField(data, "contact[Formulier]");
+  const onderwerp = getField(data, "contact[Onderwerp]");
+
+  if (type.includes("Verzendlabel")) return "ying@gents.nl";
+  if (type.includes("Retour")) return "fosse@gents.nl";
+  if (type.includes("Negatieve review")) return "klantenservice@gents.nl";
+  if (type.includes("Tip")) return "klantenservice@gents.nl";
+
+  if (type.includes("Support")) {
+    if (
+      onderwerp.includes("Facilitair") ||
+      onderwerp.includes("Verlichting") ||
+      onderwerp.includes("Verwarming") ||
+      onderwerp.includes("Winkelinrichting") ||
+      onderwerp.includes("Schoonmaak") ||
+      onderwerp.includes("Beveiliging") ||
+      onderwerp.includes("Schade") ||
+      onderwerp.includes("Leverancier")
+    ) {
+      return "h.bakx@gents.nl";
+    }
+
+    return "maarten@gents.nl";
+  }
+
+  if (type.includes("Administratie")) return "administratie@gents.nl";
+
+  return "klantenservice@gents.nl";
+}
+
+function getSubject(data) {
+  const type = getField(data, "contact[Formulier]") || "Nieuwe aanvraag";
+  const winkel =
+    getField(data, "contact[Winkel]") ||
+    getField(data, "contact[Winkelnaam]") ||
+    "";
+  const medewerker = getField(data, "contact[Medewerker]") || "";
+
+  return [type, winkel, medewerker].filter(Boolean).join(" - ");
+}
+
+function buildHtml(data) {
+  const rows = Object.entries(data)
+    .filter(([key, value]) => {
+      if (key === "contact[website]") return false;
+      return String(value || "").trim() !== "";
+    })
+    .map(([key, value]) => {
+      const cleanKey = key
+        .replace("contact[", "")
+        .replace("]", "");
+
+      return `
+        <tr>
+          <td style="padding:10px 12px;border-bottom:1px solid #e6e9ed;color:#3a4a5a;width:220px;">
+            ${escapeHtml(cleanKey)}
+          </td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e6e9ed;color:#0a1f33;">
+            ${escapeHtml(value)}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <div style="font-family:Arial,sans-serif;color:#0a1f33;line-height:1.5;">
+      <h2 style="font-weight:400;margin:0 0 16px;">Nieuwe aanvraag via winkelportaal</h2>
+      <table style="border-collapse:collapse;width:100%;max-width:760px;border:1px solid #e6e9ed;">
+        ${rows}
+      </table>
+    </div>
+  `;
+}
+
+async function sendResendEmail({ to, subject, html, replyTo }) {
+  const payload = {
+    from: RESEND_FROM_EMAIL,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html
+  };
+
+  if (replyTo && isValidEmail(replyTo)) {
+    payload.reply_to = replyTo;
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+
+  let result;
+  try {
+    result = text ? JSON.parse(text) : {};
+  } catch (error) {
+    result = { raw: text };
+  }
+
+  if (!response.ok) {
+    const error = new Error("Mail kon niet worden verstuurd");
+    error.status = response.status;
+    error.details = result;
+    throw error;
+  }
+
+  return result;
+}
+
+export default async function handler(req, res) {
+  setCors(res);
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -13,9 +154,9 @@ export default async function handler(req, res) {
     });
   }
 
-  if (!process.env.RESEND_API_KEY) {
+  if (!RESEND_API_KEY) {
     return res.status(500).json({
-      error: "Resend configuratie ontbreekt"
+      error: "RESEND_API_KEY ontbreekt in Vercel environment variables"
     });
   }
 
@@ -23,143 +164,51 @@ export default async function handler(req, res) {
 
   if (data["contact[website]"]) {
     return res.status(200).json({
-      success: true
+      success: true,
+      ignored: true
     });
   }
 
-  const type = data["contact[Formulier]"] || "";
+  const type = getField(data, "contact[Formulier]");
 
-  let email = "klantenservice@gents.nl";
-
-  if (type.includes("Support")) email = "maarten@gents.nl";
-  else if (type.includes("Verzendlabel")) email = "ying@gents.nl";
-  else if (type.includes("Voorraad")) email = "rick@gents.nl";
-  else if (type.includes("Retour")) email = "fosse@gents.nl";
-  else if (type.includes("Administratie")) email = "administratie@gents.nl";
-  else if (type.includes("Facilitair")) email = "h.bakx@gents.nl";
-  else if (type.includes("Negatieve review")) email = "klantenservice@gents.nl";
-  else if (type.includes("Tip of idee")) email = "klantenservice@gents.nl";
-
-  function formatFieldName(key) {
-    return String(key)
-      .replace("contact[", "")
-      .replace("]", "");
-  }
-
-  function escapeHtml(value) {
-    return String(value || "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
-
-  function buildHtmlTable(payload) {
-    const rows = Object.entries(payload)
-      .filter(([key]) => key !== "contact[website]")
-      .map(([key, value]) => {
-        return `
-          <tr>
-            <td style="padding:10px 12px;border-bottom:1px solid #e6e9ed;font-weight:600;width:220px;">
-              ${escapeHtml(formatFieldName(key))}
-            </td>
-            <td style="padding:10px 12px;border-bottom:1px solid #e6e9ed;">
-              ${escapeHtml(value)}
-            </td>
-          </tr>
-        `;
-      })
-      .join("");
-
-    return `
-      <div style="font-family:Arial,sans-serif;color:#0a1f33;">
-        <h2 style="margin:0 0 12px;">Nieuwe aanvraag via winkelportaal</h2>
-        <p style="margin:0 0 18px;color:#3a4a5a;">
-          Type formulier: <strong>${escapeHtml(type || "Onbekend")}</strong>
-        </p>
-
-        <table style="border-collapse:collapse;width:100%;border:1px solid #e6e9ed;">
-          ${rows}
-        </table>
-
-        <p style="margin-top:20px;color:#3a4a5a;font-size:13px;">
-          Deze aanvraag is automatisch verstuurd vanuit het GENTS winkelportaal.
-        </p>
-      </div>
-    `;
-  }
-
-  async function sendMail({ to, subject, html }) {
-    const resendResponse = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        from: "GENTS <info@gents.nl>",
-        to,
-        subject,
-        html
-      })
+  if (!type) {
+    return res.status(400).json({
+      error: "Formuliertype ontbreekt"
     });
-
-    const resendText = await resendResponse.text();
-
-    let resendData;
-
-    try {
-      resendData = JSON.parse(resendText);
-    } catch (error) {
-      resendData = {
-        raw: resendText
-      };
-    }
-
-    if (!resendResponse.ok) {
-      throw new Error(
-        resendData.message ||
-        resendData.error ||
-        "E-mail kon niet worden verstuurd"
-      );
-    }
-
-    return resendData;
   }
+
+  const recipient = getRecipient(data);
+  const subject = getSubject(data);
+  const html = buildHtml(data);
+
+  const replyTo =
+    getField(data, "contact[email]") ||
+    getField(data, "contact[E-mail]") ||
+    getField(data, "contact[Klant e-mail]") ||
+    "";
 
   try {
-    await sendMail({
-      to: email,
-      subject: `Nieuwe aanvraag: ${type || "Winkelportaal"}`,
-      html: buildHtmlTable(data)
+    const internalMail = await sendResendEmail({
+      to: recipient,
+      subject,
+      html,
+      replyTo
     });
-
-    if (type.includes("Retour") && data["contact[email]"]) {
-      await sendMail({
-        to: data["contact[email]"],
-        subject: "Retour ontvangen",
-        html: `
-          <div style="font-family:Arial,sans-serif;color:#0a1f33;">
-            <h2 style="margin:0 0 12px;">Retour ontvangen</h2>
-            <p>Je retour is ontvangen en wordt verwerkt.</p>
-            <p>Wij controleren de retour en nemen contact op als er nog vragen zijn.</p>
-            <p style="margin-top:20px;color:#3a4a5a;font-size:13px;">
-              Met vriendelijke groet,<br>
-              GENTS
-            </p>
-          </div>
-        `
-      });
-    }
 
     return res.status(200).json({
-      success: true
+      success: true,
+      message: "Aanvraag verzonden",
+      to: recipient,
+      resendId: internalMail.id || null
     });
   } catch (error) {
-    return res.status(500).json({
+    console.error("Resend fout:", error.details || error.message);
+
+    return res.status(error.status || 500).json({
       error: "Mail kon niet worden verstuurd",
-      details: error.message
+      details: error.details || error.message,
+      from: RESEND_FROM_EMAIL,
+      to: recipient
     });
   }
 }
