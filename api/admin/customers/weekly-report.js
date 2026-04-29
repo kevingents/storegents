@@ -1,9 +1,10 @@
-import { getCustomers } from '../../../lib/srs-customers-client.js';
+import { getCustomers, getTransactions } from '../../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 5 * 60 * 1000) || 5 * 60 * 1000);
 const REPORT_CACHE_MAX_ENTRIES = 100;
+const TRANSACTION_CONCURRENCY = Math.max(1, Number(process.env.CUSTOMERS_TRANSACTIONS_CONCURRENCY || 8) || 8);
 const reportCache = new Map();
 
 function isAuthorized(req) {
@@ -56,11 +57,13 @@ function summarizeCustomers(customers) {
   const mailingOptIn = customers.filter((customer) => String(customer.allowMailings).toLowerCase() === 'true').length;
   const loyaltyOptIn = customers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
   const withReceipt = customers.filter((customer) => Number(customer.receiptCount || 0) > 0).length;
+  const receiptCount = customers.reduce((sum, customer) => sum + (Number(customer.receiptCount || 0) || 0), 0);
 
   return {
     total,
     withEmail,
     withReceipt,
+    receiptCount,
     mailingOptIn,
     loyaltyOptIn,
     emailRate: total ? Math.round((withEmail / total) * 100) : 0,
@@ -70,7 +73,60 @@ function summarizeCustomers(customers) {
   };
 }
 
-function aggregateByBranch(customers, branches, dateFrom, dateTo) {
+async function mapLimit(items, limit, worker) {
+  const results = [];
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length || 0) }, async () => {
+    while (index < items.length) {
+      const current = index++;
+      results[current] = await worker(items[current], current);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function getTransactionKey(transaction) {
+  return [
+    String(transaction.branchId || '').trim(),
+    String(transaction.receiptNr || '').trim(),
+    String(transaction.dateTime || '').slice(0, 19)
+  ].join('|');
+}
+
+async function buildReceiptMetrics(customers, dateFrom, dateTo) {
+  const customersWithId = customers.filter((customer) => customer.customerId);
+  const branchReceipts = new Map();
+  const customerReceiptCounts = new Map();
+
+  await mapLimit(customersWithId, TRANSACTION_CONCURRENCY, async (customer) => {
+    const result = await getTransactions({
+      customerId: customer.customerId,
+      from: dateFrom,
+      until: dateTo
+    });
+
+    const seen = new Set();
+    for (const transaction of result.transactions || []) {
+      const key = getTransactionKey(transaction);
+      if (!transaction.receiptNr || seen.has(key)) continue;
+      seen.add(key);
+
+      const branchId = String(transaction.branchId || customer.registeredInBranchId || '').trim();
+      if (branchId) {
+        const perBranch = branchReceipts.get(branchId) || new Set();
+        perBranch.add(key);
+        branchReceipts.set(branchId, perBranch);
+      }
+    }
+
+    customerReceiptCounts.set(String(customer.customerId), seen.size);
+  });
+
+  return { branchReceipts, customerReceiptCounts };
+}
+
+function aggregateByBranch(customers, branches, dateFrom, dateTo, branchReceipts = new Map()) {
   return branches.map((branch) => {
     const branchCustomers = customers.filter((customer) => {
       if (!isInPeriod(customer, dateFrom, dateTo)) return false;
@@ -80,6 +136,7 @@ function aggregateByBranch(customers, branches, dateFrom, dateTo) {
     return {
       store: branch.store,
       branchId: branch.branchId,
+      receiptCount: (branchReceipts.get(String(branch.branchId || '').trim()) || new Set()).size,
       ...summarizeCustomers(branchCustomers),
       customers: branchCustomers
     };
@@ -152,9 +209,15 @@ export default async function handler(req, res) {
     });
     const allCustomers = result.customers || [];
 
-    const rows = aggregateByBranch(allCustomers, branches, dateFrom, dateTo);
     const filteredCustomers = allCustomers.filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-    const totals = summarizeCustomers(filteredCustomers);
+    const { branchReceipts, customerReceiptCounts } = await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo);
+    const customersWithReceipts = filteredCustomers.map((customer) => ({
+      ...customer,
+      receiptCount: customerReceiptCounts.get(String(customer.customerId || '')) || Number(customer.receiptCount || 0) || 0
+    }));
+
+    const rows = aggregateByBranch(customersWithReceipts, branches, dateFrom, dateTo, branchReceipts);
+    const totals = summarizeCustomers(customersWithReceipts);
 
     const payload = {
       success: true,
