@@ -6,6 +6,7 @@
   "dependencies": {
     "@vercel/blob": "^2.0.0",
     "formidable": "^3.5.2",
-    "resend": "^6.5.1"
+    "resend": "^6.5.1",
+    "qrcode": "^1.5.4"
   }
 }
