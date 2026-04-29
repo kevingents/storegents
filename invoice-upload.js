@@ -1,146 +1,108 @@
-import formidable from 'formidable';
-import fs from 'fs';
-import { createDeclaration } from '../lib/declarations-store.js';
-import { sendDeclarationEmail } from '../lib/resend-mailer.js';
+import { updateDeclaration } from '../../../lib/declarations-store.js';
+import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
-export const config = {
-  api: {
-    bodyParser: false
-  }
-};
-
-function parseForm(req) {
-  const form = formidable({
-    multiples: false,
-    maxFileSize: 10 * 1024 * 1024,
-    keepExtensions: true
-  });
-
-  return new Promise((resolve, reject) => {
-    form.parse(req, (error, fields, files) => {
-      if (error) reject(error);
-      else resolve({ fields, files });
-    });
-  });
-}
-
-function field(value) {
-  if (Array.isArray(value)) return value[0] || '';
-  return value || '';
-}
-
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function isAuthorized(req) {
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  return req.headers['x-admin-token'] === adminToken;
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
+  if (handleCors(req, res, ['PATCH', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['PATCH', 'OPTIONS']);
+
+  if (!isAuthorized(req)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Niet bevoegd.'
+    });
+  }
+
+  if (req.method !== 'PATCH') {
     return res.status(405).json({
       success: false,
-      message: 'Alleen POST is toegestaan.'
+      message: 'Alleen PATCH is toegestaan.'
     });
   }
 
   try {
-    const { fields, files } = await parseForm(req);
+    const id = req.query.id;
+    const { status, paidAt, paymentMethod, adminNote } = req.body || {};
 
-    const store = field(fields.store).trim();
-    const employeeName = field(fields.employeeName).trim();
-    const responsible = field(fields.responsible).trim();
-    const purpose = field(fields.purpose).trim();
-    const notes = field(fields.notes).trim();
-    const signed = field(fields.signed).trim();
-
-    const uploadedFile = Array.isArray(files.invoiceFile)
-      ? files.invoiceFile[0]
-      : files.invoiceFile;
-
-    if (!store || !employeeName || !responsible || !purpose || !uploadedFile) {
-      return res.status(400).json({
-        success: false,
-        message: 'Niet alle verplichte gegevens zijn ingevuld.'
-      });
-    }
-
-    if (signed !== 'Ja') {
-      return res.status(400).json({
-        success: false,
-        message: 'Het document moet ondertekend zijn voordat de declaratie kan worden ingediend.'
-      });
-    }
-
-    const allowedPurposes = [
-      'Eten/drinken',
-      'Vermaakkosten',
-      'Facilitaire kosten'
+    const allowedStatuses = [
+      'Ingediend',
+      'In behandeling',
+      'Goedgekeurd',
+      'Afgekeurd',
+      'Betaald'
     ];
 
-    if (!allowedPurposes.includes(purpose)) {
+    const allowedPaymentMethods = [
+      '',
+      'Nog niet betaald',
+      'Zelf voorgeschoten',
+      'Betaald uit kas',
+      'Anders'
+    ];
+
+    if (!id) {
       return res.status(400).json({
         success: false,
-        message: 'Ongeldige categorie.'
+        message: 'Declaratie ID ontbreekt.'
       });
     }
 
-    const fileName = uploadedFile.originalFilename || 'factuur-upload';
-    const filePath = uploadedFile.filepath;
-
-    if (!filePath || !fs.existsSync(filePath)) {
+    if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Bestand kon niet worden verwerkt.'
+        message: 'Ongeldige status.'
       });
     }
 
-    const allowedExtensions = /\.(pdf|jpg|jpeg|png|heic|webp)$/i;
-
-    if (!allowedExtensions.test(fileName)) {
+    if (!allowedPaymentMethods.includes(paymentMethod || '')) {
       return res.status(400).json({
         success: false,
-        message: 'Upload een geldig bestand: PDF, JPG, PNG, HEIC of WEBP.'
+        message: 'Ongeldige betaalmethode.'
       });
     }
 
-    const fileContent = fs.readFileSync(filePath);
+    if (status === 'Betaald' && !paidAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Betaaldatum is verplicht wanneer status Betaald is.'
+      });
+    }
 
-    const declaration = createDeclaration({
-      store,
-      employeeName,
-      responsible,
-      purpose,
-      notes,
-      fileName,
-      fileUrl: ''
+    if (status === 'Betaald' && !paymentMethod) {
+      return res.status(400).json({
+        success: false,
+        message: 'Geef aan hoe de factuur betaald is.'
+      });
+    }
+
+    const updated = await updateDeclaration(id, {
+      status,
+      paidAt: status === 'Betaald' ? paidAt : '',
+      paymentMethod: status === 'Betaald' ? paymentMethod : '',
+      adminNote: adminNote || ''
     });
 
-    await sendDeclarationEmail({
-      declaration,
-      store: escapeHtml(store),
-      employeeName: escapeHtml(employeeName),
-      responsible: escapeHtml(responsible),
-      purpose: escapeHtml(purpose),
-      notes: escapeHtml(notes),
-      signed: escapeHtml(signed),
-      fileName,
-      fileContent
-    });
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        message: 'Declaratie niet gevonden.'
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: 'Declaratie succesvol verzonden.',
-      declaration
+      declaration: updated
     });
   } catch (error) {
-    console.error('Invoice upload error:', error);
+    console.error('Update declaration error:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Er ging iets mis bij het verwerken van de declaratie.'
+      message: error.message || 'Declaratie kon niet worden bijgewerkt.'
     });
   }
 }
