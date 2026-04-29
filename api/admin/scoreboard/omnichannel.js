@@ -25,6 +25,16 @@ function storeMatchesWeborder(item, store, branchId) {
 }
 
 export default async function handler(req, res) {
+  if (String(process.env.DISABLE_ADMIN_REPORTS || '').toLowerCase() === 'true' && String(req.query.force || '') !== 'true') {
+    return res.status(200).json({
+      success: true,
+      disabled: true,
+      message: 'Admin rapportages zijn tijdelijk uitgeschakeld om SRS/server te ontlasten.',
+      rows: [],
+      totals: { total: 0, open: 0, used: 0, openCount: 0, overdueCount: 0, storeCount: 0 }
+    });
+  }
+
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
   res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300');
