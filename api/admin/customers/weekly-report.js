@@ -2,7 +2,8 @@ import { getCustomers } from '../../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
-const REPORT_CACHE_TTL_MS = Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 5 * 60 * 1000);
+const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 5 * 60 * 1000) || 5 * 60 * 1000);
+const REPORT_CACHE_MAX_ENTRIES = 100;
 const reportCache = new Map();
 
 function isAuthorized(req) {
@@ -26,6 +27,16 @@ function endOfWeek(date = new Date()) {
   const end = new Date(start);
   end.setDate(start.getDate() + 6);
   return end;
+}
+
+function isIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function pruneCache() {
+  if (reportCache.size <= REPORT_CACHE_MAX_ENTRIES) return;
+  const oldestKey = reportCache.keys().next().value;
+  if (oldestKey) reportCache.delete(oldestKey);
 }
 
 function isInPeriod(customer, dateFrom, dateTo) {
@@ -100,6 +111,18 @@ export default async function handler(req, res) {
     const dateFrom = String(req.query.dateFrom || req.query.from || defaultFrom).trim();
     const dateTo = String(req.query.dateTo || req.query.to || defaultTo).trim();
     const branchId = String(req.query.branchId || '').trim();
+    if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.'
+      });
+    }
+    if (dateFrom > dateTo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.'
+      });
+    }
 
     const branches = branchId
       ? [{ store: getStoreNameByBranchId(branchId), branchId }]
@@ -148,6 +171,7 @@ export default async function handler(req, res) {
       createdAt: Date.now(),
       payload
     });
+    pruneCache();
 
     return res.status(200).json({
       ...payload,
