@@ -3,6 +3,9 @@ import { getVoucherLogs } from '../../../lib/voucher-log-store.js';
 import { listBranches, calculateOmnichannelScore } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
+const SCOREBOARD_CACHE_TTL_MS = Math.max(1000, Number(process.env.OMNICHANNEL_SCOREBOARD_CACHE_MS || 2 * 60 * 1000) || 2 * 60 * 1000);
+const scoreboardCache = new Map();
+
 function isAuthorized(req) {
   const adminToken = process.env.ADMIN_TOKEN || '12345';
   return req.headers['x-admin-token'] === adminToken || String(req.query.public || '') === 'true';
@@ -29,40 +32,70 @@ function matchesPeriod(dateValue, dateFrom, dateTo) {
   return true;
 }
 
-function voucherMetricsForStore(logs, store, branchId, dateFrom, dateTo) {
-  const relevant = logs.filter((log) => {
-    if (!matchesPeriod(log.createdAt, dateFrom, dateTo)) return false;
+function isIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
 
-    return String(log.store || '') === store || String(log.srsRedeemBranchId || '') === String(branchId);
-  });
+function toBranchKey(value) {
+  return String(value || '').trim();
+}
 
-  const issued = relevant.length;
-  const used = relevant.filter((log) => [
+function isVoucherUsedStatus(status) {
+  return [
     'afgeboekt_in_srs',
     'gebruikt_in_winkel_shopify_gedeactiveerd',
     'gebruikt_in_winkel_geen_shopify',
     'gebruikt_in_shopify'
-  ].includes(log.status)).length;
-
-  return {
-    voucherIssued: issued,
-    voucherUsed: used
-  };
+  ].includes(String(status || ''));
 }
 
-function buildBranchScore(branch, customers, logs, dateFrom, dateTo) {
-  const branchCustomers = customers.filter((customer) => {
-    if (!matchesPeriod(customer.createdAt, dateFrom, dateTo)) return false;
-    return String(customer.registeredInBranchId || '') === String(branch.branchId || '');
-  });
+function aggregateCustomersByBranch(customers, dateFrom, dateTo) {
+  const map = new Map();
 
-  const customerRegistrations = branchCustomers.length;
-  const loyaltyOptIn = branchCustomers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
-  const vouchers = voucherMetricsForStore(logs, branch.store, branch.branchId, dateFrom, dateTo);
+  for (const customer of customers) {
+    if (!matchesPeriod(customer.createdAt, dateFrom, dateTo)) continue;
+    const branchKey = toBranchKey(customer.registeredInBranchId);
+    if (!branchKey) continue;
+
+    const row = map.get(branchKey) || { customerRegistrations: 0, loyaltyOptIn: 0 };
+    row.customerRegistrations += 1;
+    if (String(customer.receivesLoyaltyPoints).toLowerCase() === 'true') {
+      row.loyaltyOptIn += 1;
+    }
+    map.set(branchKey, row);
+  }
+
+  return map;
+}
+
+function aggregateVoucherMetricsByBranch(logs, dateFrom, dateTo, storeToBranchId) {
+  const map = new Map();
+
+  for (const log of logs) {
+    if (!matchesPeriod(log.createdAt, dateFrom, dateTo)) continue;
+
+    const byBranchId = toBranchKey(log.srsRedeemBranchId);
+    const byStore = toBranchKey(storeToBranchId.get(String(log.store || '').trim()));
+    const branchKey = byBranchId || byStore;
+    if (!branchKey) continue;
+
+    const row = map.get(branchKey) || { voucherIssued: 0, voucherUsed: 0 };
+    row.voucherIssued += 1;
+    if (isVoucherUsedStatus(log.status)) row.voucherUsed += 1;
+    map.set(branchKey, row);
+  }
+
+  return map;
+}
+
+function buildBranchScore(branch, customerAggByBranch, voucherAggByBranch, hasCustomerData) {
+  const branchKey = toBranchKey(branch.branchId);
+  const customerAgg = customerAggByBranch.get(branchKey) || { customerRegistrations: 0, loyaltyOptIn: 0 };
+  const vouchers = voucherAggByBranch.get(branchKey) || { voucherIssued: 0, voucherUsed: 0 };
 
   const score = calculateOmnichannelScore({
-    customerRegistrations,
-    loyaltyOptIn,
+    customerRegistrations: customerAgg.customerRegistrations,
+    loyaltyOptIn: customerAgg.loyaltyOptIn,
     voucherIssued: vouchers.voucherIssued,
     voucherUsed: vouchers.voucherUsed,
     labelCreated: 0
@@ -73,8 +106,8 @@ function buildBranchScore(branch, customers, logs, dateFrom, dateTo) {
     branchId: branch.branchId,
     customerError: '',
     dataQuality: {
-      hasCustomerData: customers.length > 0,
-      hasBranchCustomers: branchCustomers.length > 0,
+      hasCustomerData,
+      hasBranchCustomers: customerAgg.customerRegistrations > 0,
       hasVoucherData: vouchers.voucherIssued > 0
     },
     ...score
@@ -102,21 +135,48 @@ export default async function handler(req, res) {
   try {
     const dateFrom = String(req.query.dateFrom || req.query.from || daysAgo(7)).trim();
     const dateTo = String(req.query.dateTo || req.query.to || isoDate(new Date())).trim();
+    if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.'
+      });
+    }
+    if (dateFrom > dateTo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.'
+      });
+    }
+
+    const cacheKey = `${dateFrom}|${dateTo}`;
+    const cached = scoreboardCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < SCOREBOARD_CACHE_TTL_MS) {
+      return res.status(200).json({
+        ...cached.payload,
+        cache: { hit: true, ttlMs: SCOREBOARD_CACHE_TTL_MS }
+      });
+    }
 
     const branches = listBranches();
+    const storeToBranchId = new Map(branches.map((branch) => [String(branch.store || '').trim(), String(branch.branchId || '').trim()]));
     const logs = await getVoucherLogs();
-    const customerResult = await getCustomers({});
+    const customerResult = await getCustomers({
+      createdFrom: `${dateFrom}T00:00:00`,
+      createdUntil: `${dateTo}T23:59:59`
+    });
     const customers = customerResult.customers || [];
+    const customerAggByBranch = aggregateCustomersByBranch(customers, dateFrom, dateTo);
+    const voucherAggByBranch = aggregateVoucherMetricsByBranch(logs, dateFrom, dateTo, storeToBranchId);
 
     const rows = branches
-      .map((branch) => buildBranchScore(branch, customers, logs, dateFrom, dateTo))
+      .map((branch) => buildBranchScore(branch, customerAggByBranch, voucherAggByBranch, customers.length > 0))
       .sort((a, b) => b.score - a.score);
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       dateFrom,
       dateTo,
-      mode: 'local-filter',
+      mode: 'server-filter+local-aggregate',
       sourceCustomerCount: customers.length,
       formula: {
         customerRegistrations: '35%',
@@ -129,6 +189,16 @@ export default async function handler(req, res) {
         hasCustomerData: customers.length > 0
       },
       rows
+    };
+
+    scoreboardCache.set(cacheKey, {
+      createdAt: Date.now(),
+      payload
+    });
+
+    return res.status(200).json({
+      ...payload,
+      cache: { hit: false, ttlMs: SCOREBOARD_CACHE_TTL_MS }
     });
   } catch (error) {
     console.error('Omnichannel scoreboard error:', error);
