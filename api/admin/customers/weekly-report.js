@@ -2,6 +2,10 @@ import { getCustomers } from '../../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
+const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 5 * 60 * 1000) || 5 * 60 * 1000);
+const REPORT_CACHE_MAX_ENTRIES = 100;
+const reportCache = new Map();
+
 function isAuthorized(req) {
   const adminToken = process.env.ADMIN_TOKEN || '12345';
   return req.headers['x-admin-token'] === adminToken;
@@ -25,6 +29,16 @@ function endOfWeek(date = new Date()) {
   return end;
 }
 
+function isIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function pruneCache() {
+  if (reportCache.size <= REPORT_CACHE_MAX_ENTRIES) return;
+  const oldestKey = reportCache.keys().next().value;
+  if (oldestKey) reportCache.delete(oldestKey);
+}
+
 function isInPeriod(customer, dateFrom, dateTo) {
   if (!customer.createdAt) return false;
 
@@ -41,13 +55,16 @@ function summarizeCustomers(customers) {
   const withEmail = customers.filter((customer) => customer.email).length;
   const mailingOptIn = customers.filter((customer) => String(customer.allowMailings).toLowerCase() === 'true').length;
   const loyaltyOptIn = customers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
+  const withReceipt = customers.filter((customer) => Number(customer.receiptCount || 0) > 0).length;
 
   return {
     total,
     withEmail,
+    withReceipt,
     mailingOptIn,
     loyaltyOptIn,
     emailRate: total ? Math.round((withEmail / total) * 100) : 0,
+    receiptConversionRate: total ? Math.round((withReceipt / total) * 100) : 0,
     mailingOptInRate: total ? Math.round((mailingOptIn / total) * 100) : 0,
     loyaltyOptInRate: total ? Math.round((loyaltyOptIn / total) * 100) : 0
   };
@@ -94,25 +111,52 @@ export default async function handler(req, res) {
     const dateFrom = String(req.query.dateFrom || req.query.from || defaultFrom).trim();
     const dateTo = String(req.query.dateTo || req.query.to || defaultTo).trim();
     const branchId = String(req.query.branchId || '').trim();
+    if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.'
+      });
+    }
+    if (dateFrom > dateTo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.'
+      });
+    }
 
     const branches = branchId
       ? [{ store: getStoreNameByBranchId(branchId), branchId }]
       : listBranches();
+    const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}`;
+    const cached = reportCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
+      return res.status(200).json({
+        ...cached.payload,
+        cache: {
+          hit: true,
+          ttlMs: REPORT_CACHE_TTL_MS
+        }
+      });
+    }
 
     /*
-      Belangrijk:
-      De SRS Customers documentatie toont GetCustomers zoekfilters voor o.a. customer/card/address,
-      maar niet officieel voor Created/RegisteredInBranchId. Daarom halen we klanten één keer op
-      en filteren we lokaal op CreatedAt en RegisteredInBranchId. Dit voorkomt 21 losse SOAP-fouten.
+      Performance:
+      Probeer de periode (en optioneel filiaal) direct bij SRS mee te geven zodat de payload kleiner is.
+      Daarna filteren we nog steeds lokaal als fallback/zekerheid.
     */
-    const result = await getCustomers({});
+    const result = await getCustomers({
+      createdFrom: `${dateFrom}T00:00:00`,
+      createdUntil: `${dateTo}T23:59:59`,
+      registeredInBranchId: branchId || ''
+    });
     const allCustomers = result.customers || [];
 
     const rows = aggregateByBranch(allCustomers, branches, dateFrom, dateTo);
     const filteredCustomers = allCustomers.filter((customer) => isInPeriod(customer, dateFrom, dateTo));
     const totals = summarizeCustomers(filteredCustomers);
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       dateFrom,
       dateTo,
@@ -121,6 +165,20 @@ export default async function handler(req, res) {
       totals,
       rows,
       errors: []
+    };
+
+    reportCache.set(cacheKey, {
+      createdAt: Date.now(),
+      payload
+    });
+    pruneCache();
+
+    return res.status(200).json({
+      ...payload,
+      cache: {
+        hit: false,
+        ttlMs: REPORT_CACHE_TTL_MS
+      }
     });
   } catch (error) {
     console.error('Customer weekly report error:', error);
