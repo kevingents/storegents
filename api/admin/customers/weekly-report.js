@@ -44,13 +44,16 @@ function summarizeCustomers(customers) {
   const withEmail = customers.filter((customer) => customer.email).length;
   const mailingOptIn = customers.filter((customer) => String(customer.allowMailings).toLowerCase() === 'true').length;
   const loyaltyOptIn = customers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
+  const withReceipt = customers.filter((customer) => Number(customer.receiptCount || 0) > 0).length;
 
   return {
     total,
     withEmail,
+    withReceipt,
     mailingOptIn,
     loyaltyOptIn,
     emailRate: total ? Math.round((withEmail / total) * 100) : 0,
+    receiptConversionRate: total ? Math.round((withReceipt / total) * 100) : 0,
     mailingOptInRate: total ? Math.round((mailingOptIn / total) * 100) : 0,
     loyaltyOptInRate: total ? Math.round((loyaltyOptIn / total) * 100) : 0
   };
