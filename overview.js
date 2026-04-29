@@ -53,7 +53,13 @@ export default async function handler(req, res) {
       });
     }
 
-    const branchId = body.branchId || getSrsBranchId(store);
+    const mappedBranchId = getSrsBranchId(store);
+    const requestedBranchId = String(body.branchId || '').trim();
+    const branchId = mappedBranchId;
+
+    if (requestedBranchId && requestedBranchId !== mappedBranchId) {
+      console.warn(`SRS return branchId mismatch voor ${store}: body.branchId=${requestedBranchId}, mapped=${mappedBranchId}. Mapped branchId wordt gebruikt.`);
+    }
 
     const srsResult = await createSrsReturn({
       orderNr,
@@ -62,18 +68,23 @@ export default async function handler(req, res) {
       dateTime: body.dateTime || ''
     });
 
-    const log = await createSrsReturnLog({
-      store,
-      employeeName,
-      orderNr,
-      shopifyOrderId,
-      branchId,
-      status: srsResult.status,
-      success: srsResult.success,
-      srsTransactionId: srsResult.transactionId,
-      items,
-      message: srsResult.success ? 'Retour verwerkt in SRS.' : 'SRS retour gaf geen completed status.'
-    });
+    let log = null;
+    try {
+      log = await createSrsReturnLog({
+        store,
+        employeeName,
+        orderNr,
+        shopifyOrderId,
+        branchId,
+        status: srsResult.status,
+        success: srsResult.success,
+        srsTransactionId: srsResult.transactionId,
+        items,
+        message: srsResult.success ? 'Retour verwerkt in SRS.' : 'SRS retour gaf geen completed status.'
+      });
+    } catch (logError) {
+      console.error('SRS return log write error (success flow):', logError);
+    }
 
     return res.status(200).json({
       success: srsResult.success,
@@ -89,19 +100,30 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('SRS return error:', error);
 
-    const branchId = body.branchId || '';
+    let branchId = String(body.branchId || '').trim();
+    if (!branchId && store) {
+      try {
+        branchId = getSrsBranchId(store);
+      } catch (resolveError) {
+        branchId = '';
+      }
+    }
 
-    await createSrsReturnLog({
-      store,
-      employeeName,
-      orderNr,
-      shopifyOrderId,
-      branchId,
-      status: 'failed',
-      success: false,
-      items,
-      error: error.message || 'SRS retour mislukt.'
-    });
+    try {
+      await createSrsReturnLog({
+        store,
+        employeeName,
+        orderNr,
+        shopifyOrderId,
+        branchId,
+        status: 'failed',
+        success: false,
+        items,
+        error: error.message || 'SRS retour mislukt.'
+      });
+    } catch (logError) {
+      console.error('SRS return log write error (error flow):', logError);
+    }
 
     return res.status(error.status || 500).json({
       success: false,
