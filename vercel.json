@@ -1,12 +1,12 @@
 {
-  "name": "gents-winkel-dashboard-api",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@vercel/blob": "^2.0.0",
-    "formidable": "^3.5.2",
-    "resend": "^6.5.1",
-    "qrcode": "^1.5.4"
-  }
+  "crons": [
+    {
+      "path": "/api/cron/voucher-reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/daily-loyalty-vouchers",
+      "schedule": "0 7 * * *"
+    }
+  ]
 }

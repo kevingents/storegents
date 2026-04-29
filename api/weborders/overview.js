@@ -1,79 +1,44 @@
-import {
-  getWeborderRequests,
-  summarizeOpenWeborders,
-  updateWeborderRequest
-} from '../../lib/weborder-request-store.js';
+import { getSrsOpenWeborders } from '../../lib/srs-open-weborders-client.js';
+import { summarizeOpenWeborders, normalizeWeborder } from '../../lib/weborder-request-store.js';
+import { getBranchIdByStore } from '../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
-function field(value) {
-  if (Array.isArray(value)) return value[0] || '';
-  return value || '';
-}
-
 export default async function handler(req, res) {
-  if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
-  setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
+  if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['GET', 'OPTIONS']);
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+
+  if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
 
   try {
-    if (req.method === 'POST') {
-      const body = req.body || {};
-      const id = field(body.id) || field(body.orderId);
-
-      if (!id) {
-        return res.status(400).json({
-          success: false,
-          message: 'id of orderId ontbreekt.'
-        });
-      }
-
-      const updated = await updateWeborderRequest(id, {
-        status: field(body.status) || 'afgerond',
-        trackingNumber: field(body.trackingNumber),
-        sendcloudLabelUrl: field(body.sendcloudLabelUrl),
-        note: field(body.note)
-      });
-
-      if (!updated) {
-        return res.status(404).json({
-          success: false,
-          message: 'Weborder niet gevonden.'
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        record: updated
-      });
-    }
-
-    if (req.method !== 'GET') {
-      return res.status(405).json({
-        success: false,
-        message: 'Alleen GET of POST is toegestaan.'
-      });
-    }
-
     const store = String(req.query.store || '').trim();
-    const requests = await getWeborderRequests();
-
-    const summary = store
-      ? summarizeOpenWeborders(requests, store)
-      : null;
+    const branchId = String(req.query.branchId || getBranchIdByStore(store) || '').trim();
+    const result = await getSrsOpenWeborders({ store, branchId });
+    const items = (result.items || []).map(normalizeWeborder);
+    const summary = store ? summarizeOpenWeborders(items, store) : null;
 
     return res.status(200).json({
       success: true,
+      source: result.source,
+      note: result.note || '',
+      degraded: Boolean(result.degraded),
       store,
-      summary,
-      requests: store
-        ? requests.filter((item) => item.sellingStore === store || item.fulfilmentStore === store).slice(0, 100)
-        : requests.slice(0, 200)
+      branchId,
+      deadlineHours: 48,
+      summary: summary || {
+        store,
+        sellingOpenCount: 0,
+        fulfilmentOpenCount: 0,
+        overdueCount: 0,
+        totalOpenCount: 0,
+        sellingOpen: [],
+        fulfilmentOpen: [],
+        overdue: []
+      },
+      requests: store ? items.filter((item) => item.sellingStore === store || item.fulfilmentStore === store).slice(0, 200) : items.slice(0, 500)
     });
   } catch (error) {
     console.error('Weborder overview error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message || 'Weborder overzicht kon niet worden opgehaald.'
-    });
+    return res.status(500).json({ success: false, message: error.message || 'Weborder overzicht kon niet worden opgehaald.' });
   }
 }
