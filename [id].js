@@ -1,72 +1,27 @@
-import { put, list } from '@vercel/blob';
+import { getVoucherLogs } from '../../lib/voucher-log-store.js';
+import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
-const SRS_RETURN_LOG_PATH = 'srs-returns/returns.json';
-
-async function readBlobText(url) {
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error('SRS retourlog kon niet worden gelezen.');
-  }
-
-  return response.text();
+function isAuthorized(req) {
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  return req.headers['x-admin-token'] === adminToken;
 }
 
-export async function getSrsReturnLogs() {
+export default async function handler(req, res) {
+  if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['GET', 'OPTIONS']);
+
+  if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
+
   try {
-    const result = await list({
-      prefix: SRS_RETURN_LOG_PATH,
-      limit: 1
-    });
+    const store = String(req.query.store || '').trim();
+    const admin = String(req.query.admin || '') === 'true';
 
-    const blob = result.blobs.find((item) => item.pathname === SRS_RETURN_LOG_PATH);
+    if (admin && !isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
-    if (!blob) {
-      return [];
-    }
-
-    const raw = await readBlobText(blob.url);
-    return JSON.parse(raw || '[]');
+    const logs = await getVoucherLogs();
+    return res.status(200).json({ success: true, logs: admin ? logs : logs.filter((log) => log.store === store) });
   } catch (error) {
-    console.error('Read SRS return logs error:', error);
-    return [];
+    console.error('Get voucher logs error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Voucherlog kon niet worden opgehaald.' });
   }
-}
-
-export async function saveSrsReturnLogs(logs) {
-  await put(
-    SRS_RETURN_LOG_PATH,
-    JSON.stringify(logs, null, 2),
-    {
-      access: 'public',
-      allowOverwrite: true,
-      contentType: 'application/json',
-      cacheControlMaxAge: 60
-    }
-  );
-}
-
-export async function createSrsReturnLog(input) {
-  const logs = await getSrsReturnLogs();
-
-  const log = {
-    id: String(Date.now()),
-    store: input.store || '',
-    employeeName: input.employeeName || '',
-    orderNr: input.orderNr || '',
-    shopifyOrderId: input.shopifyOrderId || '',
-    branchId: input.branchId || '',
-    status: input.status || 'unknown',
-    success: Boolean(input.success),
-    srsTransactionId: input.srsTransactionId || '',
-    items: input.items || [],
-    message: input.message || '',
-    error: input.error || '',
-    createdAt: new Date().toISOString()
-  };
-
-  logs.unshift(log);
-  await saveSrsReturnLogs(logs);
-
-  return log;
 }

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
-const DEFAULT_SRS_BASE_URL = 'https://ws.srs.nl';
-const WEBORDERS_PATH = '/messages/v1/soap/Weborders.php';
+const DEFAULT_SRS_MESSAGE_BASE_URL = 'https://ws.srs.nl';
+const VOUCHERS_MESSAGE_PATH = '/messages/v1/soap/Vouchers.php';
 
 function xmlEscape(value) {
   return String(value ?? '')
@@ -12,20 +12,24 @@ function xmlEscape(value) {
     .replace(/'/g, '&apos;');
 }
 
-function getSrsConfig() {
-  const id = process.env.SRS_MESSAGE_USER || process.env.srs_message_user || '';
-  const password = process.env.SRS_MESSAGE_PASSWORD || process.env.srs_message_password || '';
-  const baseUrl = (process.env.SRS_BASE_URL || DEFAULT_SRS_BASE_URL).replace(/\/$/, '');
+function getConfig() {
+  const id = process.env.SRS_MESSAGE_USER || '';
+  const password = process.env.SRS_MESSAGE_PASSWORD || '';
+  const baseUrl = (process.env.SRS_MESSAGE_BASE_URL || process.env.SRS_BASE_URL || DEFAULT_SRS_MESSAGE_BASE_URL).replace(/\/$/, '');
 
   if (!id || !password) {
-    throw new Error('SRS_MESSAGE_USER en/of SRS_MESSAGE_PASSWORD ontbreken in Vercel Environment Variables.');
+    throw new Error('SRS_MESSAGE_USER en/of SRS_MESSAGE_PASSWORD ontbreken.');
   }
 
   return {
     id,
     password,
-    endpoint: `${baseUrl}${WEBORDERS_PATH}`
+    endpoint: `${baseUrl}${VOUCHERS_MESSAGE_PATH}`
   };
+}
+
+function timestamp() {
+  return new Date().toISOString().slice(0, 19);
 }
 
 function getNodeText(xml, tagName) {
@@ -43,9 +47,7 @@ function parseSoapFault(xml) {
   const faultString = getNodeText(xml, 'faultstring') || getNodeText(xml, 'Reason') || getNodeText(xml, 'Text');
   const faultCode = getNodeText(xml, 'faultcode') || getNodeText(xml, 'Code');
 
-  if (!faultString && !faultCode) {
-    return null;
-  }
+  if (!faultString && !faultCode) return null;
 
   return {
     code: faultCode,
@@ -54,7 +56,7 @@ function parseSoapFault(xml) {
 }
 
 async function postSoap(action, xml) {
-  const { endpoint } = getSrsConfig();
+  const { endpoint } = getConfig();
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -69,7 +71,7 @@ async function postSoap(action, xml) {
   const fault = parseSoapFault(text);
 
   if (!response.ok || fault) {
-    const error = new Error(fault?.message || `SRS fout: ${response.status}`);
+    const error = new Error(fault?.message || `SRS Vouchers fout: ${response.status}`);
     error.status = response.status;
     error.fault = fault;
     error.responseText = text;
@@ -79,174 +81,189 @@ async function postSoap(action, xml) {
   return text;
 }
 
-function buildMessageLoginXml(prefix = 'data') {
-  const { id, password } = getSrsConfig();
+function headerXml(transactionId) {
+  const { id, password } = getConfig();
 
   return `
-    <${prefix}:Login>
-      <com:Id>${xmlEscape(id)}</com:Id>
-      <com:Password>${xmlEscape(password)}</com:Password>
-    </${prefix}:Login>
+    <tran:Header>
+      <com:Login>
+        <com:Id>${xmlEscape(id)}</com:Id>
+        <com:Password>${xmlEscape(password)}</com:Password>
+      </com:Login>
+      <com:TransactionId>${xmlEscape(transactionId)}</com:TransactionId>
+      <com:Timestamp>${xmlEscape(timestamp())}</com:Timestamp>
+    </tran:Header>
   `;
 }
 
-export function normalizeOrderNr(value) {
-  return String(value || '').trim();
-}
+function parseStatus(xml) {
+  const headerBlock = getNodeText(xml, 'Header');
+  const transactionId = getNodeText(headerBlock, 'TransactionId') || getNodeText(xml, 'TransactionId');
+  const status = getNodeText(headerBlock, 'Status') || getNodeText(xml, 'Status');
 
-export async function getSrsFulfillments(orderNr) {
-  const cleanOrderNr = normalizeOrderNr(orderNr);
-
-  if (!cleanOrderNr) {
-    throw new Error('SRS OrderNr ontbreekt.');
-  }
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:data="https://messages.storeinfo.nl/v1/Weborders/Data" xmlns:com="https://messages.storeinfo.nl/v1/Common">
-  <soapenv:Header/>
-  <soapenv:Body>
-    <data:GetFulfillments>
-      ${buildMessageLoginXml('data')}
-      <data:Body>
-        <data:OrderNr>${xmlEscape(cleanOrderNr)}</data:OrderNr>
-      </data:Body>
-    </data:GetFulfillments>
-  </soapenv:Body>
-</soapenv:Envelope>`;
-
-  const responseText = await postSoap('GetFulfillments', xml);
-  const blocks = getAllBlocks(responseText, 'Fulfillment');
-
-  const fulfillments = blocks.map((block) => ({
-    fulfillmentId: getNodeText(block, 'FulfillmentId'),
-    createdAt: getNodeText(block, 'CreatedAt'),
-    updatedAt: getNodeText(block, 'UpdatedAt'),
-    orderNr: getNodeText(block, 'OrderNr'),
-    status: getNodeText(block, 'Status'),
-    sku: getNodeText(block, 'Sku'),
-    branchId: getNodeText(block, 'BranchId'),
-    multipleFulfillmentsOpen: getNodeText(block, 'MultipleFulfillmentsOpen')
-  })).filter((item) => item.fulfillmentId || item.sku);
+  const voucherBlocks = getAllBlocks(xml, 'Voucher');
+  const vouchers = voucherBlocks.map((block) => ({
+    id: getNodeText(block, 'Id'),
+    voucherCode: getNodeText(block, 'Id'),
+    validFrom: getNodeText(getNodeText(block, 'Valid'), 'From') || getNodeText(block, 'From'),
+    validTo: getNodeText(getNodeText(block, 'Valid'), 'Until') || getNodeText(block, 'Until'),
+    value: Number(getNodeText(block, 'Value') || 0),
+    customerId: getNodeText(block, 'CustomerId')
+  })).filter((voucher) => voucher.id);
 
   return {
-    orderNr: cleanOrderNr,
-    fulfillments,
-    raw: responseText
+    transactionId,
+    status: String(status || '').toLowerCase(),
+    vouchers,
+    raw: xml
   };
 }
 
-function buildSrsReturnItem(item, fulfillment) {
-  const fulfillmentId = item.fulfillmentId || fulfillment?.fulfillmentId || '';
-  const orderLineNr = item.orderLineNr || item.orderLineNumber || '';
-  const sku = item.sku || item.barcode || fulfillment?.sku || '';
-  const barcode = item.barcode || item.sku || fulfillment?.sku || '';
-  const pieces = Number(item.quantity || item.pieces || 1);
-  const price = Number(item.price || item.unitPrice || 0);
-
-  let identifierXml = '';
-
-  if (fulfillmentId) {
-    identifierXml += `<web:FulfillmentId>${xmlEscape(fulfillmentId)}</web:FulfillmentId>`;
-  } else if (orderLineNr) {
-    identifierXml += `<web:OrderLineNr>${xmlEscape(orderLineNr)}</web:OrderLineNr>`;
-  }
-
-  if (barcode) {
-    identifierXml += `<web:Barcode>${xmlEscape(barcode)}</web:Barcode>`;
-  } else if (sku) {
-    identifierXml += `<web:Sku>${xmlEscape(sku)}</web:Sku>`;
+function customersXml(customerIds = []) {
+  if (!Array.isArray(customerIds) || !customerIds.length) {
+    return '<tran:Customers/>';
   }
 
   return `
-    <web:Item>
-      ${identifierXml}
-      <web:Pieces>${Number.isFinite(pieces) && pieces > 0 ? pieces : 1}</web:Pieces>
-      <web:Price>${Number.isFinite(price) ? price.toFixed(2) : '0.00'}</web:Price>
-    </web:Item>
+    <tran:Customers>
+      ${customerIds.map((id) => `<tran:CustomerId>${xmlEscape(id)}</tran:CustomerId>`).join('\n')}
+    </tran:Customers>
   `;
 }
 
-function matchFulfillmentForItem(item, fulfillments) {
-  const sku = String(item.sku || item.barcode || '').trim();
+export function getLoyaltyVoucherRules() {
+  const stepsOf = String(process.env.LOYALTY_VOUCHER_STEPS_OF || '1.00').replace(',', '.');
+  const minimum = String(process.env.LOYALTY_VOUCHER_MINIMUM || process.env.VOUCHER_MIN_AMOUNT_EUR || '25.00').replace(',', '.');
+  const maximum = String(process.env.LOYALTY_VOUCHER_MAXIMUM || '250.00').replace(',', '.');
+  const validityMonths = Number(process.env.VOUCHER_VALIDITY_MONTHS || 3) || 3;
 
-  if (!sku) {
-    return null;
-  }
-
-  return fulfillments.find((fulfillment) => {
-    return String(fulfillment.sku || '').trim() === sku;
-  }) || null;
+  return {
+    stepsOf,
+    minimum,
+    maximum,
+    validityMonths
+  };
 }
 
-export async function createSrsReturn({
-  orderNr,
-  branchId,
-  items,
-  dateTime
-}) {
-  const cleanOrderNr = normalizeOrderNr(orderNr);
+export function getDefaultValidity() {
+  const validityMonths = Number(process.env.VOUCHER_VALIDITY_MONTHS || 3) || 3;
+  const from = new Date();
+  const until = new Date();
+  until.setMonth(until.getMonth() + validityMonths);
 
-  if (!cleanOrderNr) {
-    throw new Error('SRS OrderNr ontbreekt.');
-  }
+  return {
+    validFrom: from.toISOString().slice(0, 10),
+    validTo: until.toISOString().slice(0, 10)
+  };
+}
 
-  if (!branchId) {
-    throw new Error('SRS BranchId ontbreekt.');
-  }
-
-  if (!items || !items.length) {
-    throw new Error('Geen retourregels ontvangen voor SRS.');
-  }
-
-  const fulfillmentsResult = await getSrsFulfillments(cleanOrderNr);
-  const fulfillments = fulfillmentsResult.fulfillments || [];
-
-  const itemXml = items.map((item) => {
-    const matchedFulfillment = matchFulfillmentForItem(item, fulfillments);
-    return buildSrsReturnItem(item, matchedFulfillment);
-  }).join('');
-
+export async function createVouchersFromLoyaltyPoints({
+  reference,
+  validFrom,
+  validTo,
+  stepsOf,
+  minimum,
+  maximum,
+  customerIds = []
+} = {}) {
   const transactionId = crypto.randomUUID();
-  const timestamp = new Date().toISOString().slice(0, 19);
-  const returnDateTime = dateTime || timestamp;
+  const rules = getLoyaltyVoucherRules();
+  const validity = getDefaultValidity();
+
+  const finalReference = reference || `GENTS-loyalty-${new Date().toISOString().slice(0, 10)}`;
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tran="https://messages.storeinfo.nl/v1/Weborders/Transactions" xmlns:com="https://messages.storeinfo.nl/v1/Common" xmlns:web="https://messages.storeinfo.nl/v1/Weborders">
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tran="https://messages.storeinfo.nl/v1/Vouchers/Transactions" xmlns:com="https://messages.storeinfo.nl/v1/Common">
   <soapenv:Header/>
   <soapenv:Body>
-    <tran:Return>
-      <tran:Header>
-        <com:Login>
-          <com:Id>${xmlEscape(getSrsConfig().id)}</com:Id>
-          <com:Password>${xmlEscape(getSrsConfig().password)}</com:Password>
-        </com:Login>
-        <com:TransactionId>${xmlEscape(transactionId)}</com:TransactionId>
-        <com:Timestamp>${xmlEscape(timestamp)}</com:Timestamp>
-      </tran:Header>
+    <tran:CreateFromLoyaltyPoints>
+      ${headerXml(transactionId)}
       <tran:Body>
-        <tran:OrderNr>${xmlEscape(cleanOrderNr)}</tran:OrderNr>
-        <tran:BranchId>${xmlEscape(branchId)}</tran:BranchId>
-        <tran:DateTime>${xmlEscape(returnDateTime)}</tran:DateTime>
-        <tran:Items>
-          ${itemXml}
-        </tran:Items>
+        <tran:Reference>${xmlEscape(finalReference)}</tran:Reference>
+        <tran:Valid>
+          <tran:From>${xmlEscape(validFrom || validity.validFrom)}</tran:From>
+          <tran:Until>${xmlEscape(validTo || validity.validTo)}</tran:Until>
+        </tran:Valid>
+        <tran:Value>
+          <tran:StepsOf>${xmlEscape(stepsOf || rules.stepsOf)}</tran:StepsOf>
+          <tran:Minimum>${xmlEscape(minimum || rules.minimum)}</tran:Minimum>
+          <tran:Maximum>${xmlEscape(maximum || rules.maximum)}</tran:Maximum>
+        </tran:Value>
+        ${customersXml(customerIds)}
       </tran:Body>
-    </tran:Return>
+    </tran:CreateFromLoyaltyPoints>
   </soapenv:Body>
 </soapenv:Envelope>`;
 
-  const responseText = await postSoap('Return', xml);
-  const status = getNodeText(responseText, 'Status') || 'unknown';
-  const responseTransactionId = getNodeText(responseText, 'TransactionId') || transactionId;
+  const responseText = await postSoap('CreateFromLoyaltyPoints', xml);
 
   return {
-    success: String(status).toLowerCase() === 'completed',
-    status,
-    transactionId: responseTransactionId,
-    orderNr: cleanOrderNr,
-    branchId,
-    items,
-    fulfillments,
-    raw: responseText
+    ...parseStatus(responseText),
+    transactionId,
+    reference: finalReference,
+    request: {
+      validFrom: validFrom || validity.validFrom,
+      validTo: validTo || validity.validTo,
+      stepsOf: stepsOf || rules.stepsOf,
+      minimum: minimum || rules.minimum,
+      maximum: maximum || rules.maximum,
+      customerIds
+    }
+  };
+}
+
+export async function getVouchersTransactionStatus(transactionId) {
+  if (!transactionId) {
+    throw new Error('TransactionId ontbreekt.');
+  }
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tran="https://messages.storeinfo.nl/v1/Vouchers/Transactions" xmlns:com="https://messages.storeinfo.nl/v1/Common">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <tran:GetStatus>
+      ${headerXml(transactionId)}
+      <tran:Body>
+        <tran:TransactionId>${xmlEscape(transactionId)}</tran:TransactionId>
+      </tran:Body>
+    </tran:GetStatus>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+  const responseText = await postSoap('GetStatus', xml);
+  return parseStatus(responseText);
+}
+
+export async function createAndPollVouchersFromLoyaltyPoints(options = {}) {
+  const created = await createVouchersFromLoyaltyPoints(options);
+
+  if (created.status === 'completed') {
+    return created;
+  }
+
+  const attempts = Number(options.pollAttempts || process.env.LOYALTY_VOUCHER_POLL_ATTEMPTS || 4);
+  const delayMs = Number(options.pollDelayMs || process.env.LOYALTY_VOUCHER_POLL_DELAY_MS || 2500);
+
+  let latest = created;
+
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    latest = await getVouchersTransactionStatus(created.transactionId);
+
+    if (latest.status === 'completed') {
+      return {
+        ...latest,
+        transactionId: latest.transactionId || created.transactionId,
+        reference: created.reference,
+        request: created.request
+      };
+    }
+  }
+
+  return {
+    ...latest,
+    transactionId: latest.transactionId || created.transactionId,
+    reference: created.reference,
+    request: created.request
   };
 }

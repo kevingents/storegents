@@ -1,188 +1,36 @@
-import { getLabels, updateLabelsByParcelId } from '../../lib/sendcloud-labels-store.js';
-import { getParcel } from '../../lib/sendcloud-client.js';
-import { handleCors, setCorsHeaders } from '../../lib/cors.js';
-
-
-function getFixedLabelCost() {
-  const raw = String(process.env.SENDCLOUD_LABEL_FIXED_COST || '6.50').replace(',', '.');
-  const value = Number(raw);
-
-  if (!Number.isFinite(value)) {
-    return 6.50;
-  }
-
-  return Number(value.toFixed(2));
-}
-
-function getLabelCost(label) {
-  const stored = Number(label.shippingCost || 0);
-
-  if (Number.isFinite(stored) && stored > 0) {
-    return stored;
-  }
-
-  return getFixedLabelCost();
-}
+import loyaltyRunHandler from '../admin/vouchers/loyalty-run.js';
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
-  return req.headers['x-admin-token'] === adminToken;
-}
+  const cronSecret = process.env.CRON_SECRET || '';
+  if (!cronSecret) return true;
 
-function getParcelStatusMessage(parcel) {
-  return (
-    parcel?.status?.message ||
-    parcel?.status_message ||
-    parcel?.status ||
-    ''
-  );
-}
+  const header = req.headers.authorization || '';
+  const token = header.replace(/^Bearer\s+/i, '');
 
-function getTrackingUrl(parcel) {
-  return (
-    parcel?.tracking_url ||
-    parcel?.tracking_url_tracking_page ||
-    parcel?.tracking_url_carrier ||
-    ''
-  );
-}
-
-function classifyShipmentState(statusText, trackingNumber) {
-  const value = String(statusText || '').toLowerCase();
-
-  if (
-    value.includes('delivered') ||
-    value.includes('bezorgd') ||
-    value.includes('transit') ||
-    value.includes('onderweg') ||
-    value.includes('sorting') ||
-    value.includes('gesorteerd') ||
-    value.includes('handed') ||
-    value.includes('ingeleverd') ||
-    value.includes('accepted')
-  ) {
-    return 'verzonden';
-  }
-
-  return 'open';
-}
-
-function buildStoreSummary(labels) {
-  const summaryMap = new Map();
-
-  labels.forEach((label) => {
-    const store = label.senderStore || label.store || 'Onbekend';
-    const existing = summaryMap.get(store) || {
-      store,
-      totalLabels: 0,
-      sentLabels: 0,
-      openLabels: 0,
-      totalCost: 0,
-      currency: label.shippingCurrency || 'EUR'
-    };
-
-    const cost = getLabelCost(label);
-    const state = label.shipmentState || 'open';
-
-    existing.totalLabels += 1;
-    existing.totalCost += Number.isFinite(cost) ? cost : 0;
-
-    if (state === 'verzonden') {
-      existing.sentLabels += 1;
-    } else {
-      existing.openLabels += 1;
-    }
-
-    summaryMap.set(store, existing);
-  });
-
-  return Array.from(summaryMap.values())
-    .map((item) => ({
-      ...item,
-      totalCost: Number(item.totalCost.toFixed(2))
-    }))
-    .sort((a, b) => a.store.localeCompare(b.store));
+  return token === cronSecret || req.query.secret === cronSecret;
 }
 
 export default async function handler(req, res) {
-  if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
-  setCorsHeaders(res, ['GET', 'OPTIONS']);
+  if (!['GET', 'POST'].includes(req.method)) {
+    return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
+  }
 
   if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Niet bevoegd.'
-    });
+    return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({
-      success: false,
-      message: 'Alleen GET is toegestaan.'
-    });
+  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || '12345';
+
+  if (req.method === 'GET') {
+    req.method = 'POST';
+    req.body = {
+      employeeName: 'Dagelijkse automatische voucher-run',
+      reference: `GENTS-loyalty-${new Date().toISOString().slice(0, 10)}`,
+      dryRun: String(req.query.dryRun || '') === 'true',
+      makeAvailableInShopify: String(process.env.LOYALTY_VOUCHER_CREATE_SHOPIFY_GIFTCARDS || '') === 'true',
+      sendEmail: String(process.env.LOYALTY_VOUCHER_SEND_EMAIL || 'true') !== 'false'
+    };
   }
 
-  try {
-    const refresh = String(req.query.refresh || '') === 'true';
-    let labels = await getLabels();
-
-    if (refresh) {
-      const updatesByParcelId = {};
-
-      await Promise.all(
-        labels
-          .filter((label) => label.parcelId)
-          .slice(0, 100)
-          .map(async (label) => {
-            try {
-              const parcel = await getParcel(label.parcelId);
-              const status = getParcelStatusMessage(parcel);
-              const trackingNumber = parcel.tracking_number || label.trackingNumber || '';
-
-              updatesByParcelId[String(label.parcelId)] = {
-                status,
-                trackingNumber,
-                trackingUrl: getTrackingUrl(parcel) || label.trackingUrl || '',
-                shipmentState: classifyShipmentState(status, trackingNumber)
-              };
-            } catch (error) {
-              console.error('Refresh Sendcloud parcel status error:', {
-                parcelId: label.parcelId,
-                message: error.message
-              });
-            }
-          })
-      );
-
-      labels = await updateLabelsByParcelId(updatesByParcelId);
-    }
-
-    const summary = buildStoreSummary(labels);
-    const labelsWithCost = labels.map((label) => ({
-      ...label,
-      shippingCost: getLabelCost(label),
-      shippingCurrency: label.shippingCurrency || 'EUR'
-    }));
-    const totalCost = Number(labelsWithCost.reduce((sum, label) => sum + getLabelCost(label), 0).toFixed(2));
-
-    return res.status(200).json({
-      success: true,
-      summary,
-      labels: labelsWithCost,
-      totals: {
-        totalLabels: labels.length,
-        sentLabels: labels.filter((label) => label.shipmentState === 'verzonden').length,
-        openLabels: labels.filter((label) => label.shipmentState !== 'verzonden').length,
-        totalCost,
-        currency: 'EUR'
-      }
-    });
-  } catch (error) {
-    console.error('Admin Sendcloud labels report error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message || 'Sendcloud labelrapportage kon niet worden opgehaald.'
-    });
-  }
+  return loyaltyRunHandler(req, res);
 }
