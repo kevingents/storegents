@@ -59,18 +59,23 @@ async function resolveVoucherGroup({ requestedAmount, voucherGroupId }) {
     };
   }
 
-  const matched = groups.find((group) => {
-    const groupAmount = parseMoneyFromVoucherValue(group.voucherValue);
-    return Math.abs(groupAmount - requestedAmount) < 0.001;
-  });
+  const matches = groups
+    .filter((group) => {
+      const groupAmount = parseMoneyFromVoucherValue(group.voucherValue);
+      return Math.abs(groupAmount - requestedAmount) < 0.001;
+    })
+    .sort((a, b) => Number(b.voucherGroupId) - Number(a.voucherGroupId));
+
+  const matched = matches[0];
 
   if (!matched) {
     const available = groups
+      .filter((group) => parseMoneyFromVoucherValue(group.voucherValue) >= 25)
       .map((group) => `${group.voucherGroupName || 'Groep ' + group.voucherGroupId}: ${group.voucherValue || '-'}`)
       .join(' | ');
 
     throw new Error(
-      `Geen SRS vouchergroep gevonden voor ${requestedAmount.toFixed(2)} euro. Kies handmatig een vouchergroep of maak deze waarde aan in SRS. Beschikbaar: ${available}`
+      `Geen SRS vouchergroep gevonden voor €${requestedAmount.toFixed(2)}. Kies handmatig een vouchergroep of maak deze waarde aan in SRS. Beschikbaar vanaf €25: ${available}`
     );
   }
 
@@ -206,6 +211,7 @@ export default async function handler(req, res) {
       mailed: Boolean(mailResult),
       shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
       shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
+      shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
       shopifyCustomerId: shopifyResult?.customer?.id || '',
       note: `${points ? points + ' punten. ' : ''}${note}`,
       status: shopifyError ? 'SRS aangemaakt, mail verzonden, Shopify mislukt' : 'Aangemaakt',

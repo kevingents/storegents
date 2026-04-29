@@ -80,6 +80,7 @@ export default async function handler(req, res) {
       mailed: Boolean(mailResult),
       shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
       shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
+      shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
       shopifyCustomerId: shopifyResult?.customer?.id || '',
       note,
       status: shopifyError ? 'SRS aangemaakt, mail verzonden, Shopify mislukt' : 'Aangemaakt',
