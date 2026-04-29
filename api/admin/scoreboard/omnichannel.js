@@ -4,6 +4,7 @@ import { listBranches, calculateOmnichannelScore } from '../../../lib/branch-met
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 const SCOREBOARD_CACHE_TTL_MS = Math.max(1000, Number(process.env.OMNICHANNEL_SCOREBOARD_CACHE_MS || 2 * 60 * 1000) || 2 * 60 * 1000);
+const SCOREBOARD_CACHE_MAX_ENTRIES = 100;
 const scoreboardCache = new Map();
 
 function isAuthorized(req) {
@@ -47,6 +48,12 @@ function isVoucherUsedStatus(status) {
     'gebruikt_in_winkel_geen_shopify',
     'gebruikt_in_shopify'
   ].includes(String(status || ''));
+}
+
+function pruneScoreboardCache() {
+  if (scoreboardCache.size <= SCOREBOARD_CACHE_MAX_ENTRIES) return;
+  const oldestKey = scoreboardCache.keys().next().value;
+  if (oldestKey) scoreboardCache.delete(oldestKey);
 }
 
 function aggregateCustomersByBranch(customers, dateFrom, dateTo) {
@@ -195,6 +202,7 @@ export default async function handler(req, res) {
       createdAt: Date.now(),
       payload
     });
+    pruneScoreboardCache();
 
     return res.status(200).json({
       ...payload,

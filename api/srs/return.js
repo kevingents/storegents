@@ -68,18 +68,23 @@ export default async function handler(req, res) {
       dateTime: body.dateTime || ''
     });
 
-    const log = await createSrsReturnLog({
-      store,
-      employeeName,
-      orderNr,
-      shopifyOrderId,
-      branchId,
-      status: srsResult.status,
-      success: srsResult.success,
-      srsTransactionId: srsResult.transactionId,
-      items,
-      message: srsResult.success ? 'Retour verwerkt in SRS.' : 'SRS retour gaf geen completed status.'
-    });
+    let log = null;
+    try {
+      log = await createSrsReturnLog({
+        store,
+        employeeName,
+        orderNr,
+        shopifyOrderId,
+        branchId,
+        status: srsResult.status,
+        success: srsResult.success,
+        srsTransactionId: srsResult.transactionId,
+        items,
+        message: srsResult.success ? 'Retour verwerkt in SRS.' : 'SRS retour gaf geen completed status.'
+      });
+    } catch (logError) {
+      console.error('SRS return log write error (success flow):', logError);
+    }
 
     return res.status(200).json({
       success: srsResult.success,
@@ -104,17 +109,21 @@ export default async function handler(req, res) {
       }
     }
 
-    await createSrsReturnLog({
-      store,
-      employeeName,
-      orderNr,
-      shopifyOrderId,
-      branchId,
-      status: 'failed',
-      success: false,
-      items,
-      error: error.message || 'SRS retour mislukt.'
-    });
+    try {
+      await createSrsReturnLog({
+        store,
+        employeeName,
+        orderNr,
+        shopifyOrderId,
+        branchId,
+        status: 'failed',
+        success: false,
+        items,
+        error: error.message || 'SRS retour mislukt.'
+      });
+    } catch (logError) {
+      console.error('SRS return log write error (error flow):', logError);
+    }
 
     return res.status(error.status || 500).json({
       success: false,
