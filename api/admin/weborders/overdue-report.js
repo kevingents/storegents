@@ -1,5 +1,5 @@
 import { getSrsOpenWeborders } from '../../../lib/srs-open-weborders-client.js';
-import { summarizeOverdueByStore, normalizeWeborder } from '../../../lib/weborder-request-store.js';
+import { summarizeOverdueByStore, normalizeWeborder, isOpenWeborderStatus } from '../../../lib/weborder-request-store.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 function isAuthorized(req) {
@@ -18,6 +18,7 @@ export default async function handler(req, res) {
   try {
     const result = await getSrsOpenWeborders({});
     const items = (result.items || []).map(normalizeWeborder);
+    const openItems = items.filter((item) => isOpenWeborderStatus(item.status));
     const rows = summarizeOverdueByStore(items);
     const overdueItems = rows.flatMap((row) => row.items || []);
 
@@ -28,7 +29,7 @@ export default async function handler(req, res) {
       degraded: Boolean(result.degraded),
       deadlineHours: 48,
       totals: {
-        openCount: items.filter((item) => ['accepted','pending','open','srs_created','pending_srs','label_created','in_behandeling','te_verzenden','failed_label'].includes(String(item.status || '').toLowerCase())).length,
+        openCount: openItems.length,
         overdueCount: overdueItems.length,
         storeCount: rows.length
       },
@@ -36,6 +37,9 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('Overdue weborders report error:', error);
-    return res.status(500).json({ success: false, message: error.message || 'Weborder deadline rapportage kon niet worden opgehaald.' });
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Weborder deadline rapportage kon niet worden opgehaald.'
+    });
   }
 }
