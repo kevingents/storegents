@@ -1,4 +1,4 @@
-import { getCustomersByBranchAndPeriod } from '../../../lib/srs-customers-client.js';
+import { getCustomers } from '../../../lib/srs-customers-client.js';
 import { getVoucherLogs } from '../../../lib/voucher-log-store.js';
 import { listBranches, calculateOmnichannelScore } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
@@ -20,9 +20,12 @@ function daysAgo(days) {
 
 function matchesPeriod(dateValue, dateFrom, dateTo) {
   if (!dateValue) return false;
+
   const date = String(dateValue).slice(0, 10);
+
   if (dateFrom && date < dateFrom) return false;
   if (dateTo && date > dateTo) return false;
+
   return true;
 }
 
@@ -47,43 +50,33 @@ function voucherMetricsForStore(logs, store, branchId, dateFrom, dateTo) {
   };
 }
 
-async function buildBranchScore(branch, logs, dateFrom, dateTo) {
-  let customers = [];
-  let customerError = '';
+function buildBranchScore(branch, customers, logs, dateFrom, dateTo) {
+  const branchCustomers = customers.filter((customer) => {
+    if (!matchesPeriod(customer.createdAt, dateFrom, dateTo)) return false;
+    return String(customer.registeredInBranchId || '') === String(branch.branchId || '');
+  });
 
-  try {
-    const result = await getCustomersByBranchAndPeriod({
-      branchId: branch.branchId,
-      dateFrom,
-      dateTo
-    });
-
-    customers = result.customers || [];
-  } catch (error) {
-    customerError = error.message || 'Klanten niet opgehaald.';
-  }
-
-  const customerRegistrations = customers.length;
-  const loyaltyOptIn = customers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
+  const customerRegistrations = branchCustomers.length;
+  const loyaltyOptIn = branchCustomers.filter((customer) => String(customer.receivesLoyaltyPoints).toLowerCase() === 'true').length;
   const vouchers = voucherMetricsForStore(logs, branch.store, branch.branchId, dateFrom, dateTo);
-
-  const labelCreated = logs.filter((log) => {
-    // Placeholder for future Sendcloud/label KPI. Kept at 0 unless label metrics are merged.
-    return false;
-  }).length;
 
   const score = calculateOmnichannelScore({
     customerRegistrations,
     loyaltyOptIn,
     voucherIssued: vouchers.voucherIssued,
     voucherUsed: vouchers.voucherUsed,
-    labelCreated
+    labelCreated: 0
   });
 
   return {
     store: branch.store,
     branchId: branch.branchId,
-    customerError,
+    customerError: '',
+    dataQuality: {
+      hasCustomerData: customers.length > 0,
+      hasBranchCustomers: branchCustomers.length > 0,
+      hasVoucherData: vouchers.voucherIssued > 0
+    },
     ...score
   };
 }
@@ -109,26 +102,31 @@ export default async function handler(req, res) {
   try {
     const dateFrom = String(req.query.dateFrom || req.query.from || daysAgo(7)).trim();
     const dateTo = String(req.query.dateTo || req.query.to || isoDate(new Date())).trim();
+
     const branches = listBranches();
     const logs = await getVoucherLogs();
+    const customerResult = await getCustomers({});
+    const customers = customerResult.customers || [];
 
-    const rows = [];
-
-    for (const branch of branches) {
-      rows.push(await buildBranchScore(branch, logs, dateFrom, dateTo));
-    }
-
-    rows.sort((a, b) => b.score - a.score);
+    const rows = branches
+      .map((branch) => buildBranchScore(branch, customers, logs, dateFrom, dateTo))
+      .sort((a, b) => b.score - a.score);
 
     return res.status(200).json({
       success: true,
       dateFrom,
       dateTo,
+      mode: 'local-filter',
+      sourceCustomerCount: customers.length,
       formula: {
         customerRegistrations: '35%',
         loyaltyOptInRate: '25%',
         voucherUsageRate: '25%',
         serviceLabelActivity: '15%'
+      },
+      dataQuality: {
+        sourceCustomerCount: customers.length,
+        hasCustomerData: customers.length > 0
       },
       rows
     });
@@ -137,7 +135,8 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       success: false,
-      message: error.message || 'Omnichannel score kon niet worden berekend.'
+      message: error.message || 'Omnichannel score kon niet worden berekend.',
+      hint: 'SRS GetCustomers gaf een fout. Controleer SRS_MESSAGE_USER, SRS_MESSAGE_PASSWORD en of de Customers webservice is geactiveerd.'
     });
   }
 }
