@@ -53,7 +53,13 @@ export default async function handler(req, res) {
       });
     }
 
-    const branchId = body.branchId || getSrsBranchId(store);
+    const mappedBranchId = getSrsBranchId(store);
+    const requestedBranchId = String(body.branchId || '').trim();
+    const branchId = mappedBranchId;
+
+    if (requestedBranchId && requestedBranchId !== mappedBranchId) {
+      console.warn(`SRS return branchId mismatch voor ${store}: body.branchId=${requestedBranchId}, mapped=${mappedBranchId}. Mapped branchId wordt gebruikt.`);
+    }
 
     const srsResult = await createSrsReturn({
       orderNr,
@@ -89,7 +95,14 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('SRS return error:', error);
 
-    const branchId = body.branchId || '';
+    let branchId = String(body.branchId || '').trim();
+    if (!branchId && store) {
+      try {
+        branchId = getSrsBranchId(store);
+      } catch (resolveError) {
+        branchId = '';
+      }
+    }
 
     await createSrsReturnLog({
       store,
