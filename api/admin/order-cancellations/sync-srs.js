@@ -1,7 +1,12 @@
 import { getFulfillments, getWebordersWithDetails } from '../../../lib/srs-weborders-message-client.js';
-import { listBranches, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
+import { listBranches, getBranchIdByStore, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { addOrderCancellation } from '../../../lib/order-cancellation-store.js';
 import { corsJson, requireAdmin } from '../../../lib/request-guards.js';
+
+const DEFAULT_STATUSES = 'niet leverbaar,geannuleerd,unavailable,cancelled,canceled';
+const DEFAULT_MIN_DATE = '2026-01-01';
+const MAX_RUNTIME_MS = Number(process.env.SRS_CANCELLATION_SYNC_MAX_RUNTIME_MS || 22000);
+const MAX_RECORDS_PER_SYNC = Number(process.env.SRS_CANCELLATION_SYNC_MAX_RECORDS || 50);
 
 function boolEnv(name, fallback = false) {
   const value = process.env[name];
@@ -15,15 +20,7 @@ function cleanStatus(value) {
 
 function isCancellationStatus(value) {
   const status = cleanStatus(value);
-  return [
-    'unavailable',
-    'niet leverbaar',
-    'not available',
-    'cancelled',
-    'canceled',
-    'geannuleerd',
-    'annulled'
-  ].includes(status);
+  return ['unavailable', 'niet leverbaar', 'not available', 'cancelled', 'canceled', 'geannuleerd', 'annulled'].includes(status);
 }
 
 function statusReason(value) {
@@ -34,7 +31,7 @@ function statusReason(value) {
 }
 
 function statusListFromRequest(req) {
-  const raw = String(req.query.statuses || process.env.SRS_CANCELLATION_SYNC_STATUSES || 'unavailable,cancelled,canceled').trim();
+  const raw = String(req.query.statuses || process.env.SRS_CANCELLATION_SYNC_STATUSES || DEFAULT_STATUSES).trim();
   return raw.split(/[;,]+/).map((item) => item.trim()).filter(Boolean);
 }
 
@@ -58,7 +55,7 @@ function monthKeyFromDateValue(value, fallbackMonth) {
 
 function shouldSkipBecauseOfDate(value, selectedMonth) {
   const date = validDate(value);
-  const minDate = validDate(process.env.SRS_CANCELLATION_SYNC_MIN_DATE || '2026-01-01');
+  const minDate = validDate(process.env.SRS_CANCELLATION_SYNC_MIN_DATE || DEFAULT_MIN_DATE);
   const maxDate = validDate(process.env.SRS_CANCELLATION_SYNC_MAX_DATE || '');
 
   if (date && minDate && date < minDate) return true;
@@ -71,6 +68,28 @@ function shouldSkipBecauseOfDate(value, selectedMonth) {
 function parseNumber(value, fallback = 0) {
   const n = Number(String(value ?? '').replace(',', '.'));
   return Number.isFinite(n) ? n : fallback;
+}
+
+function branchFromRequest(req) {
+  const requestedStore = String(req.query.store || req.body?.store || '').trim();
+  const requestedBranchId = String(req.query.branchId || req.body?.branchId || '').trim();
+
+  if (requestedBranchId) {
+    return {
+      store: getStoreNameByBranchId(requestedBranchId),
+      branchId: requestedBranchId
+    };
+  }
+
+  if (requestedStore) {
+    const branchId = getBranchIdByStore(requestedStore);
+    if (branchId) return { store: requestedStore, branchId: String(branchId) };
+
+    const found = listBranches().find((branch) => cleanStatus(branch.store) === cleanStatus(requestedStore));
+    if (found?.branchId) return { store: found.store, branchId: String(found.branchId) };
+  }
+
+  return null;
 }
 
 async function getDetailsForOrder(orderNr, cache) {
@@ -92,51 +111,40 @@ async function getDetailsForOrder(orderNr, cache) {
 
 function detailLineForFulfillment(detail, fulfillment) {
   const sku = String(fulfillment.sku || '').trim();
+  const barcode = String(fulfillment.barcode || '').trim();
   const lines = Array.isArray(detail?.items) ? detail.items : [];
-  return lines.find((line) => String(line.sku || '').trim() === sku) || null;
+
+  return lines.find((line) => String(line.sku || '').trim() === sku) ||
+    lines.find((line) => String(line.barcode || '').trim() === barcode) ||
+    null;
 }
 
-function branchFilterFromRequest(req) {
-  const requestedStore = String(req.query.store || '').trim();
-  const requestedBranchId = String(req.query.branchId || '').trim();
-  const branches = listBranches().filter((branch) => branch.branchId);
-
-  if (requestedBranchId) {
-    return [{ store: getStoreNameByBranchId(requestedBranchId), branchId: requestedBranchId }];
-  }
-
-  if (requestedStore) {
-    return branches.filter((branch) => branch.store === requestedStore);
-  }
-
-  return branches;
+function fulfillmentDate(fulfillment) {
+  return fulfillment.updatedAt || fulfillment.createdAt || fulfillment.date || fulfillment.orderDate || fulfillment.deliveryDate || '';
 }
 
-async function collectSrsCancellationFulfillments(req) {
-  const statuses = statusListFromRequest(req);
-  const maxBranches = Math.max(1, Number(process.env.SRS_CANCELLATION_SYNC_MAX_BRANCHES || 30));
-  const branches = branchFilterFromRequest(req).slice(0, maxBranches);
+async function collectSrsCancellationFulfillments({ branch, statuses, startedAt }) {
   const errors = [];
   const found = [];
 
-  for (const branch of branches) {
-    for (const status of statuses) {
-      try {
-        const result = await getFulfillments({ branchId: branch.branchId, status });
-        const rows = (result.fulfillments || []).filter((item) => isCancellationStatus(item.status || status));
-        rows.forEach((item) => found.push({ ...item, requestedStatus: status, branch }));
-      } catch (error) {
-        errors.push({ store: branch.store, branchId: branch.branchId, status, message: error.message });
-      }
+  for (const status of statuses) {
+    if (Date.now() - startedAt > MAX_RUNTIME_MS) break;
+
+    try {
+      const result = await getFulfillments({ branchId: branch.branchId, status });
+      const rows = (result.fulfillments || []).filter((item) => isCancellationStatus(item.status || status));
+      rows.forEach((item) => found.push({ ...item, requestedStatus: status, branch }));
+    } catch (error) {
+      errors.push({ store: branch.store, branchId: branch.branchId, status, message: error.message });
     }
   }
 
   const deduped = Array.from(new Map(found.map((item) => [
-    item.fulfillmentId || `${item.orderNr}-${item.sku}-${item.branch?.branchId}-${item.status || item.requestedStatus}`,
+    item.fulfillmentId || `${item.orderNr}-${item.sku}-${item.barcode}-${branch.branchId}-${item.status || item.requestedStatus}`,
     item
   ])).values());
 
-  return { fulfillments: deduped, errors, statuses, branchesScanned: branches.length };
+  return { fulfillments: deduped, errors };
 }
 
 export default async function handler(req, res) {
@@ -161,20 +169,51 @@ export default async function handler(req, res) {
     });
   }
 
+  const branch = branchFromRequest(req);
+  if (!branch?.branchId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Kies één winkel of geef branchId mee. Alle winkels tegelijk synchroniseren is uitgeschakeld om SRS en Vercel time-outs te voorkomen.',
+      example: '/api/admin/order-cancellations/sync-srs?month=2026-04&store=GENTS%20Groningen'
+    });
+  }
+
+  const startedAt = Date.now();
+
   try {
     const month = monthFromRequest(req);
-    const dryRun = String(req.query.dryRun || '').toLowerCase() === 'true';
+    const dryRun = String(req.query.dryRun || req.body?.dryRun || '').toLowerCase() === 'true';
+    const statuses = statusListFromRequest(req);
     const detailsCache = new Map();
-    const { fulfillments, errors, statuses, branchesScanned } = await collectSrsCancellationFulfillments(req);
+    const { fulfillments, errors } = await collectSrsCancellationFulfillments({ branch, statuses, startedAt });
 
     let created = 0;
     let duplicates = 0;
     let skippedByDate = 0;
+    let skippedByLimit = 0;
+    let scanned = 0;
     const records = [];
 
     for (const fulfillment of fulfillments) {
+      if (Date.now() - startedAt > MAX_RUNTIME_MS) {
+        break;
+      }
+
+      if (scanned >= MAX_RECORDS_PER_SYNC) {
+        skippedByLimit += 1;
+        continue;
+      }
+
+      scanned += 1;
+
       const orderNr = String(fulfillment.orderNr || '').replace(/^#/, '').trim();
-      const store = fulfillment.branch?.store || fulfillment.fulfilmentStore || fulfillment.fulfillmentStore || getStoreNameByBranchId(fulfillment.branch?.branchId || fulfillment.branchId || fulfillment.fulfilmentBranchId);
+      const srsDate = fulfillmentDate(fulfillment);
+
+      if (shouldSkipBecauseOfDate(srsDate, month)) {
+        skippedByDate += 1;
+        continue;
+      }
+
       const detail = await getDetailsForOrder(orderNr, detailsCache);
       const line = detailLineForFulfillment(detail, fulfillment);
       const quantity = parseNumber(line?.pieces || fulfillment.quantity || fulfillment.pieces, 1);
@@ -182,27 +221,22 @@ export default async function handler(req, res) {
       const amount = Math.max(0, quantity * unitAmount);
       const status = fulfillment.status || fulfillment.requestedStatus || 'unavailable';
       const reason = statusReason(status);
-      const srsDate = fulfillment.updatedAt || fulfillment.createdAt || fulfillment.date || fulfillment.orderDate || '';
-
-      if (shouldSkipBecauseOfDate(srsDate, month)) {
-        skippedByDate += 1;
-        continue;
-      }
 
       const payload = {
         idempotencyKey: [
-          'srs-sync',
-          String(store || '').toLowerCase().trim(),
+          'srs-sync-per-store',
+          String(branch.store || '').toLowerCase().trim(),
           orderNr,
           fulfillment.fulfillmentId || '',
           line?.orderLineNr || fulfillment.orderLineNr || '',
           fulfillment.sku || '',
+          fulfillment.barcode || '',
           cleanStatus(status)
         ].join('::'),
         createdAt: srsDate || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         month: monthKeyFromDateValue(srsDate, month),
-        store,
+        store: branch.store,
         employeeName: 'SRS automatische synchronisatie',
         orderNr,
         type: 'partial',
@@ -216,11 +250,12 @@ export default async function handler(req, res) {
             fulfillmentId: fulfillment.fulfillmentId || '',
             orderLineNr: line?.orderLineNr || fulfillment.orderLineNr || '',
             sku: fulfillment.sku || '',
-            title: fulfillment.productName || line?.sku || fulfillment.sku || '',
+            title: fulfillment.productName || line?.title || line?.sku || fulfillment.sku || '',
             quantity,
             amount,
             srsStatus: status,
-            branchId: fulfillment.branch?.branchId || fulfillment.branchId || fulfillment.fulfilmentBranchId || ''
+            branchId: branch.branchId,
+            barcode: fulfillment.barcode || ''
           }
         ],
         status: 'completed',
@@ -228,15 +263,16 @@ export default async function handler(req, res) {
         refundStatus: 'pending',
         mailStatus: 'pending',
         srsResult: {
-          source: 'srs_get_fulfillments_sync',
+          source: 'srs_get_fulfillments_sync_per_store',
           detectedStatus: status,
           fulfillmentId: fulfillment.fulfillmentId || '',
-          branchId: fulfillment.branch?.branchId || fulfillment.branchId || fulfillment.fulfilmentBranchId || '',
+          branchId: branch.branchId,
           syncedAt: new Date().toISOString()
         }
       };
 
       records.push(payload);
+
       if (!dryRun) {
         const result = await addOrderCancellation(payload);
         if (result.duplicate) duplicates += 1;
@@ -244,22 +280,30 @@ export default async function handler(req, res) {
       }
     }
 
+    const partial = Date.now() - startedAt > MAX_RUNTIME_MS || skippedByLimit > 0;
+
     return res.status(200).json({
       success: true,
       dryRun,
+      partial,
       month,
-      source: 'srs_get_fulfillments',
+      store: branch.store,
+      branchId: branch.branchId,
+      source: 'srs_get_fulfillments_per_store',
       statuses,
-      branchesScanned,
-      scanned: fulfillments.length,
+      branchesScanned: 1,
+      scanned,
+      found: fulfillments.length,
       created: dryRun ? 0 : created,
       duplicates: dryRun ? 0 : duplicates,
       skippedByDate,
+      skippedByLimit,
+      runtimeMs: Date.now() - startedAt,
       preview: dryRun ? records.slice(0, 50) : [],
       errors,
       message: dryRun
-        ? `Dry-run klaar. ${records.length} SRS annulering(en)/niet-leverbaar regel(s) gevonden. ${skippedByDate} buiten maand/datumbereik overgeslagen.`
-        : `Synchronisatie klaar. ${created} nieuw, ${duplicates} al bekend, ${skippedByDate} buiten maand/datumbereik overgeslagen.`
+        ? `Dry-run klaar voor ${branch.store}. ${records.length} SRS annulering(en)/niet-leverbaar regel(s) gevonden. ${skippedByDate} buiten maand/datumbereik overgeslagen.`
+        : `Synchronisatie klaar voor ${branch.store}. ${created} nieuw, ${duplicates} al bekend, ${skippedByDate} buiten maand/datumbereik overgeslagen.`
     });
   } catch (error) {
     console.error('SRS cancellation sync error:', error);
