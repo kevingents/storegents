@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/daily-loyalty-vouchers",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/srs-cancellations-nightly",
+      "schedule": "15 */2 * * *"
     }
   ]
 }
