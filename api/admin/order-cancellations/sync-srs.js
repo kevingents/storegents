@@ -46,6 +46,28 @@ function monthFromRequest(req) {
   return /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : currentMonth();
 }
 
+function validDate(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function monthKeyFromDateValue(value, fallbackMonth) {
+  const date = validDate(value);
+  return date ? date.toISOString().slice(0, 7) : fallbackMonth;
+}
+
+function shouldSkipBecauseOfDate(value, selectedMonth) {
+  const date = validDate(value);
+  const minDate = validDate(process.env.SRS_CANCELLATION_SYNC_MIN_DATE || '2026-01-01');
+  const maxDate = validDate(process.env.SRS_CANCELLATION_SYNC_MAX_DATE || '');
+
+  if (date && minDate && date < minDate) return true;
+  if (date && maxDate && date >= maxDate) return true;
+  if (date && selectedMonth && date.toISOString().slice(0, 7) !== selectedMonth) return true;
+
+  return false;
+}
+
 function parseNumber(value, fallback = 0) {
   const n = Number(String(value ?? '').replace(',', '.'));
   return Number.isFinite(n) ? n : fallback;
@@ -147,6 +169,7 @@ export default async function handler(req, res) {
 
     let created = 0;
     let duplicates = 0;
+    let skippedByDate = 0;
     const records = [];
 
     for (const fulfillment of fulfillments) {
@@ -159,6 +182,12 @@ export default async function handler(req, res) {
       const amount = Math.max(0, quantity * unitAmount);
       const status = fulfillment.status || fulfillment.requestedStatus || 'unavailable';
       const reason = statusReason(status);
+      const srsDate = fulfillment.updatedAt || fulfillment.createdAt || fulfillment.date || fulfillment.orderDate || '';
+
+      if (shouldSkipBecauseOfDate(srsDate, month)) {
+        skippedByDate += 1;
+        continue;
+      }
 
       const payload = {
         idempotencyKey: [
@@ -170,9 +199,9 @@ export default async function handler(req, res) {
           fulfillment.sku || '',
           cleanStatus(status)
         ].join('::'),
-        createdAt: fulfillment.updatedAt || fulfillment.createdAt || new Date().toISOString(),
+        createdAt: srsDate || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        month,
+        month: monthKeyFromDateValue(srsDate, month),
         store,
         employeeName: 'SRS automatische synchronisatie',
         orderNr,
@@ -225,11 +254,12 @@ export default async function handler(req, res) {
       scanned: fulfillments.length,
       created: dryRun ? 0 : created,
       duplicates: dryRun ? 0 : duplicates,
+      skippedByDate,
       preview: dryRun ? records.slice(0, 50) : [],
       errors,
       message: dryRun
-        ? `Dry-run klaar. ${records.length} SRS annulering(en)/niet-leverbaar regel(s) gevonden.`
-        : `Synchronisatie klaar. ${created} nieuw, ${duplicates} al bekend.`
+        ? `Dry-run klaar. ${records.length} SRS annulering(en)/niet-leverbaar regel(s) gevonden. ${skippedByDate} buiten maand/datumbereik overgeslagen.`
+        : `Synchronisatie klaar. ${created} nieuw, ${duplicates} al bekend, ${skippedByDate} buiten maand/datumbereik overgeslagen.`
     });
   } catch (error) {
     console.error('SRS cancellation sync error:', error);
