@@ -87,9 +87,10 @@ async function mapLimit(items, limit, worker) {
 }
 
 function getTransactionKey(transaction) {
+  const receiptOrOrder = String(transaction.receiptNr || transaction.orderNr || '').trim();
   return [
     String(transaction.branchId || '').trim(),
-    String(transaction.receiptNr || '').trim(),
+    receiptOrOrder,
     String(transaction.dateTime || '').slice(0, 19)
   ].join('|');
 }
@@ -225,6 +226,10 @@ export default async function handler(req, res) {
       dateTo,
       mode: 'local-filter',
       sourceCustomerCount: allCustomers.length,
+      transactionStats: {
+        customerCalls,
+        totalTransactions
+      },
       totals,
       rows,
       errors: []
