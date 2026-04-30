@@ -213,7 +213,12 @@ export default async function handler(req, res) {
     const allCustomers = result.customers || [];
 
     const filteredCustomers = allCustomers.filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-    const { branchReceipts, customerReceiptCounts, totalTransactions, customerCalls } = await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo);
+    const {
+      branchReceipts = new Map(),
+      customerReceiptCounts = new Map(),
+      totalTransactions = 0,
+      customerCalls = 0
+    } = (await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo)) || {};
     const customersWithReceipts = filteredCustomers.map((customer) => ({
       ...customer,
       receiptCount: customerReceiptCounts.get(String(customer.customerId || '')) || Number(customer.receiptCount || 0) || 0
