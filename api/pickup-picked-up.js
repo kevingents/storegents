@@ -91,7 +91,7 @@ function isPickupFulfillmentOrder(fulfillmentOrder) {
     fulfillmentOrder.status,
     fulfillmentOrder.request_status
   ].join(' ').toLowerCase();
-  return text.includes('pickup') || text.includes('pick up') || text.includes('local') || text.includes('afhalen') || text.includes('ophalen') || text.includes('ophaal');
+  return text.includes('pickup') || text.includes('pick up') || text.includes('pickup') || text.includes('afhalen') || text.includes('ophalen') || text.includes('ophaal');
 }
 
 async function addOrderTags(order, tagsToAdd) {
