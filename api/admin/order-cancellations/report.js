@@ -1,4 +1,10 @@
-import { getOrderCancellations, filterCancellationsByMonth, summarizeCancellationsByStore, monthKeyFromInput } from '../../../lib/order-cancellation-store.js';
+import {
+  getOrderCancellations,
+  filterCancellationsByMonth,
+  summarizeCancellationsByStore,
+  cancellationLineRows,
+  monthKeyFromInput
+} from '../../../lib/order-cancellation-store.js';
 import { corsJson, requireAdmin, requireGet } from '../../../lib/request-guards.js';
 
 export default async function handler(req, res) {
@@ -8,17 +14,27 @@ export default async function handler(req, res) {
 
   try {
     const month = monthKeyFromInput(req.query.month);
+    const store = String(req.query.store || '').trim();
     const all = await getOrderCancellations();
-    const rows = filterCancellationsByMonth(all, month);
-    const summary = summarizeCancellationsByStore(rows);
+    const monthRows = filterCancellationsByMonth(all, month);
+    const cancellations = store ? monthRows.filter((item) => String(item.store || '').trim() === store) : monthRows;
+    const rows = cancellationLineRows(cancellations);
+    const summary = summarizeCancellationsByStore(cancellations);
+    const uniqueOrders = new Set(rows.map((item) => item.orderNr).filter(Boolean));
 
     return res.status(200).json({
       success: true,
       month,
+      store: store || '',
+      mode: 'order_lines',
+      note: 'Rapportage telt SRS orderregels/leveropdrachten. Een order met meerdere niet-leverbare regels telt dus meerdere regels.',
       totals: {
         totalCancellations: rows.length,
+        totalOrderLines: rows.length,
+        uniqueOrderCount: uniqueOrders.size,
         fullCancellations: rows.filter((item) => item.type === 'full').length,
         partialCancellations: rows.filter((item) => item.type !== 'full').length,
+        itemCount: rows.reduce((sum, item) => sum + Number(item.quantity || 1), 0),
         refundAmount: rows.reduce((sum, item) => sum + Number(item.amount || 0), 0),
         failedCount: rows.filter((item) => item.status === 'failed').length
       },
