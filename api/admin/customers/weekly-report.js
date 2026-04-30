@@ -99,6 +99,7 @@ async function buildReceiptMetrics(customers, dateFrom, dateTo) {
   const customersWithId = customers.filter((customer) => customer.customerId);
   const branchReceipts = new Map();
   const customerReceiptCounts = new Map();
+  let totalTransactions = 0;
 
   await mapLimit(customersWithId, TRANSACTION_CONCURRENCY, async (customer) => {
     const result = await getTransactions({
@@ -109,8 +110,9 @@ async function buildReceiptMetrics(customers, dateFrom, dateTo) {
 
     const seen = new Set();
     for (const transaction of result.transactions || []) {
+      totalTransactions += 1;
       const key = getTransactionKey(transaction);
-      if (!transaction.receiptNr || seen.has(key)) continue;
+      if (!String(transaction.receiptNr || transaction.orderNr || '').trim() || seen.has(key)) continue;
       seen.add(key);
 
       const branchId = String(transaction.branchId || customer.registeredInBranchId || '').trim();
@@ -124,7 +126,7 @@ async function buildReceiptMetrics(customers, dateFrom, dateTo) {
     customerReceiptCounts.set(String(customer.customerId), seen.size);
   });
 
-  return { branchReceipts, customerReceiptCounts };
+  return { branchReceipts, customerReceiptCounts, totalTransactions, customerCalls: customersWithId.length };
 }
 
 function aggregateByBranch(customers, branches, dateFrom, dateTo, branchReceipts = new Map()) {
@@ -211,7 +213,7 @@ export default async function handler(req, res) {
     const allCustomers = result.customers || [];
 
     const filteredCustomers = allCustomers.filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-    const { branchReceipts, customerReceiptCounts } = await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo);
+    const { branchReceipts, customerReceiptCounts, totalTransactions, customerCalls } = await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo);
     const customersWithReceipts = filteredCustomers.map((customer) => ({
       ...customer,
       receiptCount: customerReceiptCounts.get(String(customer.customerId || '')) || Number(customer.receiptCount || 0) || 0

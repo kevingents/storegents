@@ -1,4 +1,6 @@
-import { getWeborderRequests, summarizeOpenWeborders } from '../../lib/weborder-request-store.js';
+import { getSrsOpenWeborders } from '../../lib/srs-open-weborders-client.js';
+import { summarizeOpenWeborders, normalizeWeborder } from '../../lib/weborder-request-store.js';
+import { getBranchIdByStore } from '../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 export default async function handler(req, res) {
@@ -12,16 +14,40 @@ export default async function handler(req, res) {
     });
   }
 
-  const store = String(req.query.store || '').trim();
-  const requests = await getWeborderRequests();
-  const summary = store ? summarizeOpenWeborders(requests, store) : null;
+  try {
+    const store = String(req.query.store || '').trim();
+    const branchId = String(req.query.branchId || getBranchIdByStore(store) || '').trim();
+    const result = await getSrsOpenWeborders({ store, branchId });
+    const items = (result.items || []).map(normalizeWeborder);
+    const summary = store ? summarizeOpenWeborders(items, store) : null;
 
-  return res.status(200).json({
-    success: true,
-    source: 'local_weborder_tool_log',
-    note: 'Dit telt weborders die via de winkel-weborder tool zijn aangemaakt. Koppel hier later eventueel de SRS open fulfillment endpoint aan.',
-    summary,
-    open: summary?.totalOpenCount || 0,
-    requests: store ? [...(summary?.sellingOpen || []), ...(summary?.fulfilmentOpen || [])] : requests
-  });
+    return res.status(200).json({
+      success: true,
+      source: result.source,
+      note: result.note || '',
+      degraded: Boolean(result.degraded),
+      store,
+      branchId,
+      deadlineHours: 48,
+      summary: summary || {
+        store,
+        sellingOpenCount: 0,
+        fulfilmentOpenCount: 0,
+        overdueCount: 0,
+        totalOpenCount: 0,
+        sellingOpen: [],
+        fulfilmentOpen: [],
+        overdue: []
+      },
+      open: summary?.totalOpenCount || 0,
+      overdue: summary?.overdueCount || 0,
+      requests: store ? items.filter((item) => item.sellingStore === store || item.fulfilmentStore === store).slice(0, 200) : items.slice(0, 500)
+    });
+  } catch (error) {
+    console.error('SRS open weborders error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Open weborders konden niet worden opgehaald.'
+    });
+  }
 }
