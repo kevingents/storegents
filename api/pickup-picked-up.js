@@ -3,6 +3,14 @@ const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
+/*
+  SRS afhandelen is bewust optioneel/best-effort.
+  Zet SRS_PICKUP_COMPLETE_URL in Vercel als jullie backend endpoint voor SRS afhandelen klaarstaat.
+  Deze endpoint moet de Shopify order/weborder in SRS op afgehandeld zetten.
+*/
+const SRS_PICKUP_COMPLETE_URL = process.env.SRS_PICKUP_COMPLETE_URL || '';
+const SRS_PICKUP_COMPLETE_SECRET = process.env.SRS_PICKUP_COMPLETE_SECRET || process.env.CRON_SECRET || '';
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -24,11 +32,7 @@ function gid(type, id) {
 
 function parseBody(req) {
   if (typeof req.body === 'string') {
-    try {
-      return JSON.parse(req.body);
-    } catch (error) {
-      return {};
-    }
+    try { return JSON.parse(req.body); } catch (error) { return {}; }
   }
   return req.body || {};
 }
@@ -56,11 +60,7 @@ async function shopifyRequest(path, options = {}) {
   const text = await response.text();
   let data;
 
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (error) {
-    data = { raw: text };
-  }
+  try { data = text ? JSON.parse(text) : {}; } catch (error) { data = { raw: text }; }
 
   if (!response.ok) {
     const error = new Error(readableError(data));
@@ -102,8 +102,7 @@ async function getFulfillmentOrders(orderId) {
 function isPickupFulfillmentOrder(fulfillmentOrder) {
   const methodType = String(fulfillmentOrder.delivery_method?.method_type || '').toLowerCase();
 
-  // Shopify gebruikt meestal pick_up voor store pickup.
-  if (methodType === 'pick_up') return true;
+  if (['pick_up', 'pickup', 'pick-up', 'pick up'].includes(methodType)) return true;
 
   const text = [
     fulfillmentOrder.delivery_method?.method_name,
@@ -124,7 +123,7 @@ function isPickupFulfillmentOrder(fulfillmentOrder) {
 
 function isOpenFulfillmentOrder(fulfillmentOrder) {
   const status = String(fulfillmentOrder.status || '').toLowerCase();
-  return !['closed', 'cancelled', 'fulfilled'].includes(status);
+  return !['closed', 'cancelled', 'canceled', 'fulfilled', 'incomplete'].includes(status);
 }
 
 async function addOrderTags(order, tagsToAdd) {
@@ -133,12 +132,7 @@ async function addOrderTags(order, tagsToAdd) {
 
   return shopifyRequest(`/orders/${order.id}.json`, {
     method: 'PUT',
-    body: JSON.stringify({
-      order: {
-        id: order.id,
-        tags: tags.join(', ')
-      }
-    })
+    body: JSON.stringify({ order: { id: order.id, tags: tags.join(', ') } })
   });
 }
 
@@ -166,6 +160,56 @@ function hasValidAdminToken(req) {
   return incomingToken === ADMIN_TOKEN;
 }
 
+async function completePickupInSrs({ order, body }) {
+  if (!SRS_PICKUP_COMPLETE_URL) {
+    return {
+      skipped: true,
+      success: false,
+      message: 'SRS_PICKUP_COMPLETE_URL ontbreekt. Shopify is verwerkt, SRS moet nog gekoppeld worden.'
+    };
+  }
+
+  const payload = {
+    shopifyOrderId: String(order.id || ''),
+    shopifyOrderName: order.name || '',
+    weborderNumber: body.weborderNumber || body.weborder || order.name || '',
+    store: body.store || '',
+    employeeName: body.employeeName || '',
+    pickedUpAt: new Date().toISOString(),
+    source: 'winkelportaal_pickup'
+  };
+
+  const response = await fetch(SRS_PICKUP_COMPLETE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(SRS_PICKUP_COMPLETE_SECRET ? { Authorization: `Bearer ${SRS_PICKUP_COMPLETE_SECRET}` } : {})
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch (error) { data = { raw: text }; }
+
+  if (!response.ok || data.success === false) {
+    return {
+      skipped: false,
+      success: false,
+      status: response.status,
+      message: data.message || data.error || text || 'SRS afhandeling mislukt',
+      data
+    };
+  }
+
+  return {
+    skipped: false,
+    success: true,
+    message: data.message || 'Order is in SRS afgehandeld',
+    data
+  };
+}
+
 const FULFILLMENT_CREATE_MUTATION = `
   mutation fulfillmentCreate($fulfillment: FulfillmentInput!) {
     fulfillmentCreate(fulfillment: $fulfillment) {
@@ -181,51 +225,35 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      success: false,
-      error: 'Methode niet toegestaan'
-    });
+    return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
   }
 
   if (!hasValidAdminToken(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Niet bevoegd.'
-    });
+    return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
   if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
-    return res.status(500).json({
-      success: false,
-      error: 'Shopify configuratie ontbreekt'
-    });
+    return res.status(500).json({ success: false, error: 'Shopify configuratie ontbreekt' });
   }
 
   const body = parseBody(req);
   const orderId = String(body.orderId || body.id || '').trim();
 
   if (!orderId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Order ID ontbreekt'
-    });
+    return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
   }
 
   try {
     const order = await getOrder(orderId);
 
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: 'Order niet gevonden'
-      });
+      return res.status(404).json({ success: false, error: 'Order niet gevonden' });
     }
 
     const fulfillmentOrders = await getFulfillmentOrders(orderId);
-
-    const openPickupFulfillmentOrders = fulfillmentOrders.filter((fulfillmentOrder) => {
-      return isOpenFulfillmentOrder(fulfillmentOrder) && isPickupFulfillmentOrder(fulfillmentOrder);
-    });
+    const openPickupFulfillmentOrders = fulfillmentOrders.filter((fulfillmentOrder) => (
+      isOpenFulfillmentOrder(fulfillmentOrder) && isPickupFulfillmentOrder(fulfillmentOrder)
+    ));
 
     if (!openPickupFulfillmentOrders.length) {
       await addOrderTags(order, ['pickup_gecontroleerd_geen_open_pickup']);
@@ -233,7 +261,8 @@ export default async function handler(req, res) {
       return res.status(200).json({
         success: true,
         message: 'Geen open pickup fulfillment order gevonden. Tag is toegevoegd ter controle.',
-        fulfillment: null
+        fulfillment: null,
+        srs: { skipped: true, success: false, message: 'SRS niet aangeroepen omdat Shopify geen open pickup fulfillment order had.' }
       });
     }
 
@@ -263,17 +292,24 @@ export default async function handler(req, res) {
         });
       }
 
-      if (result?.fulfillment) {
-        fulfillmentResults.push(result.fulfillment);
-      }
+      if (result?.fulfillment) fulfillmentResults.push(result.fulfillment);
     }
 
-    await addOrderTags(order, ['pickup_opgehaald']);
+    const srsResult = await completePickupInSrs({ order, body });
+
+    const tags = ['pickup_opgehaald'];
+    if (srsResult.success) tags.push('srs_afgehandeld');
+    else tags.push('srs_afhandeling_controleren');
+
+    await addOrderTags(order, tags);
 
     return res.status(200).json({
       success: true,
-      message: 'Order is op afgehaald gezet',
-      fulfillment: fulfillmentResults
+      message: srsResult.success
+        ? 'Order is opgehaald gemarkeerd in Shopify en afgehandeld in SRS.'
+        : 'Order is opgehaald gemarkeerd in Shopify. SRS afhandeling moet nog gecontroleerd worden.',
+      fulfillment: fulfillmentResults,
+      srs: srsResult
     });
   } catch (error) {
     return res.status(error.status || 500).json({

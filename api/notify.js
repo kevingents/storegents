@@ -1,11 +1,12 @@
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token');
 }
 
 function cleanShopUrl(url) {
@@ -47,15 +48,18 @@ async function shopifyRequest(path, options = {}) {
       ...(options.headers || {})
     }
   });
+
   const text = await response.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch (error) { data = { raw: text }; }
+
   if (!response.ok) {
     const error = new Error(readableError(data));
     error.status = response.status;
     error.data = data;
     throw error;
   }
+
   return data;
 }
 
@@ -64,26 +68,36 @@ async function shopifyGraphql(query, variables) {
     method: 'POST',
     body: JSON.stringify({ query, variables })
   });
+
   if (data.errors && data.errors.length) {
     const error = new Error(readableError(data));
     error.data = data;
     throw error;
   }
+
   return data.data;
 }
 
 async function getOrder(orderId) {
-  const data = await shopifyRequest(`/orders/${String(orderId).replace('gid://shopify/Order/', '')}.json?status=any`, { method: 'GET' });
+  const cleanId = String(orderId || '').replace('gid://shopify/Order/', '');
+  const data = await shopifyRequest(`/orders/${cleanId}.json?status=any`, { method: 'GET' });
   return data.order;
 }
 
 async function addOrderTags(order, tagsToAdd) {
   const current = String(order.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
   const tags = Array.from(new Set([...current, ...tagsToAdd]));
+
   return shopifyRequest(`/orders/${order.id}.json`, {
     method: 'PUT',
     body: JSON.stringify({ order: { id: order.id, tags: tags.join(', ') } })
   });
+}
+
+function hasValidAdminToken(req) {
+  if (!ADMIN_TOKEN) return true;
+  const incomingToken = String(req.headers['x-admin-token'] || req.headers['X-Admin-Token'] || '').trim();
+  return incomingToken === ADMIN_TOKEN;
 }
 
 const READY_FOR_PICKUP_QUERY = `
@@ -91,7 +105,7 @@ const READY_FOR_PICKUP_QUERY = `
     order(id: $id) {
       id
       name
-      fulfillmentOrders(first: 10) {
+      fulfillmentOrders(first: 20) {
         nodes {
           id
           status
@@ -118,15 +132,21 @@ const PREPARED_FOR_PICKUP_MUTATION = `
 `;
 
 function isOpenPickupFulfillmentOrder(fulfillmentOrder) {
-  if (!fulfillmentOrder || String(fulfillmentOrder.status || '').toLowerCase() === 'closed') return false;
-  return fulfillmentOrder.deliveryMethod?.methodType === 'PICK_UP';
+  if (!fulfillmentOrder) return false;
+  const status = String(fulfillmentOrder.status || '').toLowerCase();
+  const methodType = String(fulfillmentOrder.deliveryMethod?.methodType || '').toLowerCase();
+  if (['closed', 'cancelled', 'canceled', 'incomplete'].includes(status)) return false;
+  return ['pick_up', 'pickup', 'pick-up', 'pick up'].includes(methodType);
 }
 
 function buildLineItemsByFulfillmentOrder(fulfillmentOrders) {
   return fulfillmentOrders.map((fulfillmentOrder) => {
     const lineItems = (fulfillmentOrder.lineItems?.nodes || [])
       .filter((lineItem) => Number(lineItem.remainingQuantity || 0) > 0)
-      .map((lineItem) => ({ id: lineItem.id, quantity: Number(lineItem.remainingQuantity || lineItem.totalQuantity || 1) }));
+      .map((lineItem) => ({
+        id: lineItem.id,
+        quantity: Number(lineItem.remainingQuantity || lineItem.totalQuantity || 1)
+      }));
 
     return {
       fulfillmentOrderId: fulfillmentOrder.id,
@@ -137,8 +157,16 @@ function buildLineItemsByFulfillmentOrder(fulfillmentOrders) {
 
 export default async function handler(req, res) {
   setCors(res);
+
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
+  }
+
+  if (!hasValidAdminToken(req)) {
+    return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  }
 
   if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
     return res.status(500).json({ success: false, error: 'Shopify configuratie ontbreekt' });
@@ -146,21 +174,32 @@ export default async function handler(req, res) {
 
   const body = parseBody(req);
   const orderId = String(body.orderId || body.id || '').trim();
-  if (!orderId) return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
+
+  if (!orderId) {
+    return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
+  }
 
   try {
     const numericOrderId = orderId.replace('gid://shopify/Order/', '');
     const orderGid = gid('Order', numericOrderId);
     const data = await shopifyGraphql(READY_FOR_PICKUP_QUERY, { id: orderGid });
     const orderNode = data.order;
-    if (!orderNode) return res.status(404).json({ success: false, error: 'Order niet gevonden' });
+
+    if (!orderNode) {
+      return res.status(404).json({ success: false, error: 'Order niet gevonden' });
+    }
 
     const pickupFulfillmentOrders = (orderNode.fulfillmentOrders?.nodes || []).filter(isOpenPickupFulfillmentOrder);
+
     if (!pickupFulfillmentOrders.length) {
-      return res.status(400).json({ success: false, error: 'Geen open pickup fulfillment order gevonden voor deze order' });
+      return res.status(400).json({
+        success: false,
+        error: 'Geen open pickup fulfillment order gevonden voor deze order'
+      });
     }
 
     const lineItemsByFulfillmentOrder = buildLineItemsByFulfillmentOrder(pickupFulfillmentOrders);
+
     if (!lineItemsByFulfillmentOrder.length) {
       return res.status(400).json({ success: false, error: 'Geen openstaande pickup artikelen gevonden' });
     }
@@ -168,16 +207,31 @@ export default async function handler(req, res) {
     const mutationResult = await shopifyGraphql(PREPARED_FOR_PICKUP_MUTATION, {
       input: { lineItemsByFulfillmentOrder }
     });
+
     const userErrors = mutationResult.fulfillmentOrderLineItemsPreparedForPickup?.userErrors || [];
+
     if (userErrors.length) {
-      return res.status(400).json({ success: false, error: 'Shopify kon de order niet op klaar voor afhalen zetten', details: userErrors });
+      return res.status(400).json({
+        success: false,
+        error: 'Shopify kon de standaard pickup-mail niet versturen',
+        details: userErrors
+      });
     }
 
     const restOrder = await getOrder(numericOrderId);
     await addOrderTags(restOrder, ['pickup_ready', 'pickup_notified']);
 
-    return res.status(200).json({ success: true, message: 'Klant is via Shopify geinformeerd dat de order klaarstaat' });
+    return res.status(200).json({
+      success: true,
+      message: `Shopify standaardmail is verstuurd voor ${orderNode.name}. De order staat klaar voor afhalen.`,
+      orderName: orderNode.name
+    });
   } catch (error) {
-    return res.status(error.status || 500).json({ success: false, error: 'Klant kon niet geinformeerd worden', message: error.message, details: error.data || null });
+    return res.status(error.status || 500).json({
+      success: false,
+      error: 'Klant kon niet geinformeerd worden',
+      message: error.message,
+      details: error.data || null
+    });
   }
 }
