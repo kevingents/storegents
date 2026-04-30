@@ -1,49 +1,41 @@
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-10";
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 
 const STORE_LOCATIONS = {
-  "GENTS Antwerpen": "110837039477",
-  "GENTS Den Bosch": "110659666293",
-  "GENTS Zwolle": "107189305717",
-  "GENTS Magazijn": "105594290549",
-  "GENTS Rotterdam": "101068144957",
-  "GENTS Utrecht": "99265446205",
-  "GENTS Showroom": "97707753789",
-  "GENTS Zoetermeer": "97250378045",
-  "GENTS Tilburg": "97250345277",
-  "GENTS Nijmegen": "97250312509",
-  "GENTS Amsterdam": "97250279741",
-  "GENTS Maastricht": "97250246973",
-  "GENTS Leiden": "97250214205",
-  "GENTS Hilversum": "97250181437",
-  "GENTS Groningen": "97250148669",
-  "GENTS Delft": "97250115901",
-  "GENTS Enschede": "97250083133",
-  "GENTS Breda": "97250050365",
-  "GENTS Arnhem": "97250017597",
-  "GENTS Amersfoort": "97249984829",
-  "GENTS Almere": "97249919293"
+  'GENTS Antwerpen': '110837039477',
+  'GENTS Den Bosch': '110659666293',
+  'GENTS Zwolle': '107189305717',
+  'GENTS Magazijn': '105594290549',
+  'GENTS Rotterdam': '101068144957',
+  'GENTS Utrecht': '99265446205',
+  'GENTS Showroom': '97707753789',
+  'GENTS Zoetermeer': '97250378045',
+  'GENTS Tilburg': '97250345277',
+  'GENTS Nijmegen': '97250312509',
+  'GENTS Amsterdam': '97250279741',
+  'GENTS Maastricht': '97250246973',
+  'GENTS Leiden': '97250214205',
+  'GENTS Hilversum': '97250181437',
+  'GENTS Groningen': '97250148669',
+  'GENTS Delft': '97250115901',
+  'GENTS Enschede': '97250083133',
+  'GENTS Breda': '97250050365',
+  'GENTS Arnhem': '97250017597',
+  'GENTS Amersfoort': '97249984829',
+  'GENTS Almere': '97249919293'
 };
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const memoryCache = globalThis.__GENTS_PICKUP_CACHE__ || new Map();
-globalThis.__GENTS_PICKUP_CACHE__ = memoryCache;
-
 function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
 function cleanShopUrl(url) {
-  return String(url || "")
-    .replace(/^https?:\/\//, "")
-    .replace(/\/$/, "");
+  return String(url || '')
+    .replace(/^https?:\/\//, '')
+    .replace(/\/$/, '');
 }
 
 function shopifyUrl(path) {
@@ -51,20 +43,27 @@ function shopifyUrl(path) {
   return `https://${shop}/admin/api/${SHOPIFY_API_VERSION}${path}`;
 }
 
+function normalize(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function getDateMinIso(days) {
   const date = new Date();
-  date.setDate(date.getDate() - days);
+  date.setDate(date.getDate() - Number(days || 14));
   return date.toISOString();
 }
 
 function getNextPageUrl(linkHeader) {
   if (!linkHeader) return null;
 
-  const links = linkHeader.split(",");
+  const parts = String(linkHeader).split(',');
 
-  for (const link of links) {
-    if (link.includes('rel="next"')) {
-      const match = link.match(/<([^>]+)>/);
+  for (const part of parts) {
+    if (part.includes('rel="next"')) {
+      const match = part.match(/<([^>]+)>/);
       return match ? match[1] : null;
     }
   }
@@ -72,40 +71,26 @@ function getNextPageUrl(linkHeader) {
   return null;
 }
 
-async function shopifyGetUrl(url, attempt = 0) {
+async function shopifyGetUrl(url) {
   const response = await fetch(url, {
-    method: "GET",
+    method: 'GET',
     headers: {
-      "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-      "Content-Type": "application/json"
+      'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      'Content-Type': 'application/json'
     }
   });
 
   const text = await response.text();
 
-  let data;
+  let data = {};
   try {
     data = text ? JSON.parse(text) : {};
   } catch (error) {
     data = { raw: text };
   }
 
-  const rateLimited =
-    response.status === 429 ||
-    String(data.errors || data.error || data.raw || "")
-      .toLowerCase()
-      .includes("exceeded 20 calls per second");
-
-  if (rateLimited && attempt < 5) {
-    const retryAfter = Number(response.headers.get("retry-after") || 0);
-    const delay = retryAfter ? retryAfter * 1000 : 1200 + attempt * 800;
-
-    await sleep(delay);
-    return shopifyGetUrl(url, attempt + 1);
-  }
-
   if (!response.ok) {
-    const err = new Error("Shopify API fout");
+    const err = new Error('Shopify API fout');
     err.status = response.status;
     err.data = data;
     throw err;
@@ -113,7 +98,7 @@ async function shopifyGetUrl(url, attempt = 0) {
 
   return {
     data,
-    nextPageUrl: getNextPageUrl(response.headers.get("link"))
+    nextPageUrl: getNextPageUrl(response.headers.get('link'))
   };
 }
 
@@ -125,16 +110,15 @@ async function getOrdersFromPeriod(days) {
   const createdAtMin = encodeURIComponent(getDateMinIso(days));
 
   let nextUrl = shopifyUrl(
-    `/orders.json?status=any&limit=250&order=created_at desc&created_at_min=${createdAtMin}&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,line_items,fulfillments`
+    `/orders.json?status=any&limit=100&order=created_at desc&created_at_min=${createdAtMin}&fields=id,name,email,customer,created_at,financial_status,fulfillment_status,tags,note,note_attributes,shipping_lines,shipping_address,billing_address,line_items`
   );
 
   const allOrders = [];
   let pageCount = 0;
 
-  while (nextUrl && pageCount < 8) {
+  while (nextUrl && pageCount < 3) {
     const { data, nextPageUrl } = await shopifyGetUrl(nextUrl);
     allOrders.push(...(data.orders || []));
-
     nextUrl = nextPageUrl;
     pageCount += 1;
   }
@@ -150,6 +134,11 @@ async function getFulfillmentOrders(orderId) {
     const { data } = await shopifyGet(`/orders/${orderId}/fulfillment_orders.json`);
     return data.fulfillment_orders || [];
   } catch (error) {
+    console.error('[pickup-orders] fulfillment_orders fout', {
+      orderId,
+      message: error.message,
+      status: error.status
+    });
     return [];
   }
 }
@@ -175,55 +164,44 @@ async function mapLimit(items, limit, mapper) {
   return results;
 }
 
-function normalize(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function getAssignedLocationIds(fulfillmentOrders) {
   return (fulfillmentOrders || [])
-    .map((fo) => {
-      return (
-        fo.assigned_location_id ||
-        fo.assigned_location?.location_id ||
-        fo.assigned_location?.id
-      );
-    })
+    .map((fo) => (
+      fo.assigned_location_id ||
+      fo.assigned_location?.location_id ||
+      fo.assigned_location?.id
+    ))
     .filter(Boolean)
     .map(String);
 }
 
-function isPickupFulfillmentOrder(fo) {
+function isPickupFulfillmentOrder(fulfillmentOrder) {
   const text = [
-    fo.delivery_method?.method_type,
-    fo.delivery_method?.method_name,
-    fo.delivery_method?.presented_name,
-    fo.delivery_method?.service_code,
-    fo.status,
-    fo.request_status
-  ]
-    .join(" ")
-    .toLowerCase();
+    fulfillmentOrder?.delivery_method?.method_type,
+    fulfillmentOrder?.delivery_method?.method_name,
+    fulfillmentOrder?.delivery_method?.presented_name,
+    fulfillmentOrder?.delivery_method?.service_code,
+    fulfillmentOrder?.status,
+    fulfillmentOrder?.request_status
+  ].join(' ').toLowerCase();
 
   return (
-    text.includes("pickup") ||
-    text.includes("pick up") ||
-    text.includes("local") ||
-    text.includes("afhalen") ||
-    text.includes("ophalen") ||
-    text.includes("ophaal")
+    text.includes('pickup') ||
+    text.includes('pick up') ||
+    text.includes('local') ||
+    text.includes('afhalen') ||
+    text.includes('ophalen') ||
+    text.includes('ophaal')
   );
 }
 
 function orderHasPickupText(order) {
   const noteAttributes = Array.isArray(order.note_attributes)
-    ? order.note_attributes.map((item) => `${item.name || ""} ${item.value || ""}`)
+    ? order.note_attributes.map((item) => `${item.name || ''} ${item.value || ''}`)
     : [];
 
   const shippingLines = Array.isArray(order.shipping_lines)
-    ? order.shipping_lines.map((item) => `${item.title || ""} ${item.code || ""} ${item.source || ""}`)
+    ? order.shipping_lines.map((item) => `${item.title || ''} ${item.code || ''} ${item.source || ''}`)
     : [];
 
   const text = [
@@ -233,17 +211,14 @@ function orderHasPickupText(order) {
     order.shipping_address?.address2,
     ...noteAttributes,
     ...shippingLines
-  ]
-    .join(" ")
-    .toLowerCase();
+  ].join(' ').toLowerCase();
 
   return (
-    text.includes("pickup") ||
-    text.includes("pick up") ||
-    text.includes("afhalen") ||
-    text.includes("ophalen") ||
-    text.includes("ophaal") ||
-    text.includes("pickup in store")
+    text.includes('pickup') ||
+    text.includes('pick up') ||
+    text.includes('afhalen') ||
+    text.includes('ophalen') ||
+    text.includes('ophaal')
   );
 }
 
@@ -251,59 +226,66 @@ function getPickupStatus(order, fulfillmentOrders) {
   const tags = normalize(order.tags);
 
   if (
-    tags.includes("pickup_opgehaald") ||
-    tags.includes("pickup_picked_up") ||
-    tags.includes("opgehaald")
+    tags.includes('pickup_opgehaald') ||
+    tags.includes('pickup_picked_up') ||
+    tags.includes('opgehaald')
   ) {
     return {
-      pickupStatus: "opgehaald",
-      pickupStatusLabel: "Opgehaald"
+      pickupStatus: 'opgehaald',
+      pickupStatusLabel: 'Opgehaald'
     };
   }
 
   if (
-    tags.includes("pickup_ready") ||
-    tags.includes("pickup_notified") ||
-    tags.includes("klaar_voor_afhalen") ||
-    tags.includes("klaar voor afhalen") ||
-    tags.includes("ready for pickup")
+    tags.includes('pickup_ready') ||
+    tags.includes('pickup_notified') ||
+    tags.includes('klaar_voor_afhalen') ||
+    tags.includes('klaar voor afhalen') ||
+    tags.includes('ready for pickup')
   ) {
     return {
-      pickupStatus: "niet_opgehaald",
-      pickupStatusLabel: "Klant geïnformeerd"
+      pickupStatus: 'niet_opgehaald',
+      pickupStatusLabel: 'Klant geïnformeerd'
     };
   }
 
   const fulfillmentText = (fulfillmentOrders || [])
-    .map((fo) => `${fo.status || ""} ${fo.request_status || ""}`)
-    .join(" ")
+    .map((fo) => `${fo.status || ''} ${fo.request_status || ''}`)
+    .join(' ')
     .toLowerCase();
 
-  if (fulfillmentText.includes("closed") || order.fulfillment_status === "fulfilled") {
+  if (fulfillmentText.includes('closed') || order.fulfillment_status === 'fulfilled') {
     return {
-      pickupStatus: "opgehaald",
-      pickupStatusLabel: "Opgehaald"
+      pickupStatus: 'opgehaald',
+      pickupStatusLabel: 'Opgehaald'
     };
   }
 
   return {
-    pickupStatus: "nog_klaar_te_zetten",
-    pickupStatusLabel: "Nieuwe ophaalorder"
+    pickupStatus: 'nog_klaar_te_zetten',
+    pickupStatusLabel: 'Nieuwe ophaalorder'
   };
 }
 
 function mapCustomer(order) {
-  const customerName = order.customer
-    ? `${order.customer.first_name || ""} ${order.customer.last_name || ""}`.trim()
-    : "";
+  const nameFromCustomer = order.customer
+    ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim()
+    : '';
+
+  const name =
+    nameFromCustomer ||
+    order.shipping_address?.name ||
+    order.billing_address?.name ||
+    order.email ||
+    '-';
 
   return {
-    customer: customerName || order.email || "-",
-    email: order.email || order.customer?.email || ""
+    customer: name,
+    email: order.email || order.customer?.email || ''
   };
 }
 
-function mapOrder(order, fulfillmentOrders) {
+function mapPickupOrder(order, fulfillmentOrders) {
   const customer = mapCustomer(order);
   const pickup = getPickupStatus(order, fulfillmentOrders);
   const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
@@ -312,135 +294,90 @@ function mapOrder(order, fulfillmentOrders) {
     id: order.id,
     orderId: order.id,
     name: order.name,
-    orderNumber: String(order.name || "").replace("#", ""),
+    orderNumber: String(order.name || '').replace('#', ''),
     customer: customer.customer,
     email: customer.email,
     createdAt: order.created_at,
-    financialStatus: order.financial_status,
-    fulfillmentStatus: order.fulfillment_status || "open",
+    financialStatus: order.financial_status || '-',
+    fulfillmentStatus: order.fulfillment_status || 'open',
     assignedLocationIds,
     pickupStatus: pickup.pickupStatus,
     pickupStatusLabel: pickup.pickupStatusLabel,
-    tags: order.tags || "",
-    isPickup: true,
+    tags: order.tags || '',
     items: (order.line_items || []).map((item) => ({
       id: item.id,
       lineItemId: item.id,
-      name: item.name || item.title,
-      sku: item.sku || "",
-      variant: item.variant_title || "",
-      quantity: item.quantity
+      name: item.name || item.title || '-',
+      sku: item.sku || '',
+      variant: item.variant_title || '',
+      quantity: item.quantity || 0
     }))
   };
 }
 
-function getCacheKey({ store, statusFilter, days, strictPickupOnly, debug }) {
-  return JSON.stringify({
-    store,
-    statusFilter,
-    days,
-    strictPickupOnly,
-    debug
-  });
-}
-
-function getCached(key) {
-  const cached = memoryCache.get(key);
-
-  if (!cached) return null;
-
-  if (Date.now() - cached.createdAt > CACHE_TTL_MS) {
-    memoryCache.delete(key);
-    return null;
+function getWantedLocationIds(store) {
+  if (store === 'GENTS Brandstores') {
+    return Object.values(STORE_LOCATIONS);
   }
 
-  return {
-    ...cached.data,
-    cached: true,
-    cacheAgeSeconds: Math.round((Date.now() - cached.createdAt) / 1000)
-  };
-}
-
-function setCached(key, data) {
-  memoryCache.set(key, {
-    createdAt: Date.now(),
-    data
-  });
+  const id = STORE_LOCATIONS[store];
+  return id ? [String(id)] : [];
 }
 
 export default async function handler(req, res) {
   setCors(res);
 
-  if (req.method === "OPTIONS") {
+  if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  if (req.method !== "GET") {
+  if (req.method !== 'GET') {
     return res.status(405).json({
       success: false,
-      error: "Methode niet toegestaan"
+      error: 'Methode niet toegestaan'
     });
-  }
-
-  if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
-    return res.status(500).json({
-      success: false,
-      error: "Shopify configuratie ontbreekt",
-      expectedEnv: ["SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_URL"]
-    });
-  }
-
-  const store = String(req.query.store || "").trim();
-
-  const statusFilter = String(
-    req.query.status || "nog_klaar_te_zetten"
-  ).trim();
-
-  const debug = String(req.query.debug || "") === "1";
-  const strictPickupOnly = String(req.query.strictPickupOnly || "") === "1";
-  const days = Math.min(Math.max(Number(req.query.days || 14), 1), 60);
-  const forceRefresh = String(req.query.refresh || "") === "1";
-
-  if (!store) {
-    return res.status(400).json({
-      success: false,
-      error: "Winkel ontbreekt"
-    });
-  }
-
-  const wantedLocationId = STORE_LOCATIONS[store];
-
-  if (!wantedLocationId && store !== "GENTS Brandstores") {
-    return res.status(400).json({
-      success: false,
-      error: "Onbekende Shopify locatie",
-      store
-    });
-  }
-
-  const cacheKey = getCacheKey({
-    store,
-    statusFilter,
-    days,
-    strictPickupOnly,
-    debug
-  });
-
-  if (!forceRefresh) {
-    const cached = getCached(cacheKey);
-    if (cached) {
-      return res.status(200).json(cached);
-    }
   }
 
   try {
-    const startedAt = Date.now();
+    if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
+      return res.status(500).json({
+        success: false,
+        error: 'Shopify configuratie ontbreekt',
+        missing: {
+          SHOPIFY_ACCESS_TOKEN: !SHOPIFY_ACCESS_TOKEN,
+          SHOPIFY_STORE_URL: !SHOPIFY_STORE_URL
+        }
+      });
+    }
 
+    const store = String(req.query.store || '').trim();
+    const statusFilter = String(req.query.status || 'nog_klaar_te_zetten').trim();
+    const debug = String(req.query.debug || '') === '1';
+    const strictPickupOnly = String(req.query.strictPickupOnly || '') === '1';
+    const days = Math.min(Math.max(Number(req.query.days || 14), 1), 30);
+
+    if (!store) {
+      return res.status(400).json({
+        success: false,
+        error: 'Winkel ontbreekt'
+      });
+    }
+
+    const wantedLocationIds = getWantedLocationIds(store);
+
+    if (!wantedLocationIds.length && store !== 'GENTS Brandstores') {
+      return res.status(400).json({
+        success: false,
+        error: 'Onbekende Shopify locatie',
+        store
+      });
+    }
+
+    const startedAt = Date.now();
     const { orders, pageCount } = await getOrdersFromPeriod(days);
 
     const enrichedOrders = await mapLimit(orders, 2, async (order) => {
       const fulfillmentOrders = await getFulfillmentOrders(order.id);
-
       return {
         order,
         fulfillmentOrders
@@ -456,8 +393,8 @@ export default async function handler(req, res) {
       const assignedLocationIds = getAssignedLocationIds(fulfillmentOrders);
 
       const matchesLocation =
-        store === "GENTS Brandstores" ||
-        assignedLocationIds.includes(String(wantedLocationId));
+        store === 'GENTS Brandstores' ||
+        assignedLocationIds.some((id) => wantedLocationIds.includes(String(id)));
 
       const pickupByFulfillmentOrder = fulfillmentOrders.some(isPickupFulfillmentOrder);
       const pickupByText = orderHasPickupText(order);
@@ -467,12 +404,12 @@ export default async function handler(req, res) {
         debugRows.push({
           order: order.name,
           orderId: order.id,
-          createdAt: order.created_at,
           assignedLocationIds,
-          wantedLocationId,
+          wantedLocationIds,
           matchesLocation,
           pickupByFulfillmentOrder,
           pickupByText,
+          isPickup,
           fulfillmentStatus: order.fulfillment_status,
           tags: order.tags,
           fulfillmentOrders: fulfillmentOrders.map((fo) => ({
@@ -480,6 +417,7 @@ export default async function handler(req, res) {
             status: fo.status,
             request_status: fo.request_status,
             assigned_location_id: fo.assigned_location_id,
+            assigned_location: fo.assigned_location,
             delivery_method: fo.delivery_method
           }))
         });
@@ -487,40 +425,37 @@ export default async function handler(req, res) {
 
       if (!matchesLocation) continue;
       if (strictPickupOnly && !isPickup) continue;
+      if (!isPickup) continue;
 
-      const mapped = mapOrder(order, fulfillmentOrders);
+      const mapped = mapPickupOrder(order, fulfillmentOrders);
 
-      if (statusFilter !== "all" && mapped.pickupStatus !== statusFilter) {
+      if (statusFilter !== 'all' && mapped.pickupStatus !== statusFilter) {
         continue;
       }
 
       results.push(mapped);
     }
 
-    const data = {
+    return res.status(200).json({
       success: true,
       store,
-      wantedLocationId: wantedLocationId || null,
+      wantedLocationIds,
       status: statusFilter,
-      range: `last_${days}_days`,
       days,
       pagesScanned: pageCount,
       scanned: orders.length,
       count: results.length,
       totalOpen: results.length,
-      cached: false,
       durationMs: Date.now() - startedAt,
       orders: results,
       debug: debug ? debugRows : undefined
-    };
-
-    setCached(cacheKey, data);
-
-    return res.status(200).json(data);
+    });
   } catch (error) {
+    console.error('[pickup-orders] fatal error', error);
+
     return res.status(error.status || 500).json({
       success: false,
-      error: "Ophaalorders konden niet worden geladen",
+      error: 'Ophaalorders konden niet worden geladen',
       details: error.message,
       shopify: error.data || null
     });
