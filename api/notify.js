@@ -197,6 +197,7 @@ export default async function handler(req, res) {
 
   const body = parseBody(req);
   const orderId = String(body.orderId || body.id || '').trim();
+  const isReminder = body.reminder === true || body.reminder === 'true';
 
   if (!orderId) {
     return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
@@ -243,13 +244,12 @@ export default async function handler(req, res) {
       input: { lineItemsByFulfillmentOrder }
     });
 
-    const userErrors =
-      mutationResult.fulfillmentOrderLineItemsPreparedForPickup?.userErrors || [];
+    const userErrors = mutationResult.fulfillmentOrderLineItemsPreparedForPickup?.userErrors || [];
 
     if (userErrors.length) {
       return res.status(400).json({
         success: false,
-        error: userErrors.map((item) => item.message).join(', ') || 'Shopify kon de standaard pickup-mail niet versturen.',
+        error: userErrors.map((item) => item.message).join(', ') || 'Shopify kon de pickup-mail niet versturen.',
         details: userErrors,
         debug: {
           orderName: orderNode.name,
@@ -260,14 +260,23 @@ export default async function handler(req, res) {
 
     try {
       const restOrder = await getRestOrder(numericOrderId);
-      await addOrderTags(restOrder, ['pickup_ready', 'pickup_notified']);
+      const reminderDate = new Date().toISOString().slice(0, 10);
+      await addOrderTags(restOrder, [
+        'pickup_ready',
+        'pickup_notified',
+        isReminder ? 'pickup_reminder_sent' : '',
+        isReminder ? `pickup_reminder_${reminderDate}` : ''
+      ].filter(Boolean));
     } catch (tagError) {
       console.error('Pickup tags toevoegen mislukt:', tagError);
     }
 
     return res.status(200).json({
       success: true,
-      message: `Shopify standaardmail is verstuurd voor ${orderNode.name}. De order staat klaar voor afhalen.`,
+      reminder: isReminder,
+      message: isReminder
+        ? `Reminder is verwerkt voor ${orderNode.name}.`
+        : `Shopify standaardmail is verstuurd voor ${orderNode.name}. De order staat klaar voor afhalen.`,
       orderName: orderNode.name
     });
   } catch (error) {
