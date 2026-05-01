@@ -1,7 +1,6 @@
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -94,12 +93,6 @@ async function addOrderTags(order, tagsToAdd) {
   });
 }
 
-function hasValidAdminToken(req) {
-  if (!ADMIN_TOKEN) return true;
-  const incomingToken = String(req.headers['x-admin-token'] || req.headers['X-Admin-Token'] || '').trim();
-  return incomingToken === ADMIN_TOKEN;
-}
-
 const READY_FOR_PICKUP_QUERY = `
   query GetOrderForPickup($id: ID!) {
     order(id: $id) {
@@ -162,10 +155,6 @@ export default async function handler(req, res) {
 
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
-  }
-
-  if (!hasValidAdminToken(req)) {
-    return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
   if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
