@@ -1,9 +1,9 @@
+import { getFulfillments, receiveFulfillments, isSrsOpenStatus } from '../lib/srs-weborders-message-client.js';
+
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
-const SRS_PICKUP_COMPLETE_URL = process.env.SRS_PICKUP_COMPLETE_URL || '';
-const SRS_PICKUP_COMPLETE_SECRET = process.env.SRS_PICKUP_COMPLETE_SECRET || process.env.CRON_SECRET || '';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -137,34 +137,79 @@ function hasValidAdminToken(req, body) {
   return incomingToken === ADMIN_TOKEN;
 }
 
+function cleanOrderNr(value) {
+  return String(value || '').replace(/^#/, '').trim();
+}
+
 async function completePickupInSrs({ order, body }) {
-  if (!SRS_PICKUP_COMPLETE_URL) {
-    return { skipped: true, success: false, message: 'SRS_PICKUP_COMPLETE_URL ontbreekt. Shopify is verwerkt; SRS afhandeling is best-effort overgeslagen.' };
+  const orderNr = cleanOrderNr(body.srsOrderNr || body.weborderNumber || body.weborder || order.name || order.order_number || '');
+  if (!orderNr) {
+    return { skipped: true, success: false, message: 'SRS OrderNr ontbreekt. Shopify is verwerkt; SRS afhandeling overgeslagen.' };
   }
 
   try {
-    const response = await fetch(SRS_PICKUP_COMPLETE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(SRS_PICKUP_COMPLETE_SECRET ? { 'x-webhook-secret': SRS_PICKUP_COMPLETE_SECRET } : {})
-      },
-      body: JSON.stringify({
-        shopifyOrderId: String(order.id || ''),
-        shopifyOrderName: order.name || '',
-        weborderNumber: body.weborderNumber || body.weborder || order.name || '',
-        store: body.store || '',
-        pickedUpAt: new Date().toISOString()
-      })
-    });
+    const result = await getFulfillments({ orderNr });
+    const all = result.fulfillments || [];
+    const open = all.filter((item) => isSrsOpenStatus(item.status));
 
-    const text = await response.text();
-    let data = {};
-    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-    if (!response.ok) throw new Error(data.message || data.error || text || 'SRS pickup afhandeling mislukt.');
-    return { skipped: false, success: true, message: data.message || 'Order is in SRS afgehandeld.', data };
+    if (!open.length) {
+      return {
+        skipped: true,
+        success: false,
+        orderNr,
+        fulfillments: all,
+        message: 'Geen open SRS leveropdracht gevonden. Mogelijk al processed/geannuleerd/niet leverbaar.'
+      };
+    }
+
+    const grouped = new Map();
+    for (const item of open) {
+      const branchId = String(item.branchId || item.fulfillmentBranchId || item.fulfilmentBranchId || '').trim();
+      if (!branchId) continue;
+      if (!grouped.has(branchId)) grouped.set(branchId, []);
+      grouped.get(branchId).push(item);
+    }
+
+    if (!grouped.size) {
+      return {
+        skipped: true,
+        success: false,
+        orderNr,
+        fulfillments: open,
+        message: 'SRS BranchId ontbreekt op open leveropdrachten. Controleer SRS configuratie.'
+      };
+    }
+
+    const results = [];
+    for (const [branchId, items] of grouped.entries()) {
+      results.push(await receiveFulfillments({
+        orderNr,
+        branchId,
+        personnelId: body.personnelNumber || body.employeeNumber || '',
+        items: items.map((item) => ({
+          fulfillmentId: item.fulfillmentId,
+          orderLineNr: item.orderLineNr,
+          sku: item.sku,
+          branchId
+        }))
+      }));
+    }
+
+    const success = results.every((item) => item.success);
+    return {
+      skipped: false,
+      success,
+      orderNr,
+      results,
+      message: success ? 'Order is in SRS via ReceiveFulfillment afgehandeld.' : 'SRS ReceiveFulfillment is niet volledig completed.'
+    };
   } catch (error) {
-    return { skipped: false, success: false, message: error.message || 'SRS pickup afhandeling mislukt.' };
+    return {
+      skipped: false,
+      success: false,
+      orderNr,
+      message: error.message || 'SRS ReceiveFulfillment mislukt.'
+    };
   }
 }
 
@@ -219,8 +264,8 @@ export default async function handler(req, res) {
 
     const srsResult = await completePickupInSrs({ order, body });
     const tags = ['pickup_opgehaald'];
-    if (srsResult.success) tags.push('srs_afgehandeld');
-    else tags.push('srs_afhandeling_controleren');
+    if (srsResult.success) tags.push('srs_receive_fulfillment_verwerkt');
+    else tags.push('srs_receive_fulfillment_controleren');
     await addOrderTags(order, tags);
 
     return res.status(200).json({
