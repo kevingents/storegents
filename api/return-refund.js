@@ -10,7 +10,8 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
