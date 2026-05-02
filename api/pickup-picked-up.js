@@ -26,19 +26,36 @@ function gid(type, id) {
 
 function parseBody(req) {
   if (!req.body) return {};
+
   if (typeof req.body === 'string') {
-    try { return JSON.parse(req.body); } catch { return {}; }
+    try {
+      return JSON.parse(req.body);
+    } catch (_error) {
+      return {};
+    }
   }
+
   return req.body || {};
 }
 
 function readableError(data) {
   if (!data) return 'Onbekende Shopify fout';
   if (typeof data === 'string') return data;
-  if (Array.isArray(data.errors)) return data.errors.map((item) => item.message || JSON.stringify(item)).join(', ');
-  if (data.errors) return typeof data.errors === 'string' ? data.errors : JSON.stringify(data.errors);
-  if (data.error) return typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+
+  if (Array.isArray(data.errors)) {
+    return data.errors.map((item) => item.message || JSON.stringify(item)).join(', ');
+  }
+
+  if (data.errors) {
+    return typeof data.errors === 'string' ? data.errors : JSON.stringify(data.errors);
+  }
+
+  if (data.error) {
+    return typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+  }
+
   if (data.raw) return String(data.raw).slice(0, 300);
+
   return 'Onbekende Shopify fout';
 }
 
@@ -54,7 +71,12 @@ async function shopifyRequest(path, options = {}) {
 
   const text = await response.text();
   let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_error) {
+    data = { raw: text };
+  }
 
   if (!response.ok) {
     const error = new Error(readableError(data));
@@ -82,20 +104,35 @@ async function shopifyGraphql(query, variables) {
 }
 
 async function getOrder(orderId) {
-  const cleanId = String(orderId || '').replace('gid://shopify/Order/', '').replace(/^#/, '');
-  const data = await shopifyRequest(`/orders/${cleanId}.json?status=any`, { method: 'GET' });
+  const cleanId = String(orderId || '')
+    .replace('gid://shopify/Order/', '')
+    .replace(/^#/, '');
+
+  const data = await shopifyRequest(`/orders/${cleanId}.json?status=any`, {
+    method: 'GET'
+  });
+
   return data.order;
 }
 
 async function getFulfillmentOrders(orderId) {
-  const cleanId = String(orderId || '').replace('gid://shopify/Order/', '').replace(/^#/, '');
-  const data = await shopifyRequest(`/orders/${cleanId}/fulfillment_orders.json`, { method: 'GET' });
+  const cleanId = String(orderId || '')
+    .replace('gid://shopify/Order/', '')
+    .replace(/^#/, '');
+
+  const data = await shopifyRequest(`/orders/${cleanId}/fulfillment_orders.json`, {
+    method: 'GET'
+  });
+
   return data.fulfillment_orders || [];
 }
 
 function isPickupFulfillmentOrder(fo) {
   const methodType = String(fo.delivery_method?.method_type || '').toLowerCase();
-  if (['pick_up', 'pickup', 'pick-up', 'pick up'].includes(methodType)) return true;
+
+  if (['pick_up', 'pickup', 'pick-up', 'pick up'].includes(methodType)) {
+    return true;
+  }
 
   const text = [
     fo.delivery_method?.method_name,
@@ -104,7 +141,14 @@ function isPickupFulfillmentOrder(fo) {
     fo.assigned_location?.name
   ].join(' ').toLowerCase();
 
-  return text.includes('pickup') || text.includes('pick up') || text.includes('pick_up') || text.includes('afhalen') || text.includes('ophalen') || text.includes('ophaal');
+  return (
+    text.includes('pickup') ||
+    text.includes('pick up') ||
+    text.includes('pick_up') ||
+    text.includes('afhalen') ||
+    text.includes('ophalen') ||
+    text.includes('ophaal')
+  );
 }
 
 function isOpenFulfillmentOrder(fo) {
@@ -113,38 +157,106 @@ function isOpenFulfillmentOrder(fo) {
 }
 
 async function addOrderTags(order, tagsToAdd) {
-  const current = String(order.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+  const current = String(order.tags || '')
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
   const tags = Array.from(new Set([...current, ...tagsToAdd]));
+
   return shopifyRequest(`/orders/${order.id}.json`, {
     method: 'PUT',
-    body: JSON.stringify({ order: { id: order.id, tags: tags.join(', ') } })
+    body: JSON.stringify({
+      order: {
+        id: order.id,
+        tags: tags.join(', ')
+      }
+    })
   });
 }
 
 function groupFulfillmentOrdersByLocation(fulfillmentOrders) {
   const groups = new Map();
+
   for (const fo of fulfillmentOrders) {
-    const locationId = String(fo.assigned_location_id || fo.assigned_location?.location_id || fo.assigned_location?.id || 'unknown');
-    if (!groups.has(locationId)) groups.set(locationId, []);
+    const locationId = String(
+      fo.assigned_location_id ||
+      fo.assigned_location?.location_id ||
+      fo.assigned_location?.id ||
+      'unknown'
+    );
+
+    if (!groups.has(locationId)) {
+      groups.set(locationId, []);
+    }
+
     groups.get(locationId).push(fo);
   }
+
   return Array.from(groups.values());
 }
 
 function hasValidAdminToken(req, body) {
-  if (!ADMIN_TOKEN) return true;
-  const incomingToken = String(req.headers['x-admin-token'] || req.headers['X-Admin-Token'] || body.adminToken || '').trim();
-  return incomingToken === ADMIN_TOKEN;
+  const allowedTokens = [
+    process.env.ADMIN_TOKEN,
+    process.env.ADMIN_MASTER_PIN
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (!allowedTokens.length) return true;
+
+  const incomingToken = String(
+    req.headers['x-admin-token'] ||
+    req.headers['X-Admin-Token'] ||
+    body.adminToken ||
+    body.admin_token ||
+    ''
+  ).trim();
+
+  return allowedTokens.includes(incomingToken);
 }
 
 function cleanOrderNr(value) {
   return String(value || '').replace(/^#/, '').trim();
 }
 
+function isSuccessfulSrsPickupResult(item) {
+  const statusText = [
+    item?.status,
+    item?.srsStatus,
+    item?.message,
+    item?.raw
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ');
+
+  return (
+    item?.success === true ||
+    statusText.includes('completed') ||
+    statusText.includes('processed') ||
+    statusText.includes('geleverd aan klant') ||
+    statusText.includes('geleverd') ||
+    statusText.includes('afgehandeld')
+  );
+}
+
 async function completePickupInSrs({ order, body }) {
-  const orderNr = cleanOrderNr(body.srsOrderNr || body.weborderNumber || body.weborder || order.name || order.order_number || '');
+  const orderNr = cleanOrderNr(
+    body.srsOrderNr ||
+    body.weborderNumber ||
+    body.weborder ||
+    order.name ||
+    order.order_number ||
+    ''
+  );
+
   if (!orderNr) {
-    return { skipped: true, success: false, message: 'SRS OrderNr ontbreekt. Shopify is verwerkt; SRS afhandeling overgeslagen.' };
+    return {
+      skipped: true,
+      success: false,
+      message: 'SRS OrderNr ontbreekt. Shopify is verwerkt; SRS afhandeling overgeslagen.'
+    };
   }
 
   try {
@@ -153,20 +265,43 @@ async function completePickupInSrs({ order, body }) {
     const open = all.filter((item) => isSrsOpenStatus(item.status));
 
     if (!open.length) {
+      const alreadyDelivered = all.some((item) => {
+        const status = String(item.status || '').toLowerCase();
+        return (
+          status.includes('processed') ||
+          status.includes('completed') ||
+          status.includes('geleverd aan klant') ||
+          status.includes('geleverd')
+        );
+      });
+
       return {
         skipped: true,
-        success: false,
+        success: alreadyDelivered,
         orderNr,
         fulfillments: all,
-        message: 'Geen open SRS leveropdracht gevonden. Mogelijk al processed/geannuleerd/niet leverbaar.'
+        message: alreadyDelivered
+          ? 'SRS leveropdracht stond al op geleverd aan klant.'
+          : 'Geen open SRS leveropdracht gevonden. Mogelijk al processed/geannuleerd/niet leverbaar.'
       };
     }
 
     const grouped = new Map();
+
     for (const item of open) {
-      const branchId = String(item.branchId || item.fulfillmentBranchId || item.fulfilmentBranchId || '').trim();
+      const branchId = String(
+        item.branchId ||
+        item.fulfillmentBranchId ||
+        item.fulfilmentBranchId ||
+        ''
+      ).trim();
+
       if (!branchId) continue;
-      if (!grouped.has(branchId)) grouped.set(branchId, []);
+
+      if (!grouped.has(branchId)) {
+        grouped.set(branchId, []);
+      }
+
       grouped.get(branchId).push(item);
     }
 
@@ -181,8 +316,9 @@ async function completePickupInSrs({ order, body }) {
     }
 
     const results = [];
+
     for (const [branchId, items] of grouped.entries()) {
-      results.push(await receiveFulfillments({
+      const srsResult = await receiveFulfillments({
         orderNr,
         branchId,
         personnelId: body.personnelNumber || body.employeeNumber || '',
@@ -192,23 +328,29 @@ async function completePickupInSrs({ order, body }) {
           sku: item.sku,
           branchId
         }))
-      }));
+      });
+
+      results.push(srsResult);
     }
 
-    const success = results.every((item) => item.success);
+    const success = results.every(isSuccessfulSrsPickupResult);
+
     return {
       skipped: false,
       success,
       orderNr,
       results,
-      message: success ? 'Order is in SRS via ReceiveFulfillment afgehandeld.' : 'SRS ReceiveFulfillment is niet volledig completed.'
+      message: success
+        ? 'Order is in SRS geleverd aan klant.'
+        : 'SRS ReceiveFulfillment is uitgevoerd, maar status kon niet als succesvol worden herkend.'
     };
   } catch (error) {
     return {
       skipped: false,
       success: false,
       orderNr,
-      message: error.message || 'SRS ReceiveFulfillment mislukt.'
+      message: error.message || 'SRS ReceiveFulfillment mislukt.',
+      details: error.fault || error.data || null
     };
   }
 }
@@ -216,65 +358,153 @@ async function completePickupInSrs({ order, body }) {
 const FULFILLMENT_CREATE_MUTATION = `
   mutation fulfillmentCreate($fulfillment: FulfillmentInput!) {
     fulfillmentCreate(fulfillment: $fulfillment) {
-      fulfillment { id status }
-      userErrors { field message }
+      fulfillment {
+        id
+        status
+      }
+      userErrors {
+        field
+        message
+      }
     }
   }
 `;
 
 export default async function handler(req, res) {
   setCors(res);
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({
+      success: false,
+      error: 'Methode niet toegestaan'
+    });
+  }
 
   const body = parseBody(req);
-  if (!hasValidAdminToken(req, body)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
-  if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) return res.status(500).json({ success: false, error: 'Shopify configuratie ontbreekt' });
+
+  if (!hasValidAdminToken(req, body)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Niet bevoegd.'
+    });
+  }
+
+  if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
+    return res.status(500).json({
+      success: false,
+      error: 'Shopify configuratie ontbreekt'
+    });
+  }
 
   const orderId = String(body.orderId || body.id || '').trim();
-  if (!orderId) return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
+
+  if (!orderId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Order ID ontbreekt'
+    });
+  }
 
   try {
     const order = await getOrder(orderId);
-    if (!order) return res.status(404).json({ success: false, error: 'Order niet gevonden' });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order niet gevonden'
+      });
+    }
 
     const fulfillmentOrders = await getFulfillmentOrders(order.id);
-    const openPickupFulfillmentOrders = fulfillmentOrders.filter((fo) => isOpenFulfillmentOrder(fo) && isPickupFulfillmentOrder(fo));
+
+    const openPickupFulfillmentOrders = fulfillmentOrders.filter((fo) => {
+      return isOpenFulfillmentOrder(fo) && isPickupFulfillmentOrder(fo);
+    });
 
     if (!openPickupFulfillmentOrders.length) {
-      await addOrderTags(order, ['pickup_gecontroleerd_geen_open_pickup']);
+      const srsResult = await completePickupInSrs({ order, body });
+
+      const tags = ['pickup_gecontroleerd_geen_open_pickup'];
+
+      if (srsResult.success) {
+        tags.push('srs_receive_fulfillment_verwerkt');
+      } else {
+        tags.push('srs_receive_fulfillment_controleren');
+      }
+
+      await addOrderTags(order, tags);
+
       return res.status(200).json({
         success: true,
         alreadyClosed: true,
-        message: 'Geen open pickup fulfillment order gevonden. Waarschijnlijk is de order al afgehandeld of niet als pickup fulfillment aangemaakt. Controle-tag toegevoegd.',
+        message: srsResult.success
+          ? 'Geen open Shopify pickup fulfillment gevonden. SRS staat wel op geleverd aan klant.'
+          : 'Geen open Shopify pickup fulfillment order gevonden. Controleer SRS indien nodig.',
         fulfillment: null,
-        srs: { skipped: true, success: false, message: 'SRS niet aangeroepen omdat Shopify geen open pickup fulfillment order had.' }
+        srs: srsResult
       });
     }
 
     const fulfillmentResults = [];
+
     for (const group of groupFulfillmentOrdersByLocation(openPickupFulfillmentOrders)) {
-      const lineItemsByFulfillmentOrder = group.map((fo) => ({ fulfillmentOrderId: gid('FulfillmentOrder', fo.id) }));
-      const graphqlResult = await shopifyGraphql(FULFILLMENT_CREATE_MUTATION, { fulfillment: { lineItemsByFulfillmentOrder, notifyCustomer: false } });
+      const lineItemsByFulfillmentOrder = group.map((fo) => ({
+        fulfillmentOrderId: gid('FulfillmentOrder', fo.id)
+      }));
+
+      const graphqlResult = await shopifyGraphql(FULFILLMENT_CREATE_MUTATION, {
+        fulfillment: {
+          lineItemsByFulfillmentOrder,
+          notifyCustomer: false
+        }
+      });
+
       const result = graphqlResult.fulfillmentCreate;
       const userErrors = result?.userErrors || [];
-      if (userErrors.length) return res.status(400).json({ success: false, error: 'Shopify kon de order niet fulfillen / op afgehaald zetten', details: userErrors });
-      if (result?.fulfillment) fulfillmentResults.push(result.fulfillment);
+
+      if (userErrors.length) {
+        return res.status(400).json({
+          success: false,
+          error: 'Shopify kon de order niet fulfillen / op afgehaald zetten',
+          details: userErrors
+        });
+      }
+
+      if (result?.fulfillment) {
+        fulfillmentResults.push(result.fulfillment);
+      }
     }
 
     const srsResult = await completePickupInSrs({ order, body });
+
     const tags = ['pickup_opgehaald'];
-    if (srsResult.success) tags.push('srs_receive_fulfillment_verwerkt');
-    else tags.push('srs_receive_fulfillment_controleren');
+
+    if (srsResult.success) {
+      tags.push('srs_receive_fulfillment_verwerkt');
+    } else {
+      tags.push('srs_receive_fulfillment_controleren');
+    }
+
     await addOrderTags(order, tags);
 
     return res.status(200).json({
       success: true,
-      message: srsResult.success ? 'Order is opgehaald gemarkeerd in Shopify en afgehandeld in SRS.' : 'Order is opgehaald gemarkeerd in Shopify. SRS afhandeling moet nog gecontroleerd worden.',
+      message: srsResult.success
+        ? 'Order is opgehaald gemarkeerd in Shopify en afgehandeld in SRS.'
+        : 'Order is opgehaald gemarkeerd in Shopify. SRS afhandeling moet nog gecontroleerd worden.',
       fulfillment: fulfillmentResults,
       srs: srsResult
     });
   } catch (error) {
-    return res.status(error.status || 500).json({ success: false, error: 'Order kon niet op opgehaald worden gezet', message: error.message, details: error.data || null });
+    return res.status(error.status || 500).json({
+      success: false,
+      error: 'Order kon niet op opgehaald worden gezet',
+      message: error.message,
+      details: error.data || null
+    });
   }
 }
