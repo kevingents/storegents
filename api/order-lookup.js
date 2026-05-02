@@ -27,6 +27,7 @@ function getShopifyConfig() {
   }
 
   shop = shop.replace('https://', '').replace('http://', '').replace(/\/$/, '');
+
   return { shop, token };
 }
 
@@ -55,7 +56,11 @@ async function shopifyFetch(shop, token, path, options = {}) {
   const text = await response.text();
   let data = null;
 
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_error) {
+    data = { raw: text };
+  }
 
   return { response, data };
 }
@@ -71,44 +76,60 @@ async function shopifyGraphql(shop, token, query, variables) {
   });
 
   const data = await response.json();
+
   if (!response.ok) {
     const error = new Error('Shopify GraphQL request mislukt');
     error.status = response.status;
     error.details = data;
     throw error;
   }
+
   if (data.errors && data.errors.length) {
     const error = new Error(data.errors.map((item) => item.message).join(', '));
     error.status = 500;
     error.details = data.errors;
     throw error;
   }
+
   return data.data;
 }
 
 async function getProductImage(shop, token, productId, variantId) {
   if (!productId) return '';
+
   try {
     const { response, data } = await shopifyFetch(shop, token, `/products/${productId}.json`);
+
     if (!response.ok || !data.product) return '';
+
     const product = data.product;
+
     if (variantId && product.images && product.images.length) {
-      const variantImage = product.images.find((image) => image.variant_ids && image.variant_ids.includes(Number(variantId)));
+      const variantImage = product.images.find((image) => {
+        return image.variant_ids && image.variant_ids.includes(Number(variantId));
+      });
+
       if (variantImage && variantImage.src) return variantImage.src;
     }
+
     return product.image?.src || '';
-  } catch {
+  } catch (_error) {
     return '';
   }
 }
 
 async function getLocationName(shop, token, locationId) {
   if (!locationId) return '-';
+
   try {
     const { response, data } = await shopifyFetch(shop, token, `/locations/${locationId}.json`);
-    if (response.ok && data.location && data.location.name) return data.location.name;
+
+    if (response.ok && data.location && data.location.name) {
+      return data.location.name;
+    }
+
     return `Locatie ID ${locationId}`;
-  } catch {
+  } catch (_error) {
     return `Locatie ID ${locationId}`;
   }
 }
@@ -123,28 +144,42 @@ function orderMatchesCheck(shopifyOrder, check) {
   const shippingZip = normalize(shopifyOrder.shipping_address?.zip);
   const billingZip = normalize(shopifyOrder.billing_address?.zip);
 
-  return normalizedCheck === email || normalizedCheck === contactEmail || normalizedCheck === customerEmail || normalizedCheck === shippingZip || normalizedCheck === billingZip;
+  return (
+    normalizedCheck === email ||
+    normalizedCheck === contactEmail ||
+    normalizedCheck === customerEmail ||
+    normalizedCheck === shippingZip ||
+    normalizedCheck === billingZip
+  );
 }
 
 function orderMatchesPostcode(shopifyOrder, postcode) {
   const normalizedPostcode = normalize(postcode);
   const shippingZip = normalize(shopifyOrder.shipping_address?.zip);
   const billingZip = normalize(shopifyOrder.billing_address?.zip);
+
   return normalizedPostcode === shippingZip || normalizedPostcode === billingZip;
 }
 
 async function findOrderByOrderNumber(shop, token, orderValue) {
   let orderNumber = String(orderValue || '').trim();
+
   if (!orderNumber) return null;
   if (!orderNumber.startsWith('#')) orderNumber = `#${orderNumber}`;
 
-  const { response, data } = await shopifyFetch(shop, token, `/orders.json?status=any&name=${encodeURIComponent(orderNumber)}`);
+  const { response, data } = await shopifyFetch(
+    shop,
+    token,
+    `/orders.json?status=any&name=${encodeURIComponent(orderNumber)}`
+  );
+
   if (!response.ok) {
     const error = new Error('Shopify order lookup mislukt');
     error.status = response.status;
     error.details = data;
     throw error;
   }
+
   return data.orders && data.orders.length ? data.orders[0] : null;
 }
 
@@ -160,33 +195,72 @@ async function findOrdersByEmailFast(shop, token, email) {
             email
             displayFinancialStatus
             displayFulfillmentStatus
-            totalPriceSet { shopMoney { amount currencyCode } }
-            shippingAddress { name zip }
-            billingAddress { name zip }
-            customer { firstName lastName email }
-            lineItems(first: 10) { edges { node { id name quantity sku variantTitle } } }
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            shippingAddress {
+              name
+              zip
+            }
+            billingAddress {
+              name
+              zip
+            }
+            customer {
+              firstName
+              lastName
+              email
+            }
+            lineItems(first: 10) {
+              edges {
+                node {
+                  id
+                  name
+                  quantity
+                  sku
+                  variantTitle
+                }
+              }
+            }
           }
         }
       }
     }
   `;
-  const data = await shopifyGraphql(shop, token, graphQuery, { query: `email:${email}`, first: MAX_QUERY_RESULTS });
+
+  const data = await shopifyGraphql(shop, token, graphQuery, {
+    query: `email:${email}`,
+    first: MAX_QUERY_RESULTS
+  });
+
   return (data.orders?.edges || []).map((edge) => edge.node);
 }
 
 async function findOrdersByPostcodeFallback(shop, token, postcode) {
-  const { response, data } = await shopifyFetch(shop, token, `/orders.json?status=any&limit=250&order=created_at desc`);
+  const { response, data } = await shopifyFetch(
+    shop,
+    token,
+    `/orders.json?status=any&limit=250&order=created_at desc`
+  );
+
   if (!response.ok) {
     const error = new Error('Shopify order lookup mislukt');
     error.status = response.status;
     error.details = data;
     throw error;
   }
-  return (data.orders || []).filter((order) => orderMatchesPostcode(order, postcode)).slice(0, MAX_QUERY_RESULTS);
+
+  return (data.orders || [])
+    .filter((order) => orderMatchesPostcode(order, postcode))
+    .slice(0, MAX_QUERY_RESULTS);
 }
 
 function formatAddress(address) {
   if (!address) return null;
+
   return {
     name: address.name || `${address.first_name || ''} ${address.last_name || ''}`.trim(),
     company: address.company || '',
@@ -202,7 +276,12 @@ function formatAddress(address) {
 }
 
 function formatGraphqlOrderSummary(order) {
-  const customerName = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() || order.shippingAddress?.name || order.billingAddress?.name || '-';
+  const customerName =
+    `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim() ||
+    order.shippingAddress?.name ||
+    order.billingAddress?.name ||
+    '-';
+
   return {
     id: numericIdFromGid(order.id),
     gid: order.id,
@@ -242,45 +321,109 @@ function buildRefundMaps(foundOrder) {
   let lastRefundAt = '';
 
   for (const refund of foundOrder.refunds || []) {
-    if (refund.created_at && (!lastRefundAt || new Date(refund.created_at) > new Date(lastRefundAt))) lastRefundAt = refund.created_at;
-    for (const transaction of refund.transactions || []) {
-      if (String(transaction.kind || '').toLowerCase() === 'refund' && String(transaction.status || '').toLowerCase() !== 'failure') totalRefunded += Number(transaction.amount || 0);
+    if (refund.created_at && (!lastRefundAt || new Date(refund.created_at) > new Date(lastRefundAt))) {
+      lastRefundAt = refund.created_at;
     }
+
+    for (const transaction of refund.transactions || []) {
+      if (
+        String(transaction.kind || '').toLowerCase() === 'refund' &&
+        String(transaction.status || '').toLowerCase() !== 'failure'
+      ) {
+        totalRefunded += Number(transaction.amount || 0);
+      }
+    }
+
     for (const refundLineItem of refund.refund_line_items || []) {
       const lineItemId = String(refundLineItem.line_item_id || refundLineItem.line_item?.id || '');
       const quantity = Number(refundLineItem.quantity || 0);
       const subtotal = Number(refundLineItem.subtotal || 0);
+
       if (!lineItemId) continue;
+
       refundedByLineItem.set(lineItemId, (refundedByLineItem.get(lineItemId) || 0) + quantity);
-      lastRefundByLineItem.set(lineItemId, { refundedAt: refund.created_at || '', refundId: refund.id || '', quantity, amount: subtotal, note: refund.note || '' });
+      lastRefundByLineItem.set(lineItemId, {
+        refundedAt: refund.created_at || '',
+        refundId: refund.id || '',
+        quantity,
+        amount: subtotal,
+        note: refund.note || ''
+      });
     }
   }
-  return { refundedByLineItem, lastRefundByLineItem, totalRefunded, lastRefundAt };
+
+  return {
+    refundedByLineItem,
+    lastRefundByLineItem,
+    totalRefunded,
+    lastRefundAt
+  };
+}
+
+function fulfilledQuantityForLineItem(item, fulfillments) {
+  const itemId = String(item.id || '');
+
+  const fromFulfillments = (fulfillments || []).reduce((sum, fulfillment) => {
+    const fulfilledLine = (fulfillment.line_items || []).find((fulfilledItem) => {
+      return String(fulfilledItem.id || '') === itemId;
+    });
+
+    return sum + Number(fulfilledLine?.quantity || 0);
+  }, 0);
+
+  return Math.max(
+    Number(item.fulfilled_quantity || 0),
+    fromFulfillments
+  );
 }
 
 function findSrsFulfillmentForItem(item, srsFulfillments) {
   const sku = String(item.sku || '').trim().toLowerCase();
-  return (srsFulfillments || []).find((fulfillment) => sku && String(fulfillment.sku || '').trim().toLowerCase() === sku) || null;
+
+  return (srsFulfillments || []).find((fulfillment) => {
+    return sku && String(fulfillment.sku || '').trim().toLowerCase() === sku;
+  }) || null;
 }
 
 async function getSrsInfo(orderNr) {
   const clean = String(orderNr || '').replace(/^#/, '').trim();
+
   if (!clean) return null;
+
   try {
     const [fulfillmentResult, detailResult] = await Promise.allSettled([
       getFulfillments({ orderNr: clean }),
       getWebordersWithDetails(clean)
     ]);
-    const fulfillments = fulfillmentResult.status === 'fulfilled' ? fulfillmentResult.value.fulfillments || [] : [];
-    const details = detailResult.status === 'fulfilled' ? detailResult.value.detailsByOrder?.get(clean) || null : null;
+
+    const fulfillments =
+      fulfillmentResult.status === 'fulfilled'
+        ? fulfillmentResult.value.fulfillments || []
+        : [];
+
+    const details =
+      detailResult.status === 'fulfilled'
+        ? detailResult.value.detailsByOrder?.get(clean) || null
+        : null;
+
     return {
       orderNr: clean,
       fulfillments,
       details,
-      error: fulfillmentResult.status === 'rejected' ? fulfillmentResult.reason.message : detailResult.status === 'rejected' ? detailResult.reason.message : ''
+      error:
+        fulfillmentResult.status === 'rejected'
+          ? fulfillmentResult.reason.message
+          : detailResult.status === 'rejected'
+            ? detailResult.reason.message
+            : ''
     };
   } catch (error) {
-    return { orderNr: clean, fulfillments: [], details: null, error: error.message || 'SRS informatie kon niet worden opgehaald.' };
+    return {
+      orderNr: clean,
+      fulfillments: [],
+      details: null,
+      error: error.message || 'SRS informatie kon niet worden opgehaald.'
+    };
   }
 }
 
@@ -288,25 +431,69 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
   const fulfillments = foundOrder.fulfillments || [];
   const firstFulfillment = fulfillments[0] || null;
   const refundInfo = buildRefundMaps(foundOrder);
-  const trackingNumber = firstFulfillment?.tracking_number || firstFulfillment?.tracking_numbers?.[0] || '';
-  const trackingUrl = firstFulfillment?.tracking_url || firstFulfillment?.tracking_urls?.[0] || '';
+
+  const trackingNumber =
+    firstFulfillment?.tracking_number ||
+    firstFulfillment?.tracking_numbers?.[0] ||
+    '';
+
+  const trackingUrl =
+    firstFulfillment?.tracking_url ||
+    firstFulfillment?.tracking_urls?.[0] ||
+    '';
+
   const locationId = firstFulfillment?.location_id || foundOrder.location_id || '';
   const locationName = await getLocationName(shop, token, locationId);
   const srs = await getSrsInfo(foundOrder.name || foundOrder.order_number);
 
   const items = await Promise.all((foundOrder.line_items || []).map(async (item) => {
-    const matchingFulfillment = fulfillments.find((fulfillment) => (fulfillment.line_items || []).some((fulfilledItem) => String(fulfilledItem.id) === String(item.id)));
+    const matchingFulfillment = fulfillments.find((fulfillment) => {
+      return (fulfillment.line_items || []).some((fulfilledItem) => {
+        return String(fulfilledItem.id) === String(item.id);
+      });
+    });
+
     const itemLocationId = matchingFulfillment?.location_id || locationId || '';
-    const itemLocationName = itemLocationId && itemLocationId !== locationId ? await getLocationName(shop, token, itemLocationId) : locationName;
+    const itemLocationName =
+      itemLocationId && itemLocationId !== locationId
+        ? await getLocationName(shop, token, itemLocationId)
+        : locationName;
+
     const image = await getProductImage(shop, token, item.product_id, item.variant_id);
+
     const quantity = Number(item.quantity || 0);
-    const fulfilledQuantity = Number(item.fulfilled_quantity || 0);
+    const fulfilledQuantity = fulfilledQuantityForLineItem(item, fulfillments);
     const refundedQuantity = Number(refundInfo.refundedByLineItem.get(String(item.id)) || 0);
-    const refundableQuantity = Math.max(Math.min(quantity, fulfilledQuantity) - refundedQuantity, 0);
-    const fulfillmentStatus = matchingFulfillment || fulfilledQuantity > 0 ? 'Verzonden' : 'Nog niet verzonden';
+
+    const refundableQuantity = Math.max(
+      Math.min(quantity, fulfilledQuantity) - refundedQuantity,
+      0
+    );
+
+    const fulfillmentStatus =
+      matchingFulfillment || fulfilledQuantity > 0
+        ? 'Verzonden'
+        : 'Nog niet verzonden';
+
     const srsFulfillment = findSrsFulfillmentForItem(item, srs?.fulfillments || []);
     const srsStatus = srsFulfillment?.status || '';
-    const returnBlocked = srsStatus && String(srsStatus).toLowerCase() !== 'processed' ? true : (fulfillmentStatus === 'Nog niet verzonden' || refundableQuantity <= 0);
+    const normalizedSrsStatus = String(srsStatus || '').toLowerCase();
+
+    const returnBlocked =
+      normalizedSrsStatus && normalizedSrsStatus !== 'processed'
+        ? true
+        : fulfilledQuantity <= 0 || refundedQuantity >= Math.min(quantity, fulfilledQuantity) || refundableQuantity <= 0;
+
+    const returnBlockedReason =
+      normalizedSrsStatus && normalizedSrsStatus !== 'processed'
+        ? `SRS status is ${srsStatus}. Retour mag pas bij processed.`
+        : fulfilledQuantity <= 0
+          ? 'Deze regel is volgens Shopify nog niet geleverd en mag daarom niet retour.'
+          : refundedQuantity >= Math.min(quantity, fulfilledQuantity)
+            ? 'Deze regel is al volledig terugbetaald.'
+            : refundableQuantity <= 0
+              ? 'Deze regel is niet meer retourbaar.'
+              : '';
 
     return {
       id: item.id,
@@ -328,18 +515,16 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
       branchId: srsFulfillment?.branchId || srsFulfillment?.fulfillmentBranchId || '',
       srsPickStore: srsFulfillment?.fulfillmentStore || srsFulfillment?.fulfilmentStore || '',
       returnBlocked,
-      returnBlockedReason: srsStatus && String(srsStatus).toLowerCase() !== 'processed'
-        ? `SRS status is ${srsStatus}. Retour mag pas bij processed.`
-        : fulfillmentStatus === 'Nog niet verzonden'
-          ? 'Deze regel is nog niet verzonden en mag niet worden geretourneerd.'
-          : refundableQuantity <= 0
-            ? 'Deze regel is al volledig terugbetaald of niet meer retourbaar.'
-            : '',
+      returnBlockedReason,
       refund: refundInfo.lastRefundByLineItem.get(String(item.id)) || null
     };
   }));
 
-  const customerName = `${foundOrder.customer?.first_name || ''} ${foundOrder.customer?.last_name || ''}`.trim() || foundOrder.shipping_address?.name || foundOrder.billing_address?.name || '-';
+  const customerName =
+    `${foundOrder.customer?.first_name || ''} ${foundOrder.customer?.last_name || ''}`.trim() ||
+    foundOrder.shipping_address?.name ||
+    foundOrder.billing_address?.name ||
+    '-';
 
   return {
     id: foundOrder.id,
@@ -347,7 +532,12 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
     orderNumber: foundOrder.order_number,
     customer: customerName,
     customerEmail: foundOrder.email || foundOrder.contact_email || foundOrder.customer?.email || '',
-    customerPhone: foundOrder.phone || foundOrder.customer?.phone || foundOrder.shipping_address?.phone || foundOrder.billing_address?.phone || '',
+    customerPhone:
+      foundOrder.phone ||
+      foundOrder.customer?.phone ||
+      foundOrder.shipping_address?.phone ||
+      foundOrder.billing_address?.phone ||
+      '',
     customerZip: foundOrder.shipping_address?.zip || foundOrder.billing_address?.zip || '',
     financialStatus: foundOrder.financial_status || '-',
     fulfillmentStatus: foundOrder.fulfillment_status || 'Nog niet verzonden',
@@ -371,8 +561,12 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
       error: srs?.error || '',
       details: srs?.details || null,
       fulfillments: srs?.fulfillments || [],
-      unavailableCount: (srs?.fulfillments || []).filter((row) => String(row.status || '').toLowerCase() === 'unavailable').length,
-      cancelledCount: (srs?.fulfillments || []).filter((row) => ['cancelled', 'canceled'].includes(String(row.status || '').toLowerCase())).length
+      unavailableCount: (srs?.fulfillments || []).filter((row) => {
+        return String(row.status || '').toLowerCase() === 'unavailable';
+      }).length,
+      cancelledCount: (srs?.fulfillments || []).filter((row) => {
+        return ['cancelled', 'canceled'].includes(String(row.status || '').toLowerCase());
+      }).length
     },
     items
   };
@@ -380,43 +574,102 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
 
 export default async function handler(req, res) {
   setCors(res);
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'GET') {
+    return res.status(405).json({
+      error: 'Method not allowed'
+    });
+  }
 
   const order = String(req.query.order || '').trim();
   const check = String(req.query.check || '').trim();
   const query = String(req.query.query || '').trim();
   const searchValue = order || query || check;
 
-  if (!searchValue) return res.status(400).json({ error: 'Vul een ordernummer, e-mail of postcode in' });
+  if (!searchValue) {
+    return res.status(400).json({
+      error: 'Vul een ordernummer, e-mail of postcode in'
+    });
+  }
 
   const config = getShopifyConfig();
-  if (config.error) return res.status(500).json(config.error);
+
+  if (config.error) {
+    return res.status(500).json(config.error);
+  }
+
   const { shop, token } = config;
 
   try {
     if (order) {
       const foundOrder = await findOrderByOrderNumber(shop, token, order);
-      if (foundOrder && check && !orderMatchesCheck(foundOrder, check)) return res.status(403).json({ error: 'Controle komt niet overeen' });
-      if (!foundOrder) return res.status(404).json({ error: 'Geen order gevonden', searchedFor: searchValue });
+
+      if (foundOrder && check && !orderMatchesCheck(foundOrder, check)) {
+        return res.status(403).json({
+          error: 'Controle komt niet overeen'
+        });
+      }
+
+      if (!foundOrder) {
+        return res.status(404).json({
+          error: 'Geen order gevonden',
+          searchedFor: searchValue
+        });
+      }
+
       const formattedOrder = await formatRestOrderForFrontend(shop, token, foundOrder);
-      return res.status(200).json({ order: formattedOrder });
+
+      return res.status(200).json({
+        order: formattedOrder
+      });
     }
 
     if (isEmail(query || check)) {
       const foundOrders = await findOrdersByEmailFast(shop, token, query || check);
-      if (!foundOrders.length) return res.status(404).json({ error: 'Geen order gevonden', searchedFor: searchValue });
-      return res.status(200).json({ orders: foundOrders.map(formatGraphqlOrderSummary), count: foundOrders.length, limitedTo: MAX_QUERY_RESULTS, mode: 'email-fast' });
+
+      if (!foundOrders.length) {
+        return res.status(404).json({
+          error: 'Geen order gevonden',
+          searchedFor: searchValue
+        });
+      }
+
+      return res.status(200).json({
+        orders: foundOrders.map(formatGraphqlOrderSummary),
+        count: foundOrders.length,
+        limitedTo: MAX_QUERY_RESULTS,
+        mode: 'email-fast'
+      });
     }
 
     const foundOrders = await findOrdersByPostcodeFallback(shop, token, query || check);
+
     if (!foundOrders.length) {
-      return res.status(404).json({ error: 'Geen order gevonden', searchedFor: searchValue, note: 'Postcode zoekt alleen in de laatste 250 orders. Gebruik ordernummer of e-mail voor sneller en breder zoeken.' });
+      return res.status(404).json({
+        error: 'Geen order gevonden',
+        searchedFor: searchValue,
+        note: 'Postcode zoekt alleen in de laatste 250 orders. Gebruik ordernummer of e-mail voor sneller en breder zoeken.'
+      });
     }
 
-    const formattedOrders = await Promise.all(foundOrders.map((shopifyOrder) => formatRestOrderForFrontend(shop, token, shopifyOrder)));
-    return res.status(200).json({ orders: formattedOrders, count: formattedOrders.length, limitedTo: MAX_QUERY_RESULTS, mode: 'postcode-fallback' });
+    const formattedOrders = await Promise.all(
+      foundOrders.map((shopifyOrder) => formatRestOrderForFrontend(shop, token, shopifyOrder))
+    );
+
+    return res.status(200).json({
+      orders: formattedOrders,
+      count: formattedOrders.length,
+      limitedTo: MAX_QUERY_RESULTS,
+      mode: 'postcode-fallback'
+    });
   } catch (error) {
-    return res.status(error.status || 500).json({ error: error.message || 'Order kon niet worden opgezocht', details: error.details || undefined });
+    return res.status(error.status || 500).json({
+      error: error.message || 'Order kon niet worden opgezocht',
+      details: error.details || undefined
+    });
   }
 }
