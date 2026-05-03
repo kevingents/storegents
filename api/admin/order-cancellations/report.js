@@ -128,6 +128,31 @@ function totals(rows) {
   };
 }
 
+
+function dedupeRows(rows) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const row of rows || []) {
+    const key = [
+      row.idempotencyKey || '',
+      row.orderNr || '',
+      row.fulfillmentId || '',
+      row.orderLineNr || '',
+      row.articleNumber || row.sku || row.barcode || '',
+      row.store || '',
+      row.srsLineStatus || row.srsStatus || row.status || '',
+      Number(row.amount || 0)
+    ].join('::');
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(row);
+  }
+
+  return deduped;
+}
+
 function summary(rows) {
   const map = new Map();
 
@@ -246,12 +271,12 @@ export default async function handler(req, res) {
     }
 
     const all = await getOrderCancellations();
-    const rows = filterRows(all, req).map(normalizeRow);
+    const rows = dedupeRows(filterRows(all, req).map(normalizeRow));
 
     return res.status(200).json({
       success: true,
-      mode: 'all_stores_order_lines+srs_unavailable_statuses+impact_amounts',
-      note: 'Deze rapportage telt opgeslagen orderregels. SRS status unavailable wordt getoond als niet leverbaar en telt als gemiste omzet/voorraadimpact.',
+      mode: 'simple_all_stores_stock_impact_deduped',
+      note: 'Deze rapportage telt opgeslagen orderregels. Alles verversen uit SRS werkt alle winkels bij en toont daarna dit overzicht.',
       sync,
       totals: totals(rows),
       summary: summary(rows),

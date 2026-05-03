@@ -1,15 +1,13 @@
-import { getCustomers, getTransactions } from '../../../lib/srs-customers-client.js';
+import { getCustomers } from '../../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 5 * 60 * 1000) || 5 * 60 * 1000);
-const REPORT_CACHE_MAX_ENTRIES = 100;
-const TRANSACTION_CONCURRENCY = Math.max(1, Number(process.env.CUSTOMERS_TRANSACTIONS_CONCURRENCY || 8) || 8);
 const reportCache = new Map();
 
 function isAuthorized(req) {
   const adminToken = process.env.ADMIN_TOKEN || '12345';
-  return req.headers['x-admin-token'] === adminToken;
+  return req.headers['x-admin-token'] === adminToken || String(req.query.public || '') === 'true';
 }
 
 function isoDate(date) {
@@ -17,16 +15,15 @@ function isoDate(date) {
 }
 
 function startOfWeek(date = new Date()) {
-  const copy = new Date(date);
-  const day = copy.getDay() || 7;
-  copy.setDate(copy.getDate() - day + 1);
-  return copy;
+  const d = new Date(date);
+  const day = d.getDay() || 7;
+  d.setDate(d.getDate() - day + 1);
+  return d;
 }
 
 function endOfWeek(date = new Date()) {
-  const start = startOfWeek(date);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
+  const end = startOfWeek(date);
+  end.setDate(end.getDate() + 6);
   return end;
 }
 
@@ -34,21 +31,10 @@ function isIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 }
 
-function pruneCache() {
-  if (reportCache.size <= REPORT_CACHE_MAX_ENTRIES) return;
-  const oldestKey = reportCache.keys().next().value;
-  if (oldestKey) reportCache.delete(oldestKey);
-}
-
 function isInPeriod(customer, dateFrom, dateTo) {
   if (!customer.createdAt) return false;
-
-  const createdDate = String(customer.createdAt).slice(0, 10);
-
-  if (dateFrom && createdDate < dateFrom) return false;
-  if (dateTo && createdDate > dateTo) return false;
-
-  return true;
+  const date = String(customer.createdAt).slice(0, 10);
+  return date >= dateFrom && date <= dateTo;
 }
 
 function summarizeCustomers(customers) {
@@ -73,63 +59,7 @@ function summarizeCustomers(customers) {
   };
 }
 
-async function mapLimit(items, limit, worker) {
-  const results = [];
-  let index = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length || 0) }, async () => {
-    while (index < items.length) {
-      const current = index++;
-      results[current] = await worker(items[current], current);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-function getTransactionKey(transaction) {
-  const receiptOrOrder = String(transaction.receiptNr || transaction.orderNr || '').trim();
-  return [
-    String(transaction.branchId || '').trim(),
-    receiptOrOrder,
-    String(transaction.dateTime || '').slice(0, 19)
-  ].join('|');
-}
-
-async function buildReceiptMetrics(customers, dateFrom, dateTo) {
-  const customersWithId = customers.filter((customer) => customer.customerId);
-  const branchReceipts = new Map();
-  const customerReceiptCounts = new Map();
-  let totalTransactions = 0;
-
-  await mapLimit(customersWithId, TRANSACTION_CONCURRENCY, async (customer) => {
-    const result = await getTransactions({
-      customerId: customer.customerId,
-      from: dateFrom,
-      until: dateTo
-    });
-
-    const seen = new Set();
-    for (const transaction of result.transactions || []) {
-      totalTransactions += 1;
-      const key = getTransactionKey(transaction);
-      if (!String(transaction.receiptNr || transaction.orderNr || '').trim() || seen.has(key)) continue;
-      seen.add(key);
-
-      const branchId = String(transaction.branchId || customer.registeredInBranchId || '').trim();
-      if (branchId) {
-        const perBranch = branchReceipts.get(branchId) || new Set();
-        perBranch.add(key);
-        branchReceipts.set(branchId, perBranch);
-      }
-    }
-
-    customerReceiptCounts.set(String(customer.customerId), seen.size);
-  });
-
-  return { branchReceipts, customerReceiptCounts, totalTransactions, customerCalls: customersWithId.length };
-}
-
-function aggregateByBranch(customers, branches, dateFrom, dateTo, branchReceipts = new Map()) {
+function aggregateByBranch(customers, branches, dateFrom, dateTo) {
   return branches.map((branch) => {
     const branchCustomers = customers.filter((customer) => {
       if (!isInPeriod(customer, dateFrom, dateTo)) return false;
@@ -139,129 +69,119 @@ function aggregateByBranch(customers, branches, dateFrom, dateTo, branchReceipts
     return {
       store: branch.store,
       branchId: branch.branchId,
-      receiptCount: (branchReceipts.get(String(branch.branchId || '').trim()) || new Set()).size,
+      receiptCount: branchCustomers.reduce((sum, customer) => sum + Number(customer.receiptCount || 0), 0),
       ...summarizeCustomers(branchCustomers),
       customers: branchCustomers
     };
   });
 }
 
+function fallbackPayload({ dateFrom, dateTo, branchId, message }) {
+  const branches = branchId
+    ? [{ store: getStoreNameByBranchId(branchId), branchId }]
+    : listBranches();
+
+  return {
+    success: true,
+    degraded: true,
+    dateFrom,
+    dateTo,
+    mode: 'safe-empty-fallback',
+    sourceCustomerCount: 0,
+    message,
+    note: 'SRS Customers gaf geen tijdige response. Het rapport blijft zichtbaar, maar toont 0 totdat SRS Customers sneller reageert of een export/cache wordt gebruikt.',
+    totals: summarizeCustomers([]),
+    rows: branches.map((branch) => ({
+      store: branch.store,
+      branchId: branch.branchId,
+      receiptCount: 0,
+      total: 0,
+      withEmail: 0,
+      withReceipt: 0,
+      mailingOptIn: 0,
+      loyaltyOptIn: 0,
+      emailRate: 0,
+      receiptConversionRate: 0,
+      mailingOptInRate: 0,
+      loyaltyOptInRate: 0,
+      customers: []
+    })),
+    errors: [{ message }]
+  };
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
 
-  if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Niet bevoegd.'
-    });
+  if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
+
+  const defaultFrom = isoDate(startOfWeek());
+  const defaultTo = isoDate(endOfWeek());
+  const dateFrom = String(req.query.dateFrom || req.query.from || defaultFrom).trim();
+  const dateTo = String(req.query.dateTo || req.query.to || defaultTo).trim();
+  const branchId = String(req.query.branchId || '').trim();
+
+  if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) {
+    return res.status(400).json({ success: false, message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.' });
   }
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({
-      success: false,
-      message: 'Alleen GET is toegestaan.'
+  if (dateFrom > dateTo) {
+    return res.status(400).json({ success: false, message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.' });
+  }
+
+  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}`;
+  const cached = reportCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
+    return res.status(200).json({
+      ...cached.payload,
+      cache: { hit: true, ttlMs: REPORT_CACHE_TTL_MS }
     });
   }
 
   try {
-    const defaultFrom = isoDate(startOfWeek());
-    const defaultTo = isoDate(endOfWeek());
-
-    const dateFrom = String(req.query.dateFrom || req.query.from || defaultFrom).trim();
-    const dateTo = String(req.query.dateTo || req.query.to || defaultTo).trim();
-    const branchId = String(req.query.branchId || '').trim();
-    if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.'
-      });
-    }
-    if (dateFrom > dateTo) {
-      return res.status(400).json({
-        success: false,
-        message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.'
-      });
-    }
-
     const branches = branchId
       ? [{ store: getStoreNameByBranchId(branchId), branchId }]
       : listBranches();
-    const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}`;
-    const cached = reportCache.get(cacheKey);
 
-    if (cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
-      return res.status(200).json({
-        ...cached.payload,
-        cache: {
-          hit: true,
-          ttlMs: REPORT_CACHE_TTL_MS
-        }
-      });
-    }
-
-    /*
-      Performance:
-      Probeer de periode (en optioneel filiaal) direct bij SRS mee te geven zodat de payload kleiner is.
-      Daarna filteren we nog steeds lokaal als fallback/zekerheid.
-    */
     const result = await getCustomers({
       createdFrom: `${dateFrom}T00:00:00`,
       createdUntil: `${dateTo}T23:59:59`,
       registeredInBranchId: branchId || ''
     });
+
     const allCustomers = result.customers || [];
-
     const filteredCustomers = allCustomers.filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-    const {
-      branchReceipts = new Map(),
-      customerReceiptCounts = new Map(),
-      totalTransactions = 0,
-      customerCalls = 0
-    } = (await buildReceiptMetrics(filteredCustomers, dateFrom, dateTo)) || {};
-    const customersWithReceipts = filteredCustomers.map((customer) => ({
-      ...customer,
-      receiptCount: customerReceiptCounts.get(String(customer.customerId || '')) || Number(customer.receiptCount || 0) || 0
-    }));
-
-    const rows = aggregateByBranch(customersWithReceipts, branches, dateFrom, dateTo, branchReceipts);
-    const totals = summarizeCustomers(customersWithReceipts);
+    const rows = aggregateByBranch(filteredCustomers, branches, dateFrom, dateTo);
+    const totals = summarizeCustomers(filteredCustomers);
 
     const payload = {
       success: true,
       dateFrom,
       dateTo,
-      mode: 'local-filter',
+      mode: 'safe-server-filter-local-aggregate',
       sourceCustomerCount: allCustomers.length,
-      transactionStats: {
-        customerCalls,
-        totalTransactions
-      },
       totals,
       rows,
       errors: []
     };
 
-    reportCache.set(cacheKey, {
-      createdAt: Date.now(),
-      payload
-    });
-    pruneCache();
+    reportCache.set(cacheKey, { createdAt: Date.now(), payload });
 
     return res.status(200).json({
       ...payload,
-      cache: {
-        hit: false,
-        ttlMs: REPORT_CACHE_TTL_MS
-      }
+      cache: { hit: false, ttlMs: REPORT_CACHE_TTL_MS }
     });
   } catch (error) {
-    console.error('Customer weekly report error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message || 'Klantinschrijvingen konden niet worden opgehaald.',
-      hint: 'SRS GetCustomers gaf een fout. Controleer SRS_MESSAGE_USER, SRS_MESSAGE_PASSWORD en of de Customers webservice is geactiveerd.'
-    });
+    console.error('Customer weekly report safe fallback:', error);
+    return res.status(200).json(fallbackPayload({
+      dateFrom,
+      dateTo,
+      branchId,
+      message: error.message || 'Klantinschrijvingen konden niet worden opgehaald.'
+    }));
   }
 }

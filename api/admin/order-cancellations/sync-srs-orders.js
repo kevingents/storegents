@@ -39,14 +39,8 @@ function parseNumber(value, fallback = 0) {
 }
 
 function normalizeOrderNrs(input) {
-  if (Array.isArray(input)) {
-    return input.map(String).map((item) => item.replace(/^#/, '').trim()).filter(Boolean);
-  }
-
-  return String(input || '')
-    .split(/[\n,; ]+/)
-    .map((item) => item.replace(/^#/, '').trim())
-    .filter(Boolean);
+  if (Array.isArray(input)) return input.map(String).map((item) => item.replace(/^#/, '').trim()).filter(Boolean);
+  return String(input || '').split(/[\n,; ]+/).map((item) => item.replace(/^#/, '').trim()).filter(Boolean);
 }
 
 function detailLineForFulfillment(detail, fulfillment) {
@@ -77,7 +71,6 @@ async function getDetailsForOrder(orderNr) {
 async function syncOrder({ orderNr, dryRun }) {
   const result = await getFulfillments({ orderNr });
   const fulfillments = (result.fulfillments || []).filter((item) => isCancellationStatus(item.status));
-
   const detail = await getDetailsForOrder(orderNr);
   const records = [];
   let created = 0;

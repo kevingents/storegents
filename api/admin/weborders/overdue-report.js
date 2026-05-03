@@ -7,17 +7,23 @@ function isAuthorized(req) {
   return req.headers['x-admin-token'] === adminToken || String(req.query.public || '') === 'true';
 }
 
-export default async function handler(req, res) {
-  if (String(process.env.DISABLE_ADMIN_REPORTS || '').toLowerCase() === 'true' && String(req.query.force || '') !== 'true') {
-    return res.status(200).json({
-      success: true,
-      disabled: true,
-      message: 'Admin rapportages zijn tijdelijk uitgeschakeld om SRS/server te ontlasten.',
-      rows: [],
-      totals: { total: 0, open: 0, used: 0, openCount: 0, overdueCount: 0, storeCount: 0 }
-    });
-  }
+function emptyPayload(note = '') {
+  return {
+    success: true,
+    degraded: true,
+    source: 'safe_empty_fallback',
+    note,
+    deadlineHours: 48,
+    totals: {
+      openCount: 0,
+      overdueCount: 0,
+      storeCount: 0
+    },
+    rows: []
+  };
+}
 
+export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -34,7 +40,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      source: result.source,
+      source: result.source || 'srs_open_weborders',
       note: result.note || '',
       degraded: Boolean(result.degraded),
       deadlineHours: 48,
@@ -46,10 +52,9 @@ export default async function handler(req, res) {
       rows
     });
   } catch (error) {
-    console.error('Overdue weborders report error:', error);
-    return res.status(500).json({
-      success: false,
-      message: error.message || 'Weborder deadline rapportage kon niet worden opgehaald.'
-    });
+    console.error('Overdue weborders report safe fallback:', error);
+    return res.status(200).json(emptyPayload(
+      error.message || 'Openstaande weborders konden niet worden opgehaald. Lege fallback gebruikt zodat de admin blijft laden.'
+    ));
   }
 }

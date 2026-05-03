@@ -256,7 +256,7 @@ export default async function handler(req, res) {
     if (!isIsoDate(dateFrom) || !isIsoDate(dateTo)) return res.status(400).json({ success: false, message: 'Ongeldige datumnotatie. Gebruik YYYY-MM-DD.' });
     if (dateFrom > dateTo) return res.status(400).json({ success: false, message: 'Ongeldige periode: dateFrom mag niet na dateTo liggen.' });
 
-    const cacheKey = `${dateFrom}|${dateTo}|v4-score-labels`;
+    const cacheKey = `${dateFrom}|${dateTo}|simple-score`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.createdAt < CACHE_TTL) return res.status(200).json({ ...cached.payload, cache: { hit: true, ttlMs: CACHE_TTL } });
 
@@ -273,17 +273,14 @@ export default async function handler(req, res) {
 
     const customers = customerResult.customers || [];
     const cancellationRows = cancellationLineRows(cancellations || []);
+    const customerMap = customersByBranch(customers, dateFrom, dateTo);
+    const voucherMap = vouchersByBranch(logs, dateFrom, dateTo, storeToBranchId);
+    const labelMap = labelsByStore(labels, dateFrom, dateTo);
+    const opsMap = opsByStore(cancellationRows, dateFrom, dateTo);
+    const stockMap = negativeStockByStore(negativeStockReport);
 
     const rows = branches
-      .map((branch) => buildRow(
-        branch,
-        customersByBranch(customers, dateFrom, dateTo),
-        vouchersByBranch(logs, dateFrom, dateTo, storeToBranchId),
-        labelsByStore(labels, dateFrom, dateTo),
-        opsByStore(cancellationRows, dateFrom, dateTo),
-        negativeStockByStore(negativeStockReport),
-        customers.length > 0
-      ))
+      .map((branch) => buildRow(branch, customerMap, voucherMap, labelMap, opsMap, stockMap, customers.length > 0))
       .sort((a, b) => b.score - a.score || a.store.localeCompare(b.store, 'nl'));
 
     const stockTotals = rows.reduce((acc, row) => {
@@ -302,11 +299,11 @@ export default async function handler(req, res) {
       success: true,
       dateFrom,
       dateTo,
-      mode: 'v4-score-labels-stock-quality',
+      mode: 'simple-scoreboard-no-object-object',
       sourceCustomerCount: customers.length,
       formula: {
         totalScore: '35% basis + 30% voorraadkwaliteit + 10% voucherkwaliteit + 10% SRS operationeel + 15% service/labels',
-        stockQuality: '100 - nietLeverbaar*15 - geannuleerd*10 - failed*12 - minVoorraadRegels*4 - negatieveStuks*2 - uitwisselingen7dagen*5',
+        stockQuality: '100 - nietLeverbaar*15 - geannuleerd*10 - failed*12 - minVoorraadRegels*4 - negatieveStuks*2',
         voucherQuality: 'voucherGebruik% - voucherFouten*10',
         webordersLateNote: 'Weborders te laat tellen niet mee in voorraadkwaliteit.'
       },
