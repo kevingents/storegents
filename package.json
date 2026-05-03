@@ -5,8 +5,10 @@
   "type": "module",
   "dependencies": {
     "@vercel/blob": "^2.0.0",
+    "fast-xml-parser": "^4.5.1",
     "formidable": "^3.5.2",
+    "qrcode": "^1.5.4",
     "resend": "^6.5.1",
-    "qrcode": "^1.5.4"
+    "ssh2-sftp-client": "^11.0.0"
   }
 }
