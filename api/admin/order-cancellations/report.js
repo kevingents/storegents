@@ -15,8 +15,7 @@ function setCors(res) {
 function isAdmin(req) {
   if (String(req.query.public || '') === 'true') return true;
   if (!ADMIN_TOKEN) return true;
-  const token = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
-  return token === ADMIN_TOKEN;
+  return String(req.headers['x-admin-token'] || req.query.adminToken || '').trim() === ADMIN_TOKEN;
 }
 
 function validDate(value) {
@@ -24,7 +23,7 @@ function validDate(value) {
   return d && !Number.isNaN(d.getTime()) ? d : null;
 }
 
-function currentMonthRange() {
+function defaultRange() {
   const now = new Date();
   return {
     from: new Date(now.getFullYear(), now.getMonth(), 1),
@@ -41,41 +40,24 @@ function cleanStatus(value) {
 }
 
 function isUnavailable(row) {
-  const status = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
-  return status.includes('unavailable') || status.includes('niet leverbaar') || status.includes('not available');
+  const s = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
+  return s.includes('unavailable') || s.includes('niet leverbaar') || s.includes('not available');
 }
 
 function isCancelled(row) {
-  const status = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
-  return status.includes('cancelled') || status.includes('canceled') || status.includes('geannuleerd');
+  const s = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
+  return s.includes('cancelled') || s.includes('canceled') || s.includes('geannuleerd');
 }
 
 function isFailed(row) {
-  const status = cleanStatus(row.status || row.srsStatus || row.refundStatus || row.mailStatus || row.error);
-  return status.includes('failed') || status.includes('mislukt');
+  const s = cleanStatus(row.status || row.srsStatus || row.refundStatus || row.mailStatus || row.error);
+  return s.includes('failed') || s.includes('mislukt');
 }
 
-function storeFilterValue(req) {
+function storeFilter(req) {
   const value = String(req.query.store || '').trim();
   if (!value || ['all', 'alle', '*'].includes(value.toLowerCase())) return '';
   return value;
-}
-
-function filterRows(rows, req) {
-  const range = currentMonthRange();
-  const from = validDate(req.query.dateFrom || req.query.from) || range.from;
-  const toInput = validDate(req.query.dateTo || req.query.to);
-  const to = toInput ? new Date(toInput.getFullYear(), toInput.getMonth(), toInput.getDate() + 1) : range.to;
-  const store = storeFilterValue(req);
-  const month = String(req.query.month || '').trim();
-
-  return rows.filter((row) => {
-    if (store && row.store !== store) return false;
-    if (month && /^\d{4}-\d{2}$/.test(month)) return String(row.month || '').slice(0, 7) === month;
-    const d = rowDate(row);
-    if (!d) return true;
-    return d >= from && d < to;
-  });
 }
 
 function normalizeRow(row) {
@@ -99,20 +81,29 @@ function normalizeRow(row) {
 
   return {
     ...normalized,
-    lineType: isUnavailable(normalized)
-      ? 'niet_leverbaar'
-      : isCancelled(normalized)
-        ? 'geannuleerd'
-        : 'annulering',
-    impactLabel: isUnavailable(normalized)
-      ? 'Voorraadverschil / niet leverbaar'
-      : isCancelled(normalized)
-        ? 'Geannuleerd'
-        : 'Annulering'
+    lineType: isUnavailable(normalized) ? 'niet_leverbaar' : isCancelled(normalized) ? 'geannuleerd' : 'annulering',
+    impactLabel: isUnavailable(normalized) ? 'Voorraadverschil / niet leverbaar' : isCancelled(normalized) ? 'Geannuleerd' : 'Annulering'
   };
 }
 
-function buildImpactTotals(rows) {
+function filterRows(rows, req) {
+  const range = defaultRange();
+  const from = validDate(req.query.dateFrom || req.query.from) || range.from;
+  const toInput = validDate(req.query.dateTo || req.query.to);
+  const to = toInput ? new Date(toInput.getFullYear(), toInput.getMonth(), toInput.getDate() + 1) : range.to;
+  const store = storeFilter(req);
+  const month = String(req.query.month || '').trim();
+
+  return rows.filter((row) => {
+    if (store && row.store !== store) return false;
+    if (month && /^\d{4}-\d{2}$/.test(month)) return String(row.month || '').slice(0, 7) === month;
+    const d = rowDate(row);
+    if (!d) return true;
+    return d >= from && d < to;
+  });
+}
+
+function totals(rows) {
   const unavailableRows = rows.filter(isUnavailable);
   const cancelledRows = rows.filter(isCancelled);
   const failedRows = rows.filter(isFailed);
@@ -137,7 +128,7 @@ function buildImpactTotals(rows) {
   };
 }
 
-function buildImpactSummary(rows) {
+function summary(rows) {
   const map = new Map();
 
   for (const row of rows) {
@@ -160,16 +151,19 @@ function buildImpactSummary(rows) {
 
     current.totalLines += 1;
     current.totalAmount += Number(row.amount || 0);
+
     if (isUnavailable(row)) {
       current.unavailableLines += 1;
       current.unavailableAmount += Number(row.amount || 0);
       current.lostRevenueAmount += Number(row.amount || 0);
     }
+
     if (isCancelled(row)) {
       current.cancelledLines += 1;
       current.cancelledAmount += Number(row.amount || 0);
       current.lostRevenueAmount += Number(row.amount || 0);
     }
+
     if (isFailed(row)) current.failedLines += 1;
     if (!String(row.branchId || '').trim() || store === 'SRS zonder filiaal') current.withoutBranchLines += 1;
     if (row.orderNr && !current.orderNumbers.includes(row.orderNr)) current.orderNumbers.push(row.orderNr);
@@ -224,24 +218,25 @@ async function syncAllStores({ month, maxRuntimeMs, maxRecords }) {
 
 export default async function handler(req, res) {
   setCors(res);
+
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
   if (!isAdmin(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
   try {
-    let syncResult = null;
+    let sync = null;
     const syncSrs = String(req.query.syncSrs || '') === 'true';
     const syncAll = ['true', '1', 'yes', 'ja'].includes(String(req.query.syncAll || '').toLowerCase());
-    const store = storeFilterValue(req);
+    const store = storeFilter(req);
 
     if (syncSrs && syncAll) {
-      syncResult = await syncAllStores({
+      sync = await syncAllStores({
         month: String(req.query.month || '').trim(),
         maxRuntimeMs: Number(req.query.maxRuntimeMs || 45000),
         maxRecords: Number(req.query.maxRecords || 50)
       });
     } else if (syncSrs && store) {
-      syncResult = await syncSrsCancellationsForBranch({
+      sync = await syncSrsCancellationsForBranch({
         store,
         month: String(req.query.month || '').trim() || undefined,
         dryRun: false,
@@ -252,15 +247,14 @@ export default async function handler(req, res) {
 
     const all = await getOrderCancellations();
     const rows = filterRows(all, req).map(normalizeRow);
-    const summary = buildImpactSummary(rows);
 
     return res.status(200).json({
       success: true,
       mode: 'all_stores_order_lines+srs_unavailable_statuses+impact_amounts',
-      note: 'Deze rapportage telt orderregels. SRS status unavailable wordt getoond als niet leverbaar en telt als gemiste omzet/voorraadimpact.',
-      sync: syncResult,
-      totals: buildImpactTotals(rows),
-      summary,
+      note: 'Deze rapportage telt opgeslagen orderregels. SRS status unavailable wordt getoond als niet leverbaar en telt als gemiste omzet/voorraadimpact.',
+      sync,
+      totals: totals(rows),
+      summary: summary(rows),
       legacySummary: summarizeCancellationsByStore ? summarizeCancellationsByStore(rows) : [],
       rows
     });
