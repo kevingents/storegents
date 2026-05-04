@@ -12,10 +12,21 @@ function setCors(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 }
 
-function isAdmin(req) {
+function isAuthorized(req) {
   if (String(req.query.public || '') === 'true') return true;
-  if (!ADMIN_TOKEN) return true;
-  return String(req.headers['x-admin-token'] || req.query.adminToken || '').trim() === ADMIN_TOKEN;
+
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+
+  const token = String(
+    req.headers['x-admin-token'] ||
+    req.headers.authorization ||
+    req.query.adminToken ||
+    ''
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  return token === adminToken;
 }
 
 function validDate(value) {
