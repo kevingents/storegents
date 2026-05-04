@@ -6,8 +6,20 @@ const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_R
 const reportCache = new Map();
 
 function isAuthorized(req) {
+  if (String(req.query.public || '') === 'true') return true;
+
   const adminToken = process.env.ADMIN_TOKEN || '12345';
-  return req.headers['x-admin-token'] === adminToken || String(req.query.public || '') === 'true';
+
+  const token = String(
+    req.headers['x-admin-token'] ||
+    req.headers.authorization ||
+    req.query.adminToken ||
+    ''
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  return token === adminToken;
 }
 
 function isoDate(date) {
