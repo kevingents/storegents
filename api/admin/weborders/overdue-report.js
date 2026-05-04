@@ -1,12 +1,5 @@
 // api/admin/weborders/overdue-report.js
 
-import { getSrsOpenWeborders } from '../../../lib/srs-open-weborders-client.js';
-import {
-  summarizeOverdueByStore,
-  normalizeWeborder,
-  isOpenWeborderStatus
-} from '../../../lib/weborder-request-store.js';
-
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
 
 function setCors(res) {
@@ -22,12 +15,14 @@ function isAuthorized(req) {
 
   const token = String(
     req.headers['x-admin-token'] ||
-    req.headers['authorization'] ||
+    req.headers.authorization ||
     req.query.adminToken ||
     ''
-  ).replace(/^Bearer\s+/i, '').trim();
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
 
-  return !ADMIN_TOKEN || token === ADMIN_TOKEN;
+  return token === ADMIN_TOKEN;
 }
 
 function emptyPayload(note = '') {
@@ -44,6 +39,156 @@ function emptyPayload(note = '') {
     },
     rows: []
   };
+}
+
+function fallbackNormalizeWeborder(item = {}) {
+  const fulfilmentStore =
+    item.fulfilmentStore ||
+    item.fulfillmentStore ||
+    item.store ||
+    item.branchName ||
+    '';
+
+  const fulfilmentBranchId =
+    item.fulfilmentBranchId ||
+    item.fulfillmentBranchId ||
+    item.branchId ||
+    '';
+
+  return {
+    ...item,
+    orderNr: item.orderNr || item.orderId || '',
+    orderId: item.orderId || item.orderNr || '',
+    status: item.status || item.srsStatus || item.fulfillmentStatus || 'open',
+    fulfilmentStore,
+    fulfillmentStore: fulfilmentStore,
+    fulfilmentBranchId,
+    fulfillmentBranchId: fulfilmentBranchId,
+    createdAt: item.createdAt || item.orderDate || item.created || '',
+    ageHours: getAgeInHours(item.createdAt || item.orderDate || item.created || '')
+  };
+}
+
+function getAgeInHours(dateValue) {
+  if (!dateValue) return 0;
+
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return 0;
+
+  return Math.max(0, Math.round((Date.now() - date.getTime()) / 36e5));
+}
+
+function fallbackIsOpenWeborderStatus(status) {
+  return [
+    'accepted',
+    'pending',
+    'open',
+    'srs_created',
+    'pending_srs',
+    'label_created',
+    'in_behandeling',
+    'te_verzenden',
+    'failed_label'
+  ].includes(String(status || '').toLowerCase());
+}
+
+function fallbackSummarizeOverdueByStore(requests = []) {
+  const normalized = requests
+    .map(fallbackNormalizeWeborder)
+    .filter((item) => fallbackIsOpenWeborderStatus(item.status));
+
+  const map = new Map();
+
+  normalized.forEach((item) => {
+    const store =
+      item.fulfilmentStore ||
+      item.fulfillmentStore ||
+      item.sellingStore ||
+      'Onbekend';
+
+    if (!map.has(store)) {
+      map.set(store, {
+        store,
+        openCount: 0,
+        overdueCount: 0,
+        overdueRate: 0,
+        oldestAgeHours: 0,
+        items: []
+      });
+    }
+
+    const row = map.get(store);
+    const ageHours = Number(item.ageHours || getAgeInHours(item.createdAt));
+    const overdue = ageHours >= 48;
+
+    row.openCount += 1;
+    row.oldestAgeHours = Math.max(row.oldestAgeHours, ageHours);
+
+    if (overdue) {
+      row.overdueCount += 1;
+      row.items.push({
+        ...item,
+        overdue: true,
+        ageHours
+      });
+    }
+
+    row.overdueRate = row.openCount
+      ? Math.round((row.overdueCount / row.openCount) * 100)
+      : 0;
+  });
+
+  return Array.from(map.values()).sort((a, b) =>
+    b.overdueCount - a.overdueCount ||
+    b.oldestAgeHours - a.oldestAgeHours ||
+    a.store.localeCompare(b.store)
+  );
+}
+
+async function getSafeWeborders() {
+  try {
+    const srsClient = await import('../../../lib/srs-open-weborders-client.js');
+
+    if (typeof srsClient.getSrsOpenWeborders !== 'function') {
+      return {
+        source: 'safe_empty_fallback',
+        degraded: true,
+        note: 'getSrsOpenWeborders bestaat niet in lib/srs-open-weborders-client.js.',
+        items: []
+      };
+    }
+
+    return await srsClient.getSrsOpenWeborders({});
+  } catch (error) {
+    console.error('[admin/weborders/overdue-report] srs import/read failed:', error);
+
+    return {
+      source: 'safe_empty_fallback',
+      degraded: true,
+      note: `Openstaande weborders konden niet uit SRS/local store worden geladen: ${error.message || error}`,
+      items: []
+    };
+  }
+}
+
+async function getHelpers() {
+  try {
+    const helpers = await import('../../../lib/weborder-request-store.js');
+
+    return {
+      normalizeWeborder: helpers.normalizeWeborder || fallbackNormalizeWeborder,
+      isOpenWeborderStatus: helpers.isOpenWeborderStatus || fallbackIsOpenWeborderStatus,
+      summarizeOverdueByStore: helpers.summarizeOverdueByStore || fallbackSummarizeOverdueByStore
+    };
+  } catch (error) {
+    console.error('[admin/weborders/overdue-report] helper import failed:', error);
+
+    return {
+      normalizeWeborder: fallbackNormalizeWeborder,
+      isOpenWeborderStatus: fallbackIsOpenWeborderStatus,
+      summarizeOverdueByStore: fallbackSummarizeOverdueByStore
+    };
+  }
 }
 
 export default async function handler(req, res) {
@@ -68,11 +213,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = await getSrsOpenWeborders({});
+    const result = await getSafeWeborders();
+    const {
+      normalizeWeborder,
+      isOpenWeborderStatus,
+      summarizeOverdueByStore
+    } = await getHelpers();
+
     const items = (result.items || []).map(normalizeWeborder);
     const openItems = items.filter((item) => isOpenWeborderStatus(item.status));
     const rows = summarizeOverdueByStore(items);
-    const overdueItems = rows.flatMap((row) => row.items || []);
+    const overdueCount = rows.reduce(
+      (sum, row) => sum + Number(row.overdueCount || 0),
+      0
+    );
 
     return res.status(200).json({
       success: true,
@@ -82,7 +236,7 @@ export default async function handler(req, res) {
       deadlineHours: 48,
       totals: {
         openCount: openItems.length,
-        overdueCount: overdueItems.length,
+        overdueCount,
         storeCount: rows.length
       },
       rows
