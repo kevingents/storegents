@@ -137,7 +137,7 @@ export default async function handler(req, res) {
         overdueCount,
         storeCount: rows.length
       },
-      rows
+      rows: safeRows
     });
   } catch (error) {
     console.error('[admin/weborders/overdue-report]', error);
