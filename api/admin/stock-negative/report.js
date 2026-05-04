@@ -2,10 +2,21 @@ import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 import { getStockNegativeReport, filterStockRowsByStore, summarizeByStore, summarizeTotals } from '../../../lib/stock-negative-store.js';
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
-  return req.headers['x-admin-token'] === adminToken || String(req.query.public || '') === 'true';
-}
+  if (String(req.query.public || '') === 'true') return true;
 
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+
+  const token = String(
+    req.headers['x-admin-token'] ||
+    req.headers.authorization ||
+    req.query.adminToken ||
+    ''
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  return token === adminToken;
+}
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
