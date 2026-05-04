@@ -114,6 +114,13 @@ export default async function handler(req, res) {
     const items = (result.items || []).map(normalizeWeborder);
     const openItems = items.filter((item) => isOpenWeborderStatus(item.status));
     const rows = summarizeOverdueByStore(items);
+    const safeRows = rows.map((row) => ({
+  store: row.store,
+  openCount: row.openCount,
+  overdueCount: row.overdueCount,
+  overdueRate: row.overdueRate,
+  oldestAgeHours: row.oldestAgeHours
+}));
     const overdueCount = rows.reduce(
       (sum, row) => sum + Number(row.overdueCount || 0),
       0
