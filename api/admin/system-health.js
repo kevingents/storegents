@@ -1,130 +1,41 @@
-import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
-
-function isAdmin(req) {
-  if (String(req.query.public || '') === 'true') return true;
-
-  const token = String(
-    req.headers['x-admin-token'] ||
-    req.headers.authorization ||
-    req.query.adminToken ||
-    ''
-  ).replace(/^Bearer\s+/i, '').trim();
-
-  return token === ADMIN_TOKEN;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function baseUrlFromReq(req) {
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  const host = req.headers.host;
-  return `${proto}://${host}`;
-}
-
-function safeMessage(error) {
-  return error?.message || String(error || 'Onbekende fout');
-}
-
-async function checkJsonService({ key, label, url, timeoutMs = 12000 }) {
-  const startedAt = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+async function timed(label, key, fn) {
+  const start = Date.now();
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/json',
-        'x-admin-token': ADMIN_TOKEN
-      }
-    });
-
-    const text = await response.text();
-    let data = {};
-
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch (_error) {
-      data = { message: text };
-    }
-
-    const durationMs = Date.now() - startedAt;
-    const degraded = Boolean(data.degraded);
-    const success = response.ok && data.success !== false;
-
-    let status = 'ok';
-
-    if (!success) status = 'error';
-    else if (degraded) status = 'warning';
-
+    const result = await fn();
     return {
       key,
       label,
-      status,
-      ok: success,
-      degraded,
-      durationMs,
-      checkedAt: nowIso(),
-      message:
-        data.note ||
-        data.message ||
-        data.error ||
-        (success ? 'Endpoint werkt.' : 'Endpoint gaf een fout terug.'),
-      meta: {
-        httpStatus: response.status,
-        source: data.source || '',
-        total:
-          data.totals?.openCount ??
-          data.summary?.totalOpenCount ??
-          data.open ??
-          data.count ??
-          null,
-        overdue:
-          data.totals?.overdueCount ??
-          data.summary?.overdueCount ??
-          data.overdue ??
-          data.overdueCount ??
-          null
-      }
+      status: result?.degraded ? 'warning' : 'ok',
+      message: result?.message || result?.note || 'Endpoint werkt.',
+      durationMs: Date.now() - start,
+      meta: result?.meta || {}
     };
   } catch (error) {
     return {
       key,
       label,
       status: 'error',
-      ok: false,
-      degraded: false,
-      durationMs: Date.now() - startedAt,
-      checkedAt: nowIso(),
-      message: error.name === 'AbortError'
-        ? `Timeout na ${timeoutMs / 1000} seconden.`
-        : safeMessage(error),
+      message: error.message || 'Endpoint fout.',
+      durationMs: Date.now() - start,
       meta: {}
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
-function overallStatus(services) {
-  if (services.some(service => service.status === 'error')) return 'error';
-  if (services.some(service => service.status === 'warning')) return 'warning';
-  return 'ok';
+function apiBase(req) {
+  const configured = process.env.PUBLIC_API_BASE_URL || process.env.VERCEL_URL || '';
+  if (configured) return configured.startsWith('http') ? configured.replace(/\/$/, '') : `https://${configured.replace(/\/$/, '')}`;
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  return `${proto}://${req.headers.host}`;
 }
 
-function buildLogs(services) {
-  return services.map(service => ({
-    time: service.checkedAt,
-    level: service.status,
-    title: service.label,
-    message: service.message,
-    durationMs: service.durationMs
-  }));
+async function getJson(url, headers = {}) {
+  const response = await fetch(url, { headers });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
+  return data;
 }
 
 export default async function handler(req, res) {
@@ -132,68 +43,43 @@ export default async function handler(req, res) {
   setCorsHeaders(res, ['GET', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({
-      success: false,
-      message: 'Alleen GET is toegestaan.'
-    });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
+  if (requireAdmin(req, res)) return;
 
-  if (!isAdmin(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Niet bevoegd.'
-    });
-  }
-
-  const baseUrl = baseUrlFromReq(req);
-  const sampleStore = String(req.query.store || 'GENTS Utrecht').trim();
+  const base = apiBase(req);
+  const store = String(req.query.store || 'GENTS Utrecht').trim();
+  const adminHeader = { 'x-admin-token': process.env.ADMIN_TOKEN || '12345' };
 
   const services = await Promise.all([
-    checkJsonService({
-      key: 'weborders_srs',
-      label: 'SRS openstaande weborders',
-      url: `${baseUrl}/api/admin/weborders/overdue-report?adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 30000
+    timed('SRS openstaande weborders', 'srs_open_weborders', async () => {
+      const data = await getJson(`${base}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, adminHeader);
+      return { degraded: data.degraded, note: data.note, meta: { total: data.open, overdue: data.overdue } };
     }),
-    checkJsonService({
-      key: 'store_weborders',
-      label: 'Winkel openstaande orders',
-      url: `${baseUrl}/api/srs/open-weborders?store=${encodeURIComponent(sampleStore)}&adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 30000
+    timed('Google reviews', 'google_reviews', async () => {
+      const data = await getJson(`${base}/api/google-reviews/summary?store=${encodeURIComponent(store)}`);
+      return { degraded: !data.rating, message: data.message, meta: { rating: data.rating, count: data.count } };
     }),
-    checkJsonService({
-      key: 'exchanges',
-      label: 'SRS uitwisselingen',
-      url: `${baseUrl}/api/srs/exchanges/open?store=${encodeURIComponent(sampleStore)}&summary=true&adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 30000
+    timed('Mail automatisering', 'mail_automation', async () => {
+      const data = await getJson(`${base}/api/admin/mail-automations/status`, adminHeader);
+      const disabled = (data.automations || []).filter((a) => !a.enabled).length;
+      return { degraded: disabled > 0, message: disabled ? `${disabled} automatisering(en) niet actief.` : 'Mail automatisering actief.', meta: { total: (data.automations || []).length, disabled } };
     }),
-    checkJsonService({
-      key: 'pickup_orders',
-      label: 'Shopify ophaalorders',
-      url: `${baseUrl}/api/pickup-orders?store=${encodeURIComponent(sampleStore)}&status=open&days=1&adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 30000
-    }),
-    checkJsonService({
-      key: 'declarations',
-      label: 'Declaraties',
-      url: `${baseUrl}/api/declarations?store=${encodeURIComponent(sampleStore)}&adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 15000
-    }),
-    checkJsonService({
-      key: 'weborder_health',
-      label: 'Weborder API health',
-      url: `${baseUrl}/api/weborders/health?adminToken=${encodeURIComponent(ADMIN_TOKEN)}&t=${Date.now()}`,
-      timeoutMs: 15000
+    timed('Mail logs', 'mail_logs', async () => {
+      const data = await getJson(`${base}/api/admin/mail-logs?limit=10`, adminHeader);
+      return { message: 'Mail logs opgehaald.', meta: { total: data.count } };
     })
   ]);
 
-  return res.status(200).json({
-    success: true,
-    checkedAt: nowIso(),
-    overallStatus: overallStatus(services),
-    sampleStore,
-    services,
-    logs: buildLogs(services)
-  });
+  const errorCount = services.filter((s) => s.status === 'error').length;
+  const warningCount = services.filter((s) => s.status === 'warning').length;
+  const overallStatus = errorCount ? 'error' : warningCount ? 'warning' : 'ok';
+  const logs = services.map((service) => ({
+    time: new Date().toISOString(),
+    level: service.status === 'error' ? 'error' : service.status === 'warning' ? 'warning' : 'info',
+    title: service.label,
+    message: service.message,
+    durationMs: service.durationMs
+  }));
+
+  return res.status(200).json({ success: true, overallStatus, services, logs });
 }
