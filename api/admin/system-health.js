@@ -4,23 +4,9 @@ async function timed(label, key, fn) {
   const start = Date.now();
   try {
     const result = await fn();
-    return {
-      key,
-      label,
-      status: result?.degraded ? 'warning' : 'ok',
-      message: result?.message || result?.note || 'Endpoint werkt.',
-      durationMs: Date.now() - start,
-      meta: result?.meta || {}
-    };
+    return { key, label, status: result?.degraded ? 'warning' : 'ok', message: result?.message || result?.note || 'Endpoint werkt.', durationMs: Date.now() - start, meta: result?.meta || {} };
   } catch (error) {
-    return {
-      key,
-      label,
-      status: 'error',
-      message: error.message || 'Endpoint fout.',
-      durationMs: Date.now() - start,
-      meta: {}
-    };
+    return { key, label, status: 'error', message: error.message || 'Endpoint fout.', durationMs: Date.now() - start, meta: {} };
   }
 }
 
@@ -31,8 +17,22 @@ function apiBase(req) {
   return `${proto}://${req.headers.host}`;
 }
 
-async function getJson(url, headers = {}) {
-  const response = await fetch(url, { headers });
+function adminToken(req) {
+  return String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.query.adminToken || req.query.admin_token || process.env.ADMIN_TOKEN || '12345').replace(/^Bearer\s+/i, '').trim();
+}
+
+function appendAdminToken(url, token) {
+  const u = new URL(url);
+  if (token) {
+    u.searchParams.set('adminToken', token);
+    u.searchParams.set('admin_token', token);
+  }
+  return u.toString();
+}
+
+async function getJson(url, token = '') {
+  const finalUrl = appendAdminToken(url, token);
+  const response = await fetch(finalUrl, { headers: { Accept: 'application/json' } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.success === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
   return data;
@@ -48,38 +48,32 @@ export default async function handler(req, res) {
 
   const base = apiBase(req);
   const store = String(req.query.store || 'GENTS Utrecht').trim();
-  const adminHeader = { 'x-admin-token': process.env.ADMIN_TOKEN || '12345' };
+  const token = adminToken(req);
 
   const services = await Promise.all([
     timed('SRS openstaande weborders', 'srs_open_weborders', async () => {
-      const data = await getJson(`${base}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, adminHeader);
+      const data = await getJson(`${base}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, token);
       return { degraded: data.degraded, note: data.note, meta: { total: data.open, overdue: data.overdue } };
     }),
     timed('Google reviews', 'google_reviews', async () => {
-      const data = await getJson(`${base}/api/google-reviews/summary?store=${encodeURIComponent(store)}`);
+      const data = await getJson(`${base}/api/google-reviews/summary?store=${encodeURIComponent(store)}&t=${Date.now()}`, token);
       return { degraded: !data.rating, message: data.message, meta: { rating: data.rating, count: data.count } };
     }),
     timed('Mail automatisering', 'mail_automation', async () => {
-      const data = await getJson(`${base}/api/admin/mail-automations/status`, adminHeader);
-      const disabled = (data.automations || []).filter((a) => !a.enabled).length;
-      return { degraded: disabled > 0, message: disabled ? `${disabled} automatisering(en) niet actief.` : 'Mail automatisering actief.', meta: { total: (data.automations || []).length, disabled } };
+      const data = await getJson(`${base}/api/admin/mail-automations/status?t=${Date.now()}`, token);
+      const disabled = (data.automations || data.services || []).filter((a) => a.enabled === false || a.status === 'disabled').length;
+      return { degraded: disabled > 0, message: disabled ? `${disabled} automatisering(en) niet actief.` : 'Mail automatisering actief.', meta: { total: (data.automations || data.services || []).length, disabled } };
     }),
     timed('Mail logs', 'mail_logs', async () => {
-      const data = await getJson(`${base}/api/admin/mail-logs?limit=10`, adminHeader);
-      return { message: 'Mail logs opgehaald.', meta: { total: data.count } };
+      const data = await getJson(`${base}/api/admin/mail-logs?limit=10&t=${Date.now()}`, token);
+      return { message: 'Mail logs opgehaald.', meta: { total: data.count || (data.rows || data.logs || []).length } };
     })
   ]);
 
   const errorCount = services.filter((s) => s.status === 'error').length;
   const warningCount = services.filter((s) => s.status === 'warning').length;
   const overallStatus = errorCount ? 'error' : warningCount ? 'warning' : 'ok';
-  const logs = services.map((service) => ({
-    time: new Date().toISOString(),
-    level: service.status === 'error' ? 'error' : service.status === 'warning' ? 'warning' : 'info',
-    title: service.label,
-    message: service.message,
-    durationMs: service.durationMs
-  }));
+  const logs = services.map((service) => ({ time: new Date().toISOString(), level: service.status === 'error' ? 'error' : service.status === 'warning' ? 'warning' : 'info', title: service.label, message: service.message, durationMs: service.durationMs }));
 
   return res.status(200).json({ success: true, overallStatus, services, logs });
 }
