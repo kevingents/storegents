@@ -3,7 +3,7 @@ import { listBranches, getStoreNameByBranchId, getBranchIdByStore } from '../../
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(1000, Number(process.env.CUSTOMERS_WEEKLY_REPORT_CACHE_MS || 10 * 60 * 1000) || 10 * 60 * 1000);
-const SOURCE_TIMEOUT_MS = Math.max(5000, Number(process.env.CUSTOMERS_REPORT_SOURCE_TIMEOUT_MS || 22000) || 22000);
+const SOURCE_TIMEOUT_MS = Math.max(5000, Number(process.env.CUSTOMERS_REPORT_SOURCE_TIMEOUT_MS || 30000) || 30000);
 const reportCache = new Map();
 
 function isAuthorized(req) {
@@ -39,31 +39,16 @@ function normalizeDate(value) {
 
 function customerDate(customer) {
   return normalizeDate(
-    customer.createdAt ||
-    customer.CreatedAt ||
-    customer.created_at ||
-    customer.dateCreated ||
-    customer.DateCreated ||
-    customer.creationDate ||
-    customer.CreationDate ||
-    customer.created ||
-    customer.Created ||
-    customer.registeredAt ||
-    customer.RegisteredAt ||
-    customer.date ||
-    customer.Date
+    customer.createdAt || customer.CreatedAt || customer.created_at || customer.dateCreated ||
+    customer.DateCreated || customer.creationDate || customer.CreationDate || customer.created ||
+    customer.Created || customer.registeredAt || customer.RegisteredAt || customer.date || customer.Date
   );
 }
 
 function customerBranchId(customer) {
   return String(
-    customer.registeredInBranchId ||
-    customer.RegisteredInBranchId ||
-    customer.branchId ||
-    customer.BranchId ||
-    customer.storeBranchId ||
-    customer.StoreBranchId ||
-    ''
+    customer.registeredInBranchId || customer.RegisteredInBranchId || customer.branchId ||
+    customer.BranchId || customer.storeBranchId || customer.StoreBranchId || ''
   ).trim();
 }
 
@@ -73,11 +58,8 @@ function customerEmail(customer) {
 
 function customerName(customer) {
   return String(
-    customer.name ||
-    customer.fullName ||
-    customer.customerName ||
-    [customer.firstName || customer.FirstName, customer.lastName || customer.LastName].filter(Boolean).join(' ') ||
-    ''
+    customer.name || customer.fullName || customer.customerName ||
+    [customer.firstName || customer.FirstName, customer.lastName || customer.LastName].filter(Boolean).join(' ') || ''
   ).trim();
 }
 
@@ -150,7 +132,6 @@ function normalizeCustomer(customer) {
 
 function aggregateByBranch(customers, branches, dateFrom, dateTo) {
   const inRange = (customers || []).map(normalizeCustomer).filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-
   return branches.map((branch) => {
     const branchCustomers = inRange.filter((customer) => String(customer.branchId || '') === String(branch.branchId || ''));
     return {
@@ -181,37 +162,28 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function getCustomersFast({ dateFrom, dateTo, branchId }) {
+async function getCustomersForPeriod({ dateFrom, dateTo }) {
   const createdFrom = `${dateFrom}T00:00:00`;
   const createdUntil = `${dateTo}T23:59:59`;
-  const attempts = [];
-
-  if (branchId) {
-    attempts.push({ label: 'branch-date-filter', filters: { registeredInBranchId: branchId, createdFrom, createdUntil } });
-    attempts.push({ label: 'branch-filter-local-date', filters: { registeredInBranchId: branchId } });
-  } else {
-    attempts.push({ label: 'date-filter', filters: { createdFrom, createdUntil } });
-  }
-
   const errors = [];
-  for (const attempt of attempts) {
-    try {
-      const result = await withTimeout(getCustomers(attempt.filters), SOURCE_TIMEOUT_MS, attempt.label);
-      const customers = Array.isArray(result?.customers) ? result.customers : [];
-      return { customers, sourceMode: attempt.label, errors };
-    } catch (error) {
-      errors.push(`${attempt.label}: ${error.message || String(error)}`);
-    }
-  }
 
-  return { customers: [], sourceMode: 'empty-after-source-errors', errors };
+  try {
+    const result = await withTimeout(
+      getCustomers({ createdFrom, createdUntil }),
+      SOURCE_TIMEOUT_MS,
+      'period-filter-srs-local-branch-aggregate'
+    );
+    const customers = Array.isArray(result?.customers) ? result.customers : [];
+    return { customers, sourceMode: 'period-filter-srs-local-branch-aggregate', errors };
+  } catch (error) {
+    errors.push(`period-filter-srs-local-branch-aggregate: ${error.message || String(error)}`);
+    return { customers: [], sourceMode: 'empty-after-source-errors', errors };
+  }
 }
 
 function resolveBranches({ branchId, store }) {
   const selectedBranchId = String(branchId || getBranchIdByStore(store) || '').trim();
-  if (selectedBranchId) {
-    return [{ store: getStoreNameByBranchId(selectedBranchId), branchId: selectedBranchId }];
-  }
+  if (selectedBranchId) return [{ store: getStoreNameByBranchId(selectedBranchId), branchId: selectedBranchId }];
   return listBranches();
 }
 
@@ -219,7 +191,6 @@ function buildPayload({ dateFrom, dateTo, branchId, store, rows, sourceCustomerC
   const allCustomers = rows.flatMap((row) => row.customers || []);
   const totals = summarizeCustomers(allCustomers);
   const degraded = Boolean(errors?.length) || sourceMode === 'empty-after-source-errors';
-
   return {
     success: true,
     degraded,
@@ -234,9 +205,7 @@ function buildPayload({ dateFrom, dateTo, branchId, store, rows, sourceCustomerC
     rows,
     errors: (errors || []).map((message) => ({ message })),
     warnings: errors || [],
-    note: degraded
-      ? 'Klantinschrijvingen zijn gedeeltelijk of leeg geladen doordat SRS Customers traag of niet beschikbaar was.'
-      : 'Klantinschrijvingen opgehaald.',
+    note: degraded ? 'Klantinschrijvingen zijn gedeeltelijk of leeg geladen doordat SRS Customers traag of niet beschikbaar was.' : 'Klantinschrijvingen opgehaald.',
     cache: { hit: cacheHit, ttlMs: REPORT_CACHE_TTL_MS }
   };
 }
@@ -262,42 +231,21 @@ export default async function handler(req, res) {
 
   const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}`;
   const cached = reportCache.get(cacheKey);
-  if (!refresh && cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
-    return res.status(200).json({ ...cached.payload, cache: { hit: true, ttlMs: REPORT_CACHE_TTL_MS } });
-  }
+  if (!refresh && cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) return res.status(200).json({ ...cached.payload, cache: { hit: true, ttlMs: REPORT_CACHE_TTL_MS } });
 
   const branches = resolveBranches({ branchId, store });
 
   try {
-    const result = await getCustomersFast({ dateFrom, dateTo, branchId });
-    const filteredCustomers = (result.customers || []).filter((customer) => isInPeriod(customer, dateFrom, dateTo));
-    const rows = aggregateByBranch(filteredCustomers, branches, dateFrom, dateTo);
-    const payload = buildPayload({
-      dateFrom,
-      dateTo,
-      branchId,
-      store,
-      rows,
-      sourceCustomerCount: result.customers.length,
-      sourceMode: result.sourceMode,
-      errors: result.errors
-    });
+    const result = await getCustomersForPeriod({ dateFrom, dateTo });
+    const rows = aggregateByBranch(result.customers || [], branches, dateFrom, dateTo);
+    const payload = buildPayload({ dateFrom, dateTo, branchId, store, rows, sourceCustomerCount: result.customers.length, sourceMode: result.sourceMode, errors: result.errors });
     reportCache.set(cacheKey, { createdAt: Date.now(), payload });
     if (reportCache.size > 100) reportCache.delete(reportCache.keys().next().value);
     return res.status(200).json(payload);
   } catch (error) {
     const message = error.message || 'Klantinschrijvingen konden niet worden opgehaald.';
     const rows = fallbackRows(branches);
-    const payload = buildPayload({
-      dateFrom,
-      dateTo,
-      branchId,
-      store,
-      rows,
-      sourceCustomerCount: 0,
-      sourceMode: 'fatal-safe-empty-fallback',
-      errors: [message]
-    });
+    const payload = buildPayload({ dateFrom, dateTo, branchId, store, rows, sourceCustomerCount: 0, sourceMode: 'fatal-safe-empty-fallback', errors: [message] });
     return res.status(200).json(payload);
   }
 }
