@@ -9,7 +9,22 @@ const REPORT_CACHE_TTL_MS = Math.max(
 
 const SOURCE_TIMEOUT_MS = Math.max(
   5000,
-  Number(process.env.CUSTOMERS_REPORT_SOURCE_TIMEOUT_MS || 25000) || 25000
+  Number(process.env.CUSTOMERS_REPORT_SOURCE_TIMEOUT_MS || 18000) || 18000
+);
+
+const GLOBAL_TIMEOUT_MS = Math.max(
+  20000,
+  Number(process.env.CUSTOMERS_REPORT_GLOBAL_TIMEOUT_MS || 52000) || 52000
+);
+
+const CUSTOMER_CHUNK_DAYS = Math.max(
+  1,
+  Number(process.env.CUSTOMERS_REPORT_CHUNK_DAYS || 1) || 1
+);
+
+const CUSTOMER_CHUNK_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.CUSTOMERS_REPORT_CHUNK_CONCURRENCY || 4) || 4
 );
 
 const reportCache = new Map();
@@ -38,6 +53,17 @@ function isAuthorized(req) {
 
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
+}
+
+function parseIsoDate(dateString) {
+  const [year, month, day] = String(dateString || '').split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addDays(dateString, days) {
+  const date = parseIsoDate(dateString);
+  date.setUTCDate(date.getUTCDate() + days);
+  return isoDate(date);
 }
 
 function startOfWeek(date = new Date()) {
@@ -150,11 +176,7 @@ function transactionCustomerId(transaction) {
 }
 
 function transactionBranchId(transaction) {
-  return String(
-    transaction.branchId ||
-    transaction.BranchId ||
-    ''
-  ).trim();
+  return String(transaction.branchId || transaction.BranchId || '').trim();
 }
 
 function transactionReceipt(transaction) {
@@ -196,7 +218,166 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function normalizeCustomer(customer, receiptMap) {
+function makeDateChunks(dateFrom, dateTo, chunkDays = 1) {
+  const chunks = [];
+  let cursor = dateFrom;
+
+  while (cursor <= dateTo) {
+    const end = addDays(cursor, chunkDays - 1);
+    const chunkTo = end > dateTo ? dateTo : end;
+
+    chunks.push({
+      from: cursor,
+      to: chunkTo,
+      createdFrom: `${cursor}T00:00:00`,
+      createdUntil: `${chunkTo}T23:59:59`
+    });
+
+    cursor = addDays(chunkTo, 1);
+  }
+
+  return chunks;
+}
+
+async function runLimited(items, concurrency, worker, shouldStop) {
+  const results = [];
+  let index = 0;
+
+  async function runner() {
+    while (index < items.length) {
+      if (shouldStop && shouldStop()) break;
+
+      const currentIndex = index;
+      index += 1;
+
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  }
+
+  const runners = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => runner()
+  );
+
+  await Promise.all(runners);
+
+  return results;
+}
+
+function dedupeCustomers(customers) {
+  const map = new Map();
+
+  for (const customer of customers || []) {
+    const id = customerId(customer);
+    const key = id || `${customerName(customer)}|${customerEmail(customer)}|${customerDate(customer)}`;
+
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, customer);
+  }
+
+  return Array.from(map.values());
+}
+
+async function loadCustomersForPeriod(dateFrom, dateTo) {
+  const startedAt = Date.now();
+  const chunks = makeDateChunks(dateFrom, dateTo, CUSTOMER_CHUNK_DAYS);
+  const errors = [];
+  const customers = [];
+
+  await runLimited(
+    chunks,
+    CUSTOMER_CHUNK_CONCURRENCY,
+    async (chunk) => {
+      if (Date.now() - startedAt > GLOBAL_TIMEOUT_MS) {
+        errors.push(`customers-period: globale timeout na ${GLOBAL_TIMEOUT_MS}ms`);
+        return;
+      }
+
+      try {
+        const result = await withTimeout(
+          getCustomers({
+            createdFrom: chunk.createdFrom,
+            createdUntil: chunk.createdUntil
+          }),
+          SOURCE_TIMEOUT_MS,
+          `customers ${chunk.from} t/m ${chunk.to}`
+        );
+
+        const list = Array.isArray(result?.customers) ? result.customers : [];
+        customers.push(...list);
+      } catch (error) {
+        errors.push(`customers ${chunk.from} t/m ${chunk.to}: ${error.message || String(error)}`);
+      }
+    },
+    () => Date.now() - startedAt > GLOBAL_TIMEOUT_MS
+  );
+
+  const uniqueCustomers = dedupeCustomers(customers);
+
+  return {
+    customers: uniqueCustomers,
+    sourceMode: errors.length
+      ? 'period-chunk-filter-srs-local-branch-aggregate-degraded'
+      : 'period-chunk-filter-srs-local-branch-aggregate',
+    errors
+  };
+}
+
+async function loadTransactionsForPeriod(dateFrom, dateTo) {
+  const from = `${dateFrom}T00:00:00`;
+  const until = `${dateTo}T23:59:59`;
+
+  const result = await withTimeout(
+    getTransactions({ from, until }),
+    SOURCE_TIMEOUT_MS,
+    'transactions-period'
+  );
+
+  return Array.isArray(result?.transactions) ? result.transactions : [];
+}
+
+function buildReceiptMap(transactions) {
+  const map = new Map();
+
+  for (const transaction of transactions || []) {
+    const id = transactionCustomerId(transaction);
+    if (!id) continue;
+    if (!hasUsableReceipt(transaction)) continue;
+
+    const next = {
+      customerId: id,
+      receiptNr: transactionReceipt(transaction),
+      branchId: transactionBranchId(transaction),
+      dateTime: transaction.dateTime || transaction.DateTime || '',
+      date: transactionDate(transaction),
+      orderNr: String(
+        transaction.orderNr ||
+        transaction.OrderNr ||
+        transaction.orderNo ||
+        transaction.OrderNo ||
+        ''
+      ).trim()
+    };
+
+    const existing = map.get(id);
+
+    if (!existing) {
+      map.set(id, next);
+      continue;
+    }
+
+    const existingDate = String(existing.date || '');
+    const nextDate = String(next.date || '');
+
+    if (nextDate && (!existingDate || nextDate < existingDate)) {
+      map.set(id, next);
+    }
+  }
+
+  return map;
+}
+
+function normalizeCustomer(customer, receiptMap, receiptCheckAvailable) {
   const id = customerId(customer);
   const receiptInfo = receiptMap.get(id) || null;
 
@@ -207,12 +388,20 @@ function normalizeCustomer(customer, receiptMap) {
     branchId: customerBranchId(customer),
     email: customerEmail(customer),
     name: customerName(customer),
-    hasReceipt: Boolean(receiptInfo),
+
+    receiptCheckAvailable,
+    hasReceipt: receiptCheckAvailable ? Boolean(receiptInfo) : false,
+    receiptUnknown: !receiptCheckAvailable,
+
     receiptNr: receiptInfo?.receiptNr || '',
     receiptBranchId: receiptInfo?.branchId || '',
     receiptDate: receiptInfo?.dateTime || '',
     receiptOrderNr: receiptInfo?.orderNr || '',
-    receiptStatus: receiptInfo ? 'Met bon' : 'Zonder bon'
+    receiptStatus: !receiptCheckAvailable
+      ? 'Onbekend'
+      : receiptInfo
+        ? 'Met bon'
+        : 'Zonder bon'
   };
 }
 
@@ -221,9 +410,12 @@ function summarizeCustomers(customers) {
 
   const total = list.length;
   const withEmail = list.filter((customer) => customerEmail(customer)).length;
-  const withReceipt = list.filter((customer) => Boolean(customer.hasReceipt)).length;
   const withoutEmail = Math.max(0, total - withEmail);
-  const withoutReceipt = Math.max(0, total - withReceipt);
+
+  const knownReceiptList = list.filter((customer) => !customer.receiptUnknown);
+  const withReceipt = knownReceiptList.filter((customer) => Boolean(customer.hasReceipt)).length;
+  const withoutReceipt = knownReceiptList.filter((customer) => !customer.hasReceipt).length;
+  const unknownReceipt = list.filter((customer) => customer.receiptUnknown).length;
 
   const mailingOptIn = list.filter((customer) =>
     isTrue(customer.allowMailings ?? customer.AllowMailings)
@@ -256,6 +448,10 @@ function summarizeCustomers(customers) {
     withoutBon: withoutReceipt,
     customersWithoutReceipt: withoutReceipt,
 
+    unknownReceipt,
+    unknownBon: unknownReceipt,
+    customersUnknownReceipt: unknownReceipt,
+
     receiptCount: withReceipt,
     totalReceipts: withReceipt,
     receipts: withReceipt,
@@ -271,10 +467,10 @@ function summarizeCustomers(customers) {
   };
 }
 
-function aggregateByBranch(customers, branches, dateFrom, dateTo, receiptMap) {
+function aggregateByBranch(customers, branches, dateFrom, dateTo, receiptMap, receiptCheckAvailable) {
   const inRange = (customers || [])
     .filter((customer) => isInPeriod(customer, dateFrom, dateTo))
-    .map((customer) => normalizeCustomer(customer, receiptMap));
+    .map((customer) => normalizeCustomer(customer, receiptMap, receiptCheckAvailable));
 
   return branches.map((branch) => {
     const branchCustomers = inRange.filter((customer) =>
@@ -312,69 +508,6 @@ function resolveBranches({ branchId, store }) {
   }
 
   return listBranches();
-}
-
-function buildReceiptMap(transactions) {
-  const map = new Map();
-
-  for (const transaction of transactions || []) {
-    const id = transactionCustomerId(transaction);
-    if (!id) continue;
-    if (!hasUsableReceipt(transaction)) continue;
-
-    const existing = map.get(id);
-    const next = {
-      customerId: id,
-      receiptNr: transactionReceipt(transaction),
-      branchId: transactionBranchId(transaction),
-      dateTime: transaction.dateTime || transaction.DateTime || '',
-      date: transactionDate(transaction),
-      orderNr: String(transaction.orderNr || transaction.OrderNr || transaction.orderNo || transaction.OrderNo || '').trim()
-    };
-
-    if (!existing) {
-      map.set(id, next);
-      continue;
-    }
-
-    const existingDate = String(existing.date || '');
-    const nextDate = String(next.date || '');
-
-    if (nextDate && (!existingDate || nextDate < existingDate)) {
-      map.set(id, next);
-    }
-  }
-
-  return map;
-}
-
-async function loadCustomersForPeriod(dateFrom, dateTo) {
-  const createdFrom = `${dateFrom}T00:00:00`;
-  const createdUntil = `${dateTo}T23:59:59`;
-
-  const result = await withTimeout(
-    getCustomers({ createdFrom, createdUntil }),
-    SOURCE_TIMEOUT_MS,
-    'customers-period'
-  );
-
-  return {
-    customers: Array.isArray(result?.customers) ? result.customers : [],
-    sourceMode: 'period-filter-srs-local-branch-aggregate'
-  };
-}
-
-async function loadTransactionsForPeriod(dateFrom, dateTo) {
-  const from = `${dateFrom}T00:00:00`;
-  const until = `${dateTo}T23:59:59`;
-
-  const result = await withTimeout(
-    getTransactions({ from, until }),
-    SOURCE_TIMEOUT_MS,
-    'transactions-period'
-  );
-
-  return Array.isArray(result?.transactions) ? result.transactions : [];
 }
 
 function buildPayload({
@@ -463,7 +596,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|with-receipts`;
+  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|chunked-with-receipts`;
   const cached = reportCache.get(cacheKey);
 
   if (!refresh && cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
@@ -481,17 +614,31 @@ export default async function handler(req, res) {
 
   try {
     const customerResult = await loadCustomersForPeriod(dateFrom, dateTo);
+
+    errors.push(...(customerResult.errors || []));
+
     let transactions = [];
+    let receiptCheckAvailable = false;
 
     try {
       transactions = await loadTransactionsForPeriod(dateFrom, dateTo);
+      receiptCheckAvailable = true;
     } catch (error) {
       errors.push(`transactions-period: ${error.message || String(error)}`);
       transactions = [];
+      receiptCheckAvailable = false;
     }
 
     const receiptMap = buildReceiptMap(transactions);
-    const rows = aggregateByBranch(customerResult.customers, branches, dateFrom, dateTo, receiptMap);
+
+    const rows = aggregateByBranch(
+      customerResult.customers,
+      branches,
+      dateFrom,
+      dateTo,
+      receiptMap,
+      receiptCheckAvailable
+    );
 
     const payload = buildPayload({
       dateFrom,
@@ -502,8 +649,8 @@ export default async function handler(req, res) {
       sourceCustomerCount: customerResult.customers.length,
       sourceTransactionCount: transactions.length,
       sourceMode: errors.length
-        ? 'period-filter-srs-local-branch-aggregate-receipts-degraded'
-        : 'period-filter-srs-local-branch-aggregate-with-receipts',
+        ? `${customerResult.sourceMode}-with-receipts-degraded`
+        : `${customerResult.sourceMode}-with-receipts`,
       errors
     });
 
