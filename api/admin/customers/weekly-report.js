@@ -27,6 +27,26 @@ const CUSTOMER_CHUNK_CONCURRENCY = Math.max(
   Number(process.env.CUSTOMERS_REPORT_CHUNK_CONCURRENCY || 4) || 4
 );
 
+const RECEIPT_CUSTOMER_TIMEOUT_MS = Math.max(
+  3000,
+  Number(process.env.CUSTOMERS_RECEIPT_CUSTOMER_TIMEOUT_MS || 9000) || 9000
+);
+
+const RECEIPT_CUSTOMER_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.CUSTOMERS_RECEIPT_CUSTOMER_CONCURRENCY || 5) || 5
+);
+
+const RECEIPT_CUSTOMER_GLOBAL_TIMEOUT_MS = Math.max(
+  10000,
+  Number(process.env.CUSTOMERS_RECEIPT_CUSTOMER_GLOBAL_TIMEOUT_MS || 50000) || 50000
+);
+
+const MAX_DEEP_RECEIPT_CUSTOMERS = Math.max(
+  1,
+  Number(process.env.CUSTOMERS_MAX_DEEP_RECEIPT_CUSTOMERS || 90) || 90
+);
+
 const reportCache = new Map();
 
 function isAuthorized(req) {
@@ -356,7 +376,8 @@ function buildReceiptMap(transactions) {
         transaction.orderNo ||
         transaction.OrderNo ||
         ''
-      ).trim()
+      ).trim(),
+      source: 'period-transactions'
     };
 
     const existing = map.get(id);
@@ -377,9 +398,101 @@ function buildReceiptMap(transactions) {
   return map;
 }
 
-function normalizeCustomer(customer, receiptMap, receiptCheckAvailable) {
+async function enrichReceiptMapWithCustomerTransactions(customers, receiptMap, errors) {
+  const list = (customers || []).filter((customer) => {
+    const id = customerId(customer);
+    return id && !receiptMap.has(id);
+  });
+
+  const stats = {
+    attempted: 0,
+    matched: 0,
+    errors: 0,
+    skipped: 0
+  };
+
+  const failures = new Map();
+  const processedIds = new Set();
+
+  if (!list.length) return { stats, failures };
+
+  const startedAt = Date.now();
+
+  await runLimited(
+    list,
+    RECEIPT_CUSTOMER_CONCURRENCY,
+    async (customer) => {
+      const id = customerId(customer);
+      if (!id) return;
+
+      processedIds.add(id);
+
+      if (Date.now() - startedAt > RECEIPT_CUSTOMER_GLOBAL_TIMEOUT_MS) {
+        stats.skipped += 1;
+        failures.set(id, {
+          status: 'Controle mislukt',
+          reason: `globale boncontrole-timeout na ${RECEIPT_CUSTOMER_GLOBAL_TIMEOUT_MS}ms`
+        });
+        return;
+      }
+
+      stats.attempted += 1;
+
+      try {
+        /*
+          Belangrijk: hier GEEN periode meesturen.
+          In SRS werkt de klantprofielroute betrouwbaar met alleen CustomerId.
+          Daarmee verdwijnt een fout automatisch zodra een bon later alsnog wordt gekoppeld.
+        */
+        const result = await withTimeout(
+          getTransactions({ customerId: id }),
+          RECEIPT_CUSTOMER_TIMEOUT_MS,
+          `transactions customer ${id}`
+        );
+
+        const transactions = Array.isArray(result?.transactions) ? result.transactions : [];
+        const customerReceiptMap = buildReceiptMap(transactions);
+        const receipt = customerReceiptMap.get(id);
+
+        if (receipt) {
+          receiptMap.set(id, {
+            ...receipt,
+            source: 'customer-transactions'
+          });
+          stats.matched += 1;
+        }
+      } catch (error) {
+        stats.errors += 1;
+        const reason = error.message || String(error);
+        failures.set(id, {
+          status: 'Controle mislukt',
+          reason
+        });
+        errors.push(`transactions customer ${id}: ${reason}`);
+      }
+    },
+    () => Date.now() - startedAt > RECEIPT_CUSTOMER_GLOBAL_TIMEOUT_MS
+  );
+
+  for (const customer of list) {
+    const id = customerId(customer);
+    if (!id) continue;
+    if (processedIds.has(id) || receiptMap.has(id) || failures.has(id)) continue;
+    stats.skipped += 1;
+    failures.set(id, {
+      status: 'Controle mislukt',
+      reason: 'boncontrole overgeslagen door timeout of limiet'
+    });
+  }
+
+  return { stats, failures };
+}
+
+function normalizeCustomer(customer, receiptMap, receiptCheckAvailable, deepReceiptAttempted, receiptFailureMap) {
   const id = customerId(customer);
   const receiptInfo = receiptMap.get(id) || null;
+  const receiptFailure = receiptFailureMap?.get(id) || null;
+  const receiptUnknown = !receiptInfo && Boolean(receiptFailure || (!deepReceiptAttempted && !receiptCheckAvailable));
 
   return {
     ...customer,
@@ -389,16 +502,18 @@ function normalizeCustomer(customer, receiptMap, receiptCheckAvailable) {
     email: customerEmail(customer),
     name: customerName(customer),
 
-    receiptCheckAvailable,
-    hasReceipt: receiptCheckAvailable ? Boolean(receiptInfo) : false,
-    receiptUnknown: !receiptCheckAvailable,
+    receiptCheckAvailable: Boolean(receiptCheckAvailable || deepReceiptAttempted),
+    hasReceipt: Boolean(receiptInfo),
+    receiptUnknown,
+    receiptError: receiptFailure?.reason || '',
 
     receiptNr: receiptInfo?.receiptNr || '',
     receiptBranchId: receiptInfo?.branchId || '',
     receiptDate: receiptInfo?.dateTime || '',
     receiptOrderNr: receiptInfo?.orderNr || '',
-    receiptStatus: !receiptCheckAvailable
-      ? 'Onbekend'
+    receiptSource: receiptInfo?.source || '',
+    receiptStatus: receiptUnknown
+      ? 'Controle mislukt'
       : receiptInfo
         ? 'Met bon'
         : 'Zonder bon'
@@ -467,10 +582,20 @@ function summarizeCustomers(customers) {
   };
 }
 
-function aggregateByBranch(customers, branches, dateFrom, dateTo, receiptMap, receiptCheckAvailable) {
+function getCustomersInScope(customers, branches, dateFrom, dateTo) {
+  const branchIds = new Set((branches || []).map((branch) => String(branch.branchId || '').trim()).filter(Boolean));
+
+  return (customers || []).filter((customer) => {
+    if (!isInPeriod(customer, dateFrom, dateTo)) return false;
+    if (!branchIds.size) return true;
+    return branchIds.has(customerBranchId(customer));
+  });
+}
+
+function aggregateByBranch(customers, branches, dateFrom, dateTo, receiptMap, receiptCheckAvailable, deepReceiptAttempted, receiptFailureMap = new Map()) {
   const inRange = (customers || [])
     .filter((customer) => isInPeriod(customer, dateFrom, dateTo))
-    .map((customer) => normalizeCustomer(customer, receiptMap, receiptCheckAvailable));
+    .map((customer) => normalizeCustomer(customer, receiptMap, receiptCheckAvailable, deepReceiptAttempted, receiptFailureMap));
 
   return branches.map((branch) => {
     const branchCustomers = inRange.filter((customer) =>
@@ -520,11 +645,13 @@ function buildPayload({
   sourceTransactionCount,
   sourceMode,
   errors,
-  cacheHit = false
+  cacheHit = false,
+  receiptCheck = null
 }) {
   const allCustomers = rows.flatMap((row) => row.customers || []);
   const totals = summarizeCustomers(allCustomers);
-  const degraded = Boolean(errors?.length);
+  const blockingErrors = (errors || []).filter((message) => !String(message || '').startsWith('transactions customer '));
+  const degraded = Boolean(blockingErrors.length || totals.unknownBon > 0);
 
   return {
     success: true,
@@ -537,12 +664,13 @@ function buildPayload({
     sourceMode,
     sourceCustomerCount,
     sourceTransactionCount,
+    receiptCheck,
     totals,
     rows,
     errors: (errors || []).map((message) => ({ message })),
     warnings: errors || [],
     note: degraded
-      ? 'Klantinschrijvingen zijn gedeeltelijk geladen. Controleer waarschuwingen.'
+      ? 'Klantinschrijvingen zijn gedeeltelijk geladen. Boncontrole kon deels niet worden afgerond.'
       : 'Klantinschrijvingen en bonkoppelingen opgehaald.',
     cache: {
       hit: cacheHit,
@@ -596,7 +724,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|chunked-with-receipts`;
+  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|deep-receipts-v2`;
   const cached = reportCache.get(cacheKey);
 
   if (!refresh && cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
@@ -618,18 +746,46 @@ export default async function handler(req, res) {
     errors.push(...(customerResult.errors || []));
 
     let transactions = [];
-    let receiptCheckAvailable = false;
+    let periodReceiptCheckAvailable = false;
 
     try {
       transactions = await loadTransactionsForPeriod(dateFrom, dateTo);
-      receiptCheckAvailable = true;
+      periodReceiptCheckAvailable = true;
     } catch (error) {
       errors.push(`transactions-period: ${error.message || String(error)}`);
       transactions = [];
-      receiptCheckAvailable = false;
+      periodReceiptCheckAvailable = false;
     }
 
     const receiptMap = buildReceiptMap(transactions);
+    const scopedCustomers = getCustomersInScope(customerResult.customers, branches, dateFrom, dateTo);
+    const forceDeep = String(req.query.deepReceipts || req.query.deep || '') === '1' || String(req.query.deepReceipts || req.query.deep || '') === 'true';
+    const isSingleStore = Boolean(branchId || store);
+    const shouldDeepCheck = isSingleStore || forceDeep || scopedCustomers.length <= MAX_DEEP_RECEIPT_CUSTOMERS;
+
+    let deepReceiptAttempted = false;
+    let receiptFailureMap = new Map();
+    let receiptCheck = {
+      periodAvailable: periodReceiptCheckAvailable,
+      deepAttempted: false,
+      deepReason: shouldDeepCheck ? 'enabled' : `skipped-more-than-${MAX_DEEP_RECEIPT_CUSTOMERS}-customers`,
+      scopedCustomerCount: scopedCustomers.length,
+      attempted: 0,
+      matched: 0,
+      errors: 0,
+      skipped: 0
+    };
+
+    if (shouldDeepCheck) {
+      deepReceiptAttempted = true;
+      const deepResult = await enrichReceiptMapWithCustomerTransactions(scopedCustomers, receiptMap, errors);
+      receiptFailureMap = deepResult.failures || new Map();
+      receiptCheck = {
+        ...receiptCheck,
+        deepAttempted: true,
+        ...(deepResult.stats || {})
+      };
+    }
 
     const rows = aggregateByBranch(
       customerResult.customers,
@@ -637,7 +793,9 @@ export default async function handler(req, res) {
       dateFrom,
       dateTo,
       receiptMap,
-      receiptCheckAvailable
+      periodReceiptCheckAvailable,
+      deepReceiptAttempted,
+      receiptFailureMap
     );
 
     const payload = buildPayload({
@@ -648,10 +806,9 @@ export default async function handler(req, res) {
       rows,
       sourceCustomerCount: customerResult.customers.length,
       sourceTransactionCount: transactions.length,
-      sourceMode: errors.length
-        ? `${customerResult.sourceMode}-with-receipts-degraded`
-        : `${customerResult.sourceMode}-with-receipts`,
-      errors
+      sourceMode: `${customerResult.sourceMode}-with-deep-receipts-v2`,
+      errors,
+      receiptCheck
     });
 
     reportCache.set(cacheKey, {
