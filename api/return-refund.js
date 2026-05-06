@@ -453,7 +453,7 @@ function mapSelectedItemsToReturnLineItems({ selectedItems, refundLineItems, ful
         fulfillmentLineItemId: candidate.fulfillmentLineItemId,
         quantity,
         returnReason: 'OTHER',
-        customerNote: reason || 'Retour via winkelportaal'
+        returnReasonNote: reason || 'Retour via winkelportaal'
       });
 
       remaining -= quantity;
@@ -499,8 +499,8 @@ async function createShopifyReturn({ orderId, selectedItems, refundLineItems, or
   }
 
   const mutation = `
-    mutation CreateReturn($input: ReturnCreateInput!) {
-      returnCreate(input: $input) {
+    mutation CreateReturn($returnInput: ReturnInput!) {
+      returnCreate(returnInput: $returnInput) {
         return {
           id
           status
@@ -515,12 +515,11 @@ async function createShopifyReturn({ orderId, selectedItems, refundLineItems, or
   `;
 
   const variables = {
-    input: {
+    returnInput: {
       orderId: shopifyGid('Order', orderId),
       returnLineItems: mapped.returnLineItems,
       notifyCustomer: true,
-      requestedAt: new Date().toISOString(),
-      customerNote: note || reason || 'Retour via winkelportaal'
+      requestedAt: new Date().toISOString()
     }
   };
 
