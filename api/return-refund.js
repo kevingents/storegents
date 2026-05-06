@@ -18,7 +18,9 @@ function setCors(res) {
     'Content-Type, x-admin-token, x-admin-pin, authorization'
   );
   res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
 }
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -173,7 +175,6 @@ function fulfilledQuantitiesFromFulfillments(fulfillments) {
     for (const lineItem of fulfillment.line_items || []) {
       const id = String(lineItem.id || '');
       if (!id) continue;
-
       map.set(id, (map.get(id) || 0) + Number(lineItem.quantity || 0));
     }
   }
@@ -190,7 +191,6 @@ function getSafeFulfilledQuantity(orderLineItem, fulfilledMap, order) {
   if (fromFulfillments > 0) return fromFulfillments;
 
   const orderFulfillmentStatus = String(order.fulfillment_status || '').toLowerCase();
-
   if (['fulfilled', 'partial'].includes(orderFulfillmentStatus)) {
     return Number(orderLineItem.quantity || 0);
   }
@@ -252,7 +252,6 @@ function refundedQuantitiesByLineItem(order) {
     for (const refundLineItem of refund.refund_line_items || []) {
       const id = String(refundLineItem.line_item_id || refundLineItem.line_item?.id || '');
       if (!id) continue;
-
       map.set(id, (map.get(id) || 0) + Number(refundLineItem.quantity || 0));
     }
   }
@@ -283,27 +282,23 @@ function getDiscountedUnitPrice(lineItem) {
   const gross = Number(lineItem.price || 0) * quantity;
   const discount = Number(lineItem.total_discount || 0);
   const netTotal = Math.max(gross - discount, 0);
-
   return netTotal / quantity;
 }
 
 function matchSrsFulfillment({ selectedItem, orderLineItem, srsFulfillments }) {
   const fulfillmentId = String(selectedItem.fulfillmentId || '').trim();
-
   if (fulfillmentId) {
     const found = srsFulfillments.find((item) => String(item.fulfillmentId || '').trim() === fulfillmentId);
     if (found) return found;
   }
 
   const orderLineNr = String(selectedItem.orderLineNr || '').trim();
-
   if (orderLineNr) {
     const found = srsFulfillments.find((item) => String(item.orderLineNr || '').trim() === orderLineNr);
     if (found) return found;
   }
 
   const sku = String(selectedItem.sku || orderLineItem?.sku || '').trim().toLowerCase();
-
   if (sku) {
     return srsFulfillments.find((item) => String(item.sku || '').trim().toLowerCase() === sku) || null;
   }
@@ -338,7 +333,6 @@ function buildSrsItems({ selectedItems, refundLineItems, orderLineItems, srsFulf
 function returnedItemNoteLines({ refundLineItems, orderLineItems }) {
   return refundLineItems.map((refundLineItem) => {
     const lineItem = orderLineItems.find((item) => String(item.id) === String(refundLineItem.line_item_id));
-
     const title = lineItem?.name || 'Onbekend artikel';
     const sku = lineItem?.sku || '';
     const quantity = Number(refundLineItem.quantity || 0);
@@ -349,7 +343,7 @@ function returnedItemNoteLines({ refundLineItems, orderLineItems }) {
       `- ${title}`,
       sku ? `SKU ${sku}` : '',
       `aantal ${quantity}`,
-      `€ ${total.toFixed(2).replace('.', ',')}`
+      `EUR ${total.toFixed(2)}`
     ]
       .filter(Boolean)
       .join(' | ');
@@ -383,7 +377,6 @@ async function getReturnableFulfillmentLineItems(orderId) {
                 quantity
                 lineItem {
                   id
-                  legacyResourceId
                   sku
                   name
                 }
@@ -406,19 +399,19 @@ async function getReturnableFulfillmentLineItems(orderId) {
 
   for (const fulfillment of order.fulfillments || []) {
     const status = String(fulfillment.status || '').toLowerCase();
-
     if (['cancelled', 'canceled', 'failure'].includes(status)) continue;
 
     for (const edge of fulfillment.fulfillmentLineItems?.edges || []) {
-      const node = edge.node;
+      const node = edge.node || {};
       const lineItem = node.lineItem || {};
+      const lineItemId = numericIdFromGid(lineItem.id);
 
       rows.push({
         fulfillmentId: fulfillment.id,
         fulfillmentLineItemId: node.id,
         quantity: Number(node.quantity || 0),
         lineItemGid: lineItem.id || '',
-        lineItemId: String(lineItem.legacyResourceId || numericIdFromGid(lineItem.id) || ''),
+        lineItemId,
         sku: String(lineItem.sku || '').trim(),
         name: lineItem.name || ''
       });
@@ -435,7 +428,6 @@ function mapSelectedItemsToReturnLineItems({ selectedItems, refundLineItems, ful
   for (const refundLineItem of refundLineItems) {
     const selected = selectedItems.find((item) => String(item.lineItemId) === String(refundLineItem.line_item_id));
     const orderLineItem = orderLineItems.find((item) => String(item.id) === String(refundLineItem.line_item_id));
-
     const requestedQuantity = Number(refundLineItem.quantity || 0);
     const selectedSku = String(selected?.sku || orderLineItem?.sku || '').trim().toLowerCase();
 
@@ -451,13 +443,10 @@ function mapSelectedItemsToReturnLineItems({ selectedItems, refundLineItems, ful
     }
 
     let remaining = requestedQuantity;
-
     for (const candidate of candidates) {
       if (remaining <= 0) break;
-
       const available = Number(candidate.quantity || 0);
       if (available <= 0) continue;
-
       const quantity = Math.min(remaining, available);
 
       returnLineItems.push({
@@ -471,9 +460,7 @@ function mapSelectedItemsToReturnLineItems({ selectedItems, refundLineItems, ful
     }
 
     if (remaining > 0) {
-      errors.push(
-        `${orderLineItem?.name || selected?.title || refundLineItem.line_item_id} heeft onvoldoende fulfillmentLineItem quantity voor Shopify Return.`
-      );
+      errors.push(`${orderLineItem?.name || selected?.title || refundLineItem.line_item_id} heeft onvoldoende fulfillmentLineItem quantity voor Shopify Return.`);
     }
   }
 
@@ -490,7 +477,6 @@ async function createShopifyReturn({ orderId, selectedItems, refundLineItems, or
   }
 
   const fulfillmentLineItems = await getReturnableFulfillmentLineItems(orderId);
-
   const mapped = mapSelectedItemsToReturnLineItems({
     selectedItems,
     refundLineItems,
@@ -559,15 +545,9 @@ async function createShopifyReturn({ orderId, selectedItems, refundLineItems, or
 export default async function handler(req, res) {
   setCors(res);
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      success: false,
-      error: 'Methode niet toegestaan'
-    });
+    return res.status(405).json({ success: false, error: 'Methode niet toegestaan' });
   }
 
   if (!SHOPIFY_ACCESS_TOKEN || !SHOPIFY_STORE_URL) {
@@ -579,69 +559,22 @@ export default async function handler(req, res) {
   }
 
   const body = normalizeBody(req);
-
   const orderId = String(body.orderId || body.id || '').trim();
   const employeeName = String(body.employeeName || body.medewerker || '').trim();
   const reason = String(body.reason || body.reden || '').trim();
   const complaintText = String(body.complaintText || body.complaint || '').trim();
   const note = String(body.note || '').trim();
   const store = String(body.store || '').trim();
-
-  const confirmed =
-    body.confirm === true ||
-    body.confirmed === true ||
-    body.confirmation === true;
-
+  const confirmed = body.confirm === true || body.confirmed === true || body.confirmation === true;
   const selectedItems = normalizeSelectedItems(body.items || body.selectedItems || body.refundItems);
 
-  if (!confirmed) {
-    return res.status(400).json({
-      success: false,
-      error: 'Bevestiging ontbreekt. De medewerker moet bevestigen dat de klant terugbetaald mag worden.'
-    });
-  }
-
-  if (!store) {
-    return res.status(400).json({
-      success: false,
-      error: 'Winkel ontbreekt. De retour moet geboekt worden op het filiaal dat de retour meldt.'
-    });
-  }
-
-  if (!orderId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Order ID ontbreekt'
-    });
-  }
-
-  if (!employeeName) {
-    return res.status(400).json({
-      success: false,
-      error: 'Naam medewerker ontbreekt'
-    });
-  }
-
-  if (!reason) {
-    return res.status(400).json({
-      success: false,
-      error: 'Retourreden ontbreekt'
-    });
-  }
-
-  if (isComplaintReason(reason) && !complaintText) {
-    return res.status(400).json({
-      success: false,
-      error: 'Klachtomschrijving is verplicht bij retourreden Klacht / beschadigd / defect.'
-    });
-  }
-
-  if (!selectedItems.length) {
-    return res.status(400).json({
-      success: false,
-      error: 'Selecteer minimaal één product'
-    });
-  }
+  if (!confirmed) return res.status(400).json({ success: false, error: 'Bevestiging ontbreekt. De medewerker moet bevestigen dat de klant terugbetaald mag worden.' });
+  if (!store) return res.status(400).json({ success: false, error: 'Winkel ontbreekt. De retour moet geboekt worden op het filiaal dat de retour meldt.' });
+  if (!orderId) return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
+  if (!employeeName) return res.status(400).json({ success: false, error: 'Naam medewerker ontbreekt' });
+  if (!reason) return res.status(400).json({ success: false, error: 'Retourreden ontbreekt' });
+  if (isComplaintReason(reason) && !complaintText) return res.status(400).json({ success: false, error: 'Klachtomschrijving is verplicht bij retourreden Klacht / beschadigd / defect.' });
+  if (!selectedItems.length) return res.status(400).json({ success: false, error: 'Selecteer minimaal een product' });
 
   let order = null;
   let srsBranchId = '';
@@ -650,13 +583,7 @@ export default async function handler(req, res) {
 
   try {
     order = await getOrderById(orderId);
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: 'Order niet gevonden'
-      });
-    }
+    if (!order) return res.status(404).json({ success: false, error: 'Order niet gevonden' });
 
     srsOrderNr = getSrsOrderNr(body, order);
     srsBranchId = getSrsBranchId(store);
@@ -670,18 +597,15 @@ export default async function handler(req, res) {
 
     const srsFulfillmentResult = await getFulfillments({ orderNr: srsOrderNr });
     const srsFulfillments = srsFulfillmentResult.fulfillments || [];
-
     const orderLineItems = order.line_items || [];
     const fulfillments = await getOrderFulfillments(orderId);
     const fulfilledMap = fulfilledQuantitiesFromFulfillments(fulfillments);
     const refundedMap = refundedQuantitiesByLineItem(order);
-
     const blockedItems = [];
 
     const refundLineItems = selectedItems
       .map((selectedItem) => {
         const orderLineItem = orderLineItems.find((lineItem) => String(lineItem.id) === String(selectedItem.lineItemId));
-
         if (!orderLineItem) {
           blockedItems.push(`Geselecteerde retourregel kon niet aan Shopify orderregel worden gekoppeld: ${selectedItem.title || selectedItem.lineItemId}`);
           return null;
@@ -689,20 +613,12 @@ export default async function handler(req, res) {
 
         const selectedSku = String(selectedItem.sku || '').trim();
         const shopifySku = String(orderLineItem.sku || '').trim();
-
         if (selectedSku && shopifySku && selectedSku !== shopifySku) {
-          blockedItems.push(
-            `Veiligheidscontrole mislukt: geselecteerde SKU ${selectedSku} hoort niet bij Shopify regel ${orderLineItem.name} (${shopifySku}).`
-          );
+          blockedItems.push(`Veiligheidscontrole mislukt: geselecteerde SKU ${selectedSku} hoort niet bij Shopify regel ${orderLineItem.name} (${shopifySku}).`);
           return null;
         }
 
-        const srsFulfillment = matchSrsFulfillment({
-          selectedItem,
-          orderLineItem,
-          srsFulfillments
-        });
-
+        const srsFulfillment = matchSrsFulfillment({ selectedItem, orderLineItem, srsFulfillments });
         if (!srsFulfillment) {
           blockedItems.push(`${orderLineItem.name} kon niet aan een SRS leveropdracht worden gekoppeld`);
           return null;
@@ -728,12 +644,7 @@ export default async function handler(req, res) {
         }
 
         const quantity = Math.min(Number(selectedItem.quantity || 1), maxReturnableQuantity);
-
-        return {
-          line_item_id: Number(selectedItem.lineItemId),
-          quantity,
-          restock_type: 'no_restock'
-        };
+        return { line_item_id: Number(selectedItem.lineItemId), quantity, restock_type: 'no_restock' };
       })
       .filter(Boolean);
 
@@ -742,42 +653,19 @@ export default async function handler(req, res) {
         success: false,
         error: 'Niet alle geselecteerde producten mogen retour.',
         details: blockedItems,
-        rule: 'Retour mag alleen als Shopify fulfilled is én SRS fulfillment status processed is.'
+        rule: 'Retour mag alleen als Shopify fulfilled is en SRS fulfillment status processed is.'
       });
     }
 
-    if (!refundLineItems.length) {
-      return res.status(400).json({
-        success: false,
-        error: 'Geen geldige producten gevonden voor deze order'
-      });
-    }
+    if (!refundLineItems.length) return res.status(400).json({ success: false, error: 'Geen geldige producten gevonden voor deze order' });
 
-    srsItems = buildSrsItems({
-      selectedItems,
-      refundLineItems,
-      orderLineItems,
-      srsFulfillments
-    });
+    srsItems = buildSrsItems({ selectedItems, refundLineItems, orderLineItems, srsFulfillments });
+    const missingIdentifiers = srsItems.filter((item) => !item.sku && !item.barcode && !item.fulfillmentId && !item.orderLineNr);
+    if (missingIdentifiers.length) return res.status(400).json({ success: false, error: 'Niet alle retourregels hebben een SKU/barcode, FulfillmentId of OrderLineNr voor SRS.' });
 
-    const missingIdentifiers = srsItems.filter((item) => {
-      return !item.sku && !item.barcode && !item.fulfillmentId && !item.orderLineNr;
-    });
-
-    if (missingIdentifiers.length) {
-      return res.status(400).json({
-        success: false,
-        error: 'Niet alle retourregels hebben een SKU/barcode, FulfillmentId of OrderLineNr voor SRS.'
-      });
-    }
-
-    const returnedItemLines = returnedItemNoteLines({
-      refundLineItems,
-      orderLineItems
-    });
-
+    const returnedItemLines = returnedItemNoteLines({ refundLineItems, orderLineItems });
     const returnNoteParts = [
-      `Retour via winkelportaal.`,
+      'Retour via winkelportaal.',
       `Medewerker: ${employeeName}.`,
       `Winkel: ${store}.`,
       `SRS OrderNr: ${srsOrderNr}.`,
@@ -788,7 +676,6 @@ export default async function handler(req, res) {
     ].filter(Boolean);
 
     let shopifyReturnResult = null;
-
     if (SHOPIFY_RETURN_CREATE_ENABLED) {
       try {
         shopifyReturnResult = await createShopifyReturn({
@@ -822,16 +709,10 @@ export default async function handler(req, res) {
 
     const calculated = await shopifyRequest(`/orders/${orderId}/refunds/calculate.json`, {
       method: 'POST',
-      body: JSON.stringify({
-        refund: {
-          currency: order.currency,
-          refund_line_items: refundLineItems
-        }
-      })
+      body: JSON.stringify({ refund: { currency: order.currency, refund_line_items: refundLineItems } })
     });
 
     const calculatedRefund = calculated.refund || {};
-
     const transactions = (calculatedRefund.transactions || [])
       .filter((transaction) => Number(transaction.amount || 0) > 0)
       .map((transaction) => ({
@@ -876,7 +757,6 @@ export default async function handler(req, res) {
 
     let srsResult = null;
     let srsLog = null;
-
     try {
       srsResult = await createSrsReturn({
         orderNr: srsOrderNr,
@@ -895,9 +775,7 @@ export default async function handler(req, res) {
         success: srsResult.success,
         srsTransactionId: srsResult.transactionId,
         items: srsItems,
-        message: srsResult.success
-          ? 'Retour verwerkt in SRS op het meldende filiaal.'
-          : 'SRS retour gaf geen completed status.'
+        message: srsResult.success ? 'Retour verwerkt in SRS op het meldende filiaal.' : 'SRS retour gaf geen completed status.'
       });
 
       await addOrderTags(order, [
@@ -908,7 +786,6 @@ export default async function handler(req, res) {
       ]);
     } catch (srsError) {
       console.error('SRS retour verwerken mislukt:', srsError);
-
       srsLog = await safeCreateSrsReturnLog({
         store,
         employeeName,
@@ -918,75 +795,42 @@ export default async function handler(req, res) {
         status: 'failed',
         success: false,
         items: srsItems,
-        error: srsError.message || 'SRS retour mislukt.'
+        message: srsError.message || 'SRS retour verwerken mislukt.'
       });
 
-      try {
-        await addOrderTags(order, [
-          'winkelportaal_retour',
-          'retour_veilig_gecontroleerd',
-          shopifyReturnResult?.success ? 'shopify_return_aangemaakt' : 'shopify_return_controleren',
-          'srs_retour_controleren'
-        ]);
-      } catch (_tagError) {}
+      await addOrderTags(order, [
+        'winkelportaal_retour',
+        'retour_veilig_gecontroleerd',
+        shopifyReturnResult?.success ? 'shopify_return_aangemaakt' : 'shopify_return_controleren',
+        'srs_retour_mislukt'
+      ]);
 
       return res.status(200).json({
         success: true,
-        warning: true,
-        message: 'Shopify Return en terugbetaling zijn verwerkt, maar SRS retour moet handmatig gecontroleerd worden.',
-        refund: created.refund,
+        partial: true,
+        warning: 'Shopify refund is uitgevoerd, maar SRS retour is mislukt. Controleer SRS handmatig.',
+        shopifyRefund: created.refund || created,
         shopifyReturn: shopifyReturnResult,
-        srs: {
-          success: false,
-          orderNr: srsOrderNr,
-          branchId: srsBranchId,
-          error: srsError.message || 'SRS retour mislukt.',
-          log: srsLog
-        }
+        srsReturn: null,
+        srsLog,
+        srsError: srsError.message || String(srsError)
       });
     }
 
     return res.status(200).json({
       success: true,
-      message: srsResult?.success
-        ? 'Shopify Return aangemaakt, terugbetaling verwerkt en retour in SRS geboekt op het meldende filiaal.'
-        : 'Shopify Return aangemaakt en terugbetaling verwerkt. SRS retour is verzonden, maar status is niet completed.',
-      refund: created.refund,
+      message: 'Retour en terugbetaling verwerkt.',
+      shopifyRefund: created.refund || created,
       shopifyReturn: shopifyReturnResult,
-      srs: {
-        success: Boolean(srsResult?.success),
-        status: srsResult?.status || 'unknown',
-        transactionId: srsResult?.transactionId || '',
-        orderNr: srsOrderNr,
-        branchId: srsBranchId,
-        log: srsLog
-      }
+      srsReturn: srsResult,
+      srsLog
     });
   } catch (error) {
-    console.error('Return refund error:', {
-      message: error.message,
-      status: error.status,
-      data: error.data
-    });
-
-    if (order && srsOrderNr && srsBranchId) {
-      await safeCreateSrsReturnLog({
-        store,
-        employeeName,
-        orderNr: srsOrderNr,
-        shopifyOrderId: String(order.id),
-        branchId: srsBranchId,
-        status: 'failed_before_refund_complete',
-        success: false,
-        items: srsItems,
-        error: error.message || 'Retour/terugbetaling mislukt.'
-      });
-    }
-
+    console.error('Retour/terugbetaling verwerken mislukt:', error);
     return res.status(error.status || 500).json({
       success: false,
-      error: error.message || 'Terugbetaling kon niet worden verwerkt',
-      details: error.data || null
+      error: error.message || 'Retour/terugbetaling kon niet worden verwerkt.',
+      details: error.details || error.data || null
     });
   }
 }
