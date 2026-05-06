@@ -9,33 +9,21 @@ function normalizeStore(value) {
 
 function parseBody(req) {
   if (typeof req.body === 'string') {
-    try {
-      return JSON.parse(req.body);
-    } catch (_error) {
-      return {};
-    }
+    try { return JSON.parse(req.body); } catch (_error) { return {}; }
   }
   return req.body || {};
 }
 
 function filterForStore(exchanges, store) {
   if (!store || store === 'GENTS Administratie') return exchanges;
-
   const branchId = getSrsBranchId(store);
-
-  return exchanges.filter((exchange) => {
-    return String(exchange.vanFiliaal) === String(branchId) || String(exchange.naarFiliaal) === String(branchId);
-  });
+  return exchanges.filter((exchange) => String(exchange.vanFiliaal) === String(branchId) || String(exchange.naarFiliaal) === String(branchId));
 }
 
 function filterIncomingForStore(exchanges, store) {
   if (!store || store === 'GENTS Administratie') return exchanges;
-
   const branchId = getSrsBranchId(store);
-
-  return exchanges.filter((exchange) => {
-    return String(exchange.naarFiliaal) === String(branchId);
-  });
+  return exchanges.filter((exchange) => String(exchange.naarFiliaal) === String(branchId));
 }
 
 function buildSummary(exchanges) {
@@ -45,7 +33,6 @@ function buildSummary(exchanges) {
     for (const side of ['van', 'naar']) {
       const branchId = side === 'van' ? exchange.vanFiliaal : exchange.naarFiliaal;
       const store = side === 'van' ? exchange.vanWinkel : exchange.naarWinkel;
-
       if (!branchId) continue;
 
       if (!byBranch.has(branchId)) {
@@ -69,23 +56,19 @@ function buildSummary(exchanges) {
     }
   }
 
-  return Array.from(byBranch.values()).sort((a, b) => {
-    return (b.overdue - a.overdue) ||
-      (b.oldestOpenDays - a.oldestOpenDays) ||
-      ((b.incoming + b.outgoing) - (a.incoming + a.outgoing)) ||
-      String(a.store).localeCompare(String(b.store), 'nl');
-  });
+  return Array.from(byBranch.values()).sort((a, b) =>
+    (b.overdue - a.overdue) ||
+    (b.oldestOpenDays - a.oldestOpenDays) ||
+    ((b.incoming + b.outgoing) - (a.incoming + a.outgoing)) ||
+    String(a.store).localeCompare(String(b.store), 'nl')
+  );
 }
 
 async function getCurrentOpenExchanges({ from, until, days, store = '' }) {
   const result = await getAllOpenstaandeUitwisselingen({ from, until, days });
   const enriched = await enrichOpenExchangeState(result.exchanges || []);
   const exchanges = filterForStore(enriched, store);
-
-  return {
-    ...result,
-    exchanges
-  };
+  return { ...result, exchanges };
 }
 
 export default async function handler(req, res) {
@@ -98,7 +81,6 @@ export default async function handler(req, res) {
       const from = String(req.query.from || '').trim();
       const until = String(req.query.until || '').trim();
       const days = Number(req.query.days || 60);
-
       const result = await getCurrentOpenExchanges({ from, until, days, store });
       const exchanges = result.exchanges || [];
       const overdue = exchanges.filter((exchange) => exchange.isOverdue);
@@ -108,6 +90,7 @@ export default async function handler(req, res) {
         store,
         from: result.from,
         until: result.until,
+        responseTimestamp: result.responseTimestamp,
         count: exchanges.length,
         itemCount: exchanges.reduce((sum, exchange) => sum + Number(exchange.itemCount || 0), 0),
         overdueCount: overdue.length,
@@ -124,47 +107,30 @@ export default async function handler(req, res) {
       const from = String(body.from || req.query.from || '').trim();
       const until = String(body.until || req.query.until || '').trim();
       const days = Number(body.days || req.query.days || 60);
-
       const exchangeIds = Array.isArray(body.exchangeIds)
         ? body.exchangeIds.map(String)
-        : [body.exchangeId || body.uitwisselingId].filter(Boolean).map(String);
+        : [body.exchangeId || body.uitwisselingId || body.exchange?.uitwisselingId].filter(Boolean).map(String);
 
-      if (!exchangeIds.length) {
-        return res.status(400).json({
-          success: false,
-          message: 'Geen uitwisseling geselecteerd.'
-        });
-      }
+      if (!exchangeIds.length) return res.status(400).json({ success: false, message: 'Geen uitwisseling geselecteerd.' });
 
       const current = await getCurrentOpenExchanges({ from, until, days, store });
       const incoming = filterIncomingForStore(current.exchanges || [], store);
-
-      const selected = incoming.filter((exchange) => {
-        return exchangeIds.includes(String(exchange.uitwisselingId));
-      });
+      const selected = incoming.filter((exchange) => exchangeIds.includes(String(exchange.uitwisselingId)));
 
       if (!selected.length) {
         return res.status(400).json({
           success: false,
-          message: store && store !== 'GENTS Administratie'
-            ? 'Geen open inkomende uitwisseling gevonden voor deze winkel.'
-            : 'Geen open uitwisseling gevonden voor deze selectie.'
+          message: store && store !== 'GENTS Administratie' ? 'Geen open inkomende uitwisseling gevonden voor deze winkel.' : 'Geen open uitwisseling gevonden voor deze selectie.'
         });
       }
 
       const result = await processOpenstaandeUitwisselingen({ exchanges: selected });
-
       return res.status(200).json({
         success: result.success,
-        message: result.success
-          ? `${selected.length} uitwisseling(en) binnengeboekt in SRS.`
-          : 'Uitwisseling verzonden, maar SRS status is niet completed.',
+        message: result.success ? `${selected.length} uitwisseling(en) binnengeboekt in SRS.` : 'Uitwisseling verzonden, maar SRS status is niet completed.',
         processedCount: selected.length,
         processedIds: selected.map((exchange) => exchange.uitwisselingId),
-        srs: {
-          status: result.status,
-          transactionId: result.transactionId
-        }
+        srs: { status: result.status, transactionId: result.transactionId }
       });
     }
 
