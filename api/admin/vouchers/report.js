@@ -3,22 +3,31 @@ import { getClosedVouchers } from '../../../lib/srs-vouchers-client.js';
 import { getStoreNameByBranchId } from '../../../lib/srs-branch-names.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
+function setCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+}
+
 function isAuthorized(req) {
   if (String(req.query.public || '') === 'true') return true;
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+
   const token = String(
     req.headers['x-admin-token'] ||
-    req.headers['x-admin-pin'] ||
     req.headers.authorization ||
     req.query.adminToken ||
-    req.query.admin_token ||
-    req.query.token ||
-    req.body?.adminToken ||
-    req.body?.admin_token ||
     ''
-  ).replace(/^Bearer\s+/i, '').trim();
-  return Boolean(adminToken) && token === adminToken;
+  )
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  return token === adminToken;
 }
+
 
 function todayIso() { return new Date().toISOString().slice(0, 10); }
 function daysAgoIso(days) { const date = new Date(); date.setDate(date.getDate() - days); return date.toISOString().slice(0, 10); }
