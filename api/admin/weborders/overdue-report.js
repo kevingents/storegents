@@ -17,6 +17,7 @@ function isAuthorized(req) {
     req.headers['x-admin-token'] ||
     req.headers.authorization ||
     req.query.adminToken ||
+    req.query.admin_token ||
     ''
   )
     .replace(/^Bearer\s+/i, '')
@@ -31,47 +32,16 @@ function emptyPayload(note = '') {
     degraded: true,
     source: 'safe_empty_fallback',
     note,
+    ownerLogic: 'order-line-current-branch',
     deadlineHours: 48,
     totals: {
       openCount: 0,
+      openLineCount: 0,
       overdueCount: 0,
+      overdueLineCount: 0,
       storeCount: 0
     },
     rows: []
-  };
-}
-
-function fallbackNormalizeWeborder(item = {}) {
-  const fulfilmentStore =
-    item.fulfilmentStore ||
-    item.fulfillmentStore ||
-    item.store ||
-    item.branchName ||
-    '';
-
-  const fulfilmentBranchId =
-    item.fulfilmentBranchId ||
-    item.fulfillmentBranchId ||
-    item.branchId ||
-    '';
-
-  const createdAt =
-    item.createdAt ||
-    item.orderDate ||
-    item.created ||
-    '';
-
-  return {
-    ...item,
-    orderNr: item.orderNr || item.orderId || '',
-    orderId: item.orderId || item.orderNr || '',
-    status: item.status || item.srsStatus || item.fulfillmentStatus || 'open',
-    fulfilmentStore,
-    fulfillmentStore: fulfilmentStore,
-    fulfilmentBranchId,
-    fulfillmentBranchId: fulfilmentBranchId,
-    createdAt,
-    ageHours: getAgeInHours(createdAt)
   };
 }
 
@@ -84,74 +54,58 @@ function getAgeInHours(dateValue) {
   return Math.max(0, Math.round((Date.now() - date.getTime()) / 36e5));
 }
 
-function fallbackIsOpenWeborderStatus(status) {
-  return [
-    'accepted',
-    'pending',
-    'open',
-    'srs_created',
-    'pending_srs',
-    'label_created',
-    'in_behandeling',
-    'te_verzenden',
-    'failed_label'
-  ].includes(String(status || '').toLowerCase());
-}
+function fallbackNormalizeWeborder(item = {}) {
+  const fulfilmentStore =
+    item.currentStore ||
+    item.huidigFiliaalNaam ||
+    item.huidigFiliaal ||
+    item.fulfilmentStore ||
+    item.fulfillmentStore ||
+    item.store ||
+    item.branchName ||
+    '';
 
-function fallbackSummarizeOverdueByStore(requests = []) {
-  const normalized = requests
-    .map(fallbackNormalizeWeborder)
-    .filter((item) => fallbackIsOpenWeborderStatus(item.status));
+  const fulfilmentBranchId =
+    item.currentBranchId ||
+    item.huidigBranchId ||
+    item.fulfilmentBranchId ||
+    item.fulfillmentBranchId ||
+    item.branchId ||
+    '';
 
-  const map = new Map();
+  const createdAt =
+    item.createdAt ||
+    item.orderDate ||
+    item.created ||
+    item.dateTime ||
+    '';
 
-  normalized.forEach((item) => {
-    const store =
-      item.fulfilmentStore ||
-      item.fulfillmentStore ||
-      item.sellingStore ||
-      'Onbekend';
-
-    if (!map.has(store)) {
-      map.set(store, {
-        store,
-        openCount: 0,
-        overdueCount: 0,
-        overdueRate: 0,
-        oldestAgeHours: 0
-      });
-    }
-
-    const row = map.get(store);
-    const ageHours = Number(item.ageHours || getAgeInHours(item.createdAt));
-    const overdue = ageHours >= 48;
-
-    row.openCount += 1;
-    row.oldestAgeHours = Math.max(row.oldestAgeHours, ageHours);
-
-    if (overdue) {
-      row.overdueCount += 1;
-    }
-
-    row.overdueRate = row.openCount
-      ? Math.round((row.overdueCount / row.openCount) * 100)
-      : 0;
-  });
-
-  return Array.from(map.values()).sort((a, b) =>
-    b.overdueCount - a.overdueCount ||
-    b.oldestAgeHours - a.oldestAgeHours ||
-    a.store.localeCompare(b.store)
-  );
+  return {
+    ...item,
+    orderNr: item.orderNr || item.orderId || item.leveropdracht || '',
+    orderId: item.orderId || item.orderNr || item.leveropdracht || '',
+    status: item.status || item.srsStatus || item.fulfillmentStatus || 'open',
+    fulfilmentStore,
+    fulfillmentStore: fulfilmentStore,
+    currentStore: fulfilmentStore,
+    fulfilmentBranchId,
+    fulfillmentBranchId: fulfilmentBranchId,
+    currentBranchId: fulfilmentBranchId,
+    createdAt,
+    ageHours: getAgeInHours(createdAt)
+  };
 }
 
 function makeSafeRows(rows = []) {
   return rows.map((row) => ({
     store: row.store || 'Onbekend',
     openCount: Number(row.openCount || 0),
+    openLineCount: Number(row.openLineCount || 0),
     overdueCount: Number(row.overdueCount || 0),
+    overdueLineCount: Number(row.overdueLineCount || 0),
     overdueRate: Number(row.overdueRate || 0),
-    oldestAgeHours: Number(row.oldestAgeHours || 0)
+    oldestAgeHours: Number(row.oldestAgeHours || 0),
+    items: Array.isArray(row.items) ? row.items.slice(0, 100) : []
   }));
 }
 
@@ -187,16 +141,16 @@ async function getHelpers() {
 
     return {
       normalizeWeborder: helpers.normalizeWeborder || fallbackNormalizeWeborder,
-      isOpenWeborderStatus: helpers.isOpenWeborderStatus || fallbackIsOpenWeborderStatus,
-      summarizeOverdueByStore: helpers.summarizeOverdueByStore || fallbackSummarizeOverdueByStore
+      summarizeOverdueByStore: helpers.summarizeOverdueByStore || (() => []),
+      isOpenWeborderStatus: helpers.isOpenWeborderStatus || (() => true)
     };
   } catch (error) {
     console.error('[admin/weborders/overdue-report] helper import failed:', error);
 
     return {
       normalizeWeborder: fallbackNormalizeWeborder,
-      isOpenWeborderStatus: fallbackIsOpenWeborderStatus,
-      summarizeOverdueByStore: fallbackSummarizeOverdueByStore
+      summarizeOverdueByStore: () => [],
+      isOpenWeborderStatus: () => true
     };
   }
 }
@@ -227,29 +181,30 @@ export default async function handler(req, res) {
 
     const {
       normalizeWeborder,
-      isOpenWeborderStatus,
       summarizeOverdueByStore
     } = await getHelpers();
 
     const items = (result.items || []).map(normalizeWeborder);
-    const openItems = items.filter((item) => isOpenWeborderStatus(item.status));
-    const rawRows = summarizeOverdueByStore(items);
-    const safeRows = makeSafeRows(rawRows);
+    const safeRows = makeSafeRows(summarizeOverdueByStore(items));
 
-    const overdueCount = safeRows.reduce(
-      (sum, row) => sum + Number(row.overdueCount || 0),
-      0
-    );
+    const openCount = safeRows.reduce((sum, row) => sum + Number(row.openCount || 0), 0);
+    const openLineCount = safeRows.reduce((sum, row) => sum + Number(row.openLineCount || 0), 0);
+    const overdueCount = safeRows.reduce((sum, row) => sum + Number(row.overdueCount || 0), 0);
+    const overdueLineCount = safeRows.reduce((sum, row) => sum + Number(row.overdueLineCount || 0), 0);
 
     return res.status(200).json({
       success: true,
       source: result.source || 'srs_open_weborders',
       note: result.note || '',
       degraded: Boolean(result.degraded),
+      ownerLogic: 'order-line-current-branch',
+      ownerLogicNote: 'Adminrapportage telt openstaande orderregels op Huidig filiaal. Regels met Huidig filiaal Klant, Magazijn of geleverd/geannuleerd/afgerond tellen niet mee.',
       deadlineHours: 48,
       totals: {
-        openCount: openItems.length,
+        openCount,
+        openLineCount,
         overdueCount,
+        overdueLineCount,
         storeCount: safeRows.length
       },
       rows: safeRows
