@@ -1,5 +1,6 @@
 import { listUnavailableOrderLines } from '../../lib/unavailable-order-line-service.js';
 import { syncSrsCancellationsForBranch } from '../../lib/srs-cancellation-sync-service.js';
+import { syncGlobalUnavailableOrderLines } from '../../lib/srs-unavailable-global-sync-service.js';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,6 +23,14 @@ function isAuthorized(req) {
   return token === adminToken;
 }
 
+function truthy(value) {
+  return ['1', 'true', 'yes', 'ja'].includes(String(value || '').toLowerCase());
+}
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -31,38 +40,61 @@ export default async function handler(req, res) {
 
   try {
     let sync = null;
+    const orderNr = clean(req.query.orderNr || req.query.order || req.query.orderNumber);
+    const syncSrs = truthy(req.query.syncSrs);
+    const syncUnavailableAll = truthy(req.query.syncUnavailableAll || req.query.globalUnavailable || req.query.allUnavailable);
 
-    if (['1', 'true', 'yes', 'ja'].includes(String(req.query.syncSrs || '').toLowerCase())) {
-      const store = String(req.query.store || '').trim();
-      const branchId = String(req.query.branchId || '').trim();
+    if (syncSrs && (syncUnavailableAll || orderNr)) {
+      sync = await syncGlobalUnavailableOrderLines({
+        orderNr,
+        statuses: clean(req.query.statuses || 'unavailable'),
+        dateFrom: clean(req.query.dateFrom || req.query.from || ''),
+        dateTo: clean(req.query.dateTo || req.query.to || ''),
+        month: clean(req.query.month || ''),
+        maxRuntimeMs: Number(req.query.maxRuntimeMs || (orderNr ? 30000 : 65000)),
+        maxRecords: Number(req.query.maxRecords || (orderNr ? 25 : 250)),
+        dryRun: truthy(req.query.dryRun)
+      });
+    } else if (syncSrs) {
+      const store = clean(req.query.store);
+      const branchId = clean(req.query.branchId);
 
       if (!store && !branchId) {
-        return res.status(400).json({ success: false, message: 'Kies een winkel of geef branchId mee voor syncSrs=1.' });
+        return res.status(400).json({
+          success: false,
+          message: 'Kies een winkel/branch of gebruik syncUnavailableAll=1 om alle SRS unavailable orderregels zonder branchfilter op te halen.'
+        });
       }
 
       sync = await syncSrsCancellationsForBranch({
         store,
         branchId,
-        month: String(req.query.month || '').trim() || undefined,
-        statuses: String(req.query.statuses || 'niet leverbaar,unavailable,not available,geannuleerd,cancelled,canceled').trim(),
+        month: clean(req.query.month) || undefined,
+        statuses: clean(req.query.statuses || 'niet leverbaar,unavailable,not available,geannuleerd,cancelled,canceled'),
         maxRuntimeMs: Number(req.query.maxRuntimeMs || 25000),
         maxRecords: Number(req.query.maxRecords || 50),
         dryRun: false
       });
     }
 
+    const queryParts = [
+      req.query.q,
+      req.query.query,
+      orderNr
+    ].filter(Boolean);
+
     const result = await listUnavailableOrderLines({
       store: req.query.store,
       status: req.query.status || 'open',
       dateFrom: req.query.dateFrom || req.query.from || '',
       dateTo: req.query.dateTo || req.query.to || '',
-      query: req.query.q || req.query.query || ''
+      query: queryParts.join(' ')
     });
 
     return res.status(200).json({
       success: true,
-      mode: 'unavailable_order_lines_srs_cancel_workflow',
-      note: 'Orderregels worden per regel verwerkt. SRS gebruikt Cancel, niet Return. Shopify refund gebruikt no_restock.',
+      mode: 'unavailable_order_lines_srs_cancel_workflow_global_unavailable',
+      note: 'Orderregels worden per regel verwerkt. SRS gebruikt Cancel, niet Return. Shopify refund gebruikt no_restock. syncUnavailableAll=1 haalt SRS unavailable zonder branchfilter op.',
       sync,
       totals: result.totals,
       rows: result.rows
