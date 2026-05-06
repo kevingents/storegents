@@ -13,10 +13,12 @@ const SHOPIFY_RETURN_CREATE_REQUIRED = String(process.env.SHOPIFY_RETURN_CREATE_
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, authorization');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, x-admin-token, x-admin-pin, authorization'
+  );
   res.setHeader('Access-Control-Max-Age', '86400');
 }
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
