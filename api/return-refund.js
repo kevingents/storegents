@@ -541,6 +541,49 @@ async function createShopifyReturn({ orderId, selectedItems, refundLineItems, or
   };
 }
 
+
+async function closeShopifyReturn(returnId) {
+  if (!returnId) {
+    return {
+      success: false,
+      skipped: true,
+      message: 'Geen Shopify Return ID ontvangen om te sluiten.'
+    };
+  }
+
+  const mutation = `
+    mutation CloseReturn($id: ID!) {
+      returnClose(id: $id) {
+        return {
+          id
+          status
+          closedAt
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const data = await shopifyGraphql(mutation, { id: returnId });
+  const result = data.returnClose;
+  const userErrors = result?.userErrors || [];
+
+  if (userErrors.length) {
+    const error = new Error(userErrors.map((item) => item.message).join(', '));
+    error.code = 'SHOPIFY_RETURN_CLOSE_FAILED';
+    error.details = userErrors;
+    throw error;
+  }
+
+  return {
+    success: true,
+    return: result.return
+  };
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -675,6 +718,7 @@ export default async function handler(req, res) {
     ].filter(Boolean);
 
     let shopifyReturnResult = null;
+    let shopifyReturnCloseResult = null;
     if (SHOPIFY_RETURN_CREATE_ENABLED) {
       try {
         shopifyReturnResult = await createShopifyReturn({
@@ -754,6 +798,19 @@ export default async function handler(req, res) {
       })
     });
 
+    if (shopifyReturnResult?.success && shopifyReturnResult.return?.id) {
+      try {
+        shopifyReturnCloseResult = await closeShopifyReturn(shopifyReturnResult.return.id);
+      } catch (closeError) {
+        console.error('Shopify Return sluiten mislukt:', closeError);
+        shopifyReturnCloseResult = {
+          success: false,
+          error: closeError.message || String(closeError),
+          details: closeError.details || closeError.data || null
+        };
+      }
+    }
+
     let srsResult = null;
     let srsLog = null;
     try {
@@ -810,6 +867,7 @@ export default async function handler(req, res) {
         warning: 'Shopify refund is uitgevoerd, maar SRS retour is mislukt. Controleer SRS handmatig.',
         shopifyRefund: created.refund || created,
         shopifyReturn: shopifyReturnResult,
+        shopifyReturnClose: shopifyReturnCloseResult,
         srsReturn: null,
         srsLog,
         srsError: srsError.message || String(srsError)
@@ -821,6 +879,7 @@ export default async function handler(req, res) {
       message: 'Retour en terugbetaling verwerkt.',
       shopifyRefund: created.refund || created,
       shopifyReturn: shopifyReturnResult,
+      shopifyReturnClose: shopifyReturnCloseResult,
       srsReturn: srsResult,
       srsLog
     });
