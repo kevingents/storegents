@@ -3,6 +3,7 @@ import { syncSrsCancellationsForBranch } from '../../../lib/srs-cancellation-syn
 import { listBranches } from '../../../lib/branch-metrics.js';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const DEFAULT_PROBLEM_STATUSES = 'niet leverbaar,geannuleerd,unavailable,cancelled,canceled,annulled,not available';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -46,55 +47,94 @@ function rowDate(row) {
   return validDate(row.createdAt || row.date || row.cancelledAt || row.updatedAt);
 }
 
+function clean(value) {
+  return String(value || '').trim();
+}
+
 function cleanStatus(value) {
-  return String(value || '').toLowerCase().replace(/[_-]+/g, ' ').trim();
+  return clean(value).toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+}
+
+function statusText(row = {}) {
+  return cleanStatus([
+    row.srsLineStatus,
+    row.srsStatus,
+    row.status,
+    row.reason,
+    row.srsSourceStatus,
+    row.source,
+    row.originalCancellation?.source,
+    row.originalCancellation?.srsStatus,
+    row.originalCancellation?.srsSourceStatus,
+    row.originalCancellation?.reason
+  ].filter(Boolean).join(' '));
 }
 
 function isUnavailable(row) {
-  const s = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
+  const s = statusText(row);
   return s.includes('unavailable') || s.includes('niet leverbaar') || s.includes('not available');
 }
 
 function isCancelled(row) {
-  const s = cleanStatus(row.srsLineStatus || row.srsStatus || row.status || row.reason || row.srsSourceStatus);
-  return s.includes('cancelled') || s.includes('canceled') || s.includes('geannuleerd');
+  const s = statusText(row);
+  return s.includes('cancelled') || s.includes('canceled') || s.includes('geannuleerd') || s.includes('annulled') || s.includes('cancellation');
 }
 
 function isFailed(row) {
-  const s = cleanStatus(row.status || row.srsStatus || row.refundStatus || row.mailStatus || row.error);
+  const s = cleanStatus([row.status, row.srsStatus, row.refundStatus, row.mailStatus, row.error].filter(Boolean).join(' '));
   return s.includes('failed') || s.includes('mislukt');
 }
 
 function storeFilter(req) {
-  const value = String(req.query.store || '').trim();
+  const value = clean(req.query.store);
   if (!value || ['all', 'alle', '*'].includes(value.toLowerCase())) return '';
   return value;
 }
 
-function normalizeRow(row) {
-  const firstItem = Array.isArray(row.items) ? (row.items[0] || {}) : {};
-  const srsLineStatus = row.srsLineStatus || firstItem.srsStatus || row.srsStatus || row.srsSourceStatus || '';
-  const normalized = {
-    ...row,
-    fulfillmentId: row.fulfillmentId || firstItem.fulfillmentId || '',
-    orderLineNr: row.orderLineNr || firstItem.orderLineNr || '',
-    articleNumber: row.articleNumber || firstItem.articleNumber || firstItem.sku || firstItem.barcode || '',
-    sku: row.sku || firstItem.sku || '',
-    barcode: row.barcode || firstItem.barcode || firstItem.sku || '',
-    title: row.title || firstItem.title || firstItem.productName || firstItem.sku || '',
-    size: row.size || firstItem.size || '',
-    quantity: Number(row.quantity || firstItem.quantity || 1),
-    branchId: row.branchId || firstItem.branchId || '',
-    srsLineStatus,
-    amount: Number(row.amount || firstItem.amount || firstItem.price || 0),
-    store: row.store || 'SRS zonder filiaal'
-  };
+function statusesFromRequest(req) {
+  return clean(req.query.statuses || req.body?.statuses || DEFAULT_PROBLEM_STATUSES);
+}
 
-  return {
-    ...normalized,
-    lineType: isUnavailable(normalized) ? 'niet_leverbaar' : isCancelled(normalized) ? 'geannuleerd' : 'annulering',
-    impactLabel: isUnavailable(normalized) ? 'Voorraadverschil / niet leverbaar' : isCancelled(normalized) ? 'Geannuleerd' : 'Annulering'
-  };
+function normalizeCancellationRows(row) {
+  const items = Array.isArray(row.items) && row.items.length ? row.items : [{}];
+
+  return items.map((item, index) => {
+    const srsLineStatus = clean(item.srsStatus || item.status || row.srsLineStatus || row.srsStatus || row.srsSourceStatus || row.reason || '');
+    const amount = Number(item.amount || item.price || row.amount || 0);
+    const store = clean(item.lastResponsibleStore || row.store || 'SRS zonder filiaal');
+
+    const normalized = {
+      ...row,
+      originalCancellation: row,
+      lineIndex: index,
+      lineId: [row.id || row.idempotencyKey || '', item.fulfillmentId || '', item.orderLineNr || '', item.sku || item.barcode || '', index].join('::'),
+      fulfillmentId: clean(item.fulfillmentId || row.fulfillmentId),
+      orderLineNr: clean(item.orderLineNr || row.orderLineNr),
+      articleNumber: clean(item.articleNumber || item.artikelnummer || row.articleNumber || item.sku || item.barcode),
+      articleId: clean(item.articleId || item.artikelId || row.articleId),
+      sku: clean(item.sku || row.sku || item.barcode),
+      barcode: clean(item.barcode || row.barcode || item.sku),
+      title: clean(item.title || item.productName || row.title || item.sku || item.barcode),
+      color: clean(item.color || item.kleur || row.color),
+      size: clean(item.size || item.maat || row.size),
+      quantity: Number(item.quantity || item.pieces || row.quantity || 1),
+      branchId: clean(item.branchId || row.branchId),
+      currentBranch: clean(item.currentBranch || item.huidigFiliaal || row.currentBranch || item.branchId),
+      originBranch: clean(item.originBranch || item.herkomstFiliaal || row.originBranch || row.store),
+      lastResponsibleStore: clean(item.lastResponsibleStore || row.lastResponsibleStore || store),
+      srsUnavailableStore: clean(item.srsUnavailableStore || row.srsUnavailableStore),
+      srsLineStatus,
+      srsSourceStatus: clean(row.srsSourceStatus),
+      amount,
+      store
+    };
+
+    return {
+      ...normalized,
+      lineType: isUnavailable(normalized) ? 'niet_leverbaar' : isCancelled(normalized) ? 'geannuleerd' : 'annulering',
+      impactLabel: isUnavailable(normalized) ? 'Voorraadverschil / niet leverbaar' : isCancelled(normalized) ? 'Geannuleerd' : 'Annulering'
+    };
+  });
 }
 
 function filterRows(rows, req) {
@@ -103,14 +143,19 @@ function filterRows(rows, req) {
   const toInput = validDate(req.query.dateTo || req.query.to);
   const to = toInput ? new Date(toInput.getFullYear(), toInput.getMonth(), toInput.getDate() + 1) : range.to;
   const store = storeFilter(req);
-  const month = String(req.query.month || '').trim();
+  const month = clean(req.query.month);
+  const q = clean(req.query.q || req.query.query).toLowerCase();
 
   return rows.filter((row) => {
-    if (store && row.store !== store) return false;
+    if (store && row.store !== store && row.lastResponsibleStore !== store) return false;
     if (month && /^\d{4}-\d{2}$/.test(month)) return String(row.month || '').slice(0, 7) === month;
+
     const d = rowDate(row);
-    if (!d) return true;
-    return d >= from && d < to;
+    if (d && (d < from || d >= to)) return false;
+
+    if (q && !JSON.stringify(row).toLowerCase().includes(q)) return false;
+
+    return true;
   });
 }
 
@@ -118,7 +163,7 @@ function totals(rows) {
   const unavailableRows = rows.filter(isUnavailable);
   const cancelledRows = rows.filter(isCancelled);
   const failedRows = rows.filter(isFailed);
-  const withoutBranchRows = rows.filter((row) => !String(row.branchId || '').trim() || row.store === 'SRS zonder filiaal');
+  const withoutBranchRows = rows.filter((row) => !clean(row.branchId) || row.store === 'SRS zonder filiaal');
   const uniqueOrders = new Set(rows.map((row) => row.orderNr).filter(Boolean));
 
   return {
@@ -139,13 +184,13 @@ function totals(rows) {
   };
 }
 
-
 function dedupeRows(rows) {
   const seen = new Set();
   const deduped = [];
 
   for (const row of rows || []) {
     const key = [
+      row.lineId || '',
       row.idempotencyKey || '',
       row.orderNr || '',
       row.fulfillmentId || '',
@@ -201,7 +246,7 @@ function summary(rows) {
     }
 
     if (isFailed(row)) current.failedLines += 1;
-    if (!String(row.branchId || '').trim() || store === 'SRS zonder filiaal') current.withoutBranchLines += 1;
+    if (!clean(row.branchId) || store === 'SRS zonder filiaal') current.withoutBranchLines += 1;
     if (row.orderNr && !current.orderNumbers.includes(row.orderNr)) current.orderNumbers.push(row.orderNr);
     current.uniqueOrderCount = current.orderNumbers.length;
     if (!current.lastAt || String(row.updatedAt || row.createdAt || '') > current.lastAt) current.lastAt = row.updatedAt || row.createdAt || '';
@@ -214,7 +259,7 @@ function summary(rows) {
     .sort((a, b) => b.lostRevenueAmount - a.lostRevenueAmount || b.unavailableLines - a.unavailableLines || a.store.localeCompare(b.store, 'nl'));
 }
 
-async function syncAllStores({ month, maxRuntimeMs, maxRecords }) {
+async function syncAllStores({ month, maxRuntimeMs, maxRecords, statuses }) {
   const branches = listBranches().filter((branch) => branch.store && branch.branchId);
   const startedAt = Date.now();
   const results = [];
@@ -230,6 +275,7 @@ async function syncAllStores({ month, maxRuntimeMs, maxRecords }) {
       const result = await syncSrsCancellationsForBranch({
         store: branch.store,
         month: month || undefined,
+        statuses,
         dryRun: false,
         maxRuntimeMs: Math.min(12000, Math.max(4000, maxRuntimeMs - (Date.now() - startedAt))),
         maxRecords
@@ -257,24 +303,27 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
-  if (!isAdmin(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
   try {
     let sync = null;
     const syncSrs = String(req.query.syncSrs || '') === 'true';
     const syncAll = ['true', '1', 'yes', 'ja'].includes(String(req.query.syncAll || '').toLowerCase());
     const store = storeFilter(req);
+    const statuses = statusesFromRequest(req);
 
     if (syncSrs && syncAll) {
       sync = await syncAllStores({
-        month: String(req.query.month || '').trim(),
+        month: clean(req.query.month),
+        statuses,
         maxRuntimeMs: Number(req.query.maxRuntimeMs || 45000),
         maxRecords: Number(req.query.maxRecords || 50)
       });
     } else if (syncSrs && store) {
       sync = await syncSrsCancellationsForBranch({
         store,
-        month: String(req.query.month || '').trim() || undefined,
+        month: clean(req.query.month) || undefined,
+        statuses,
         dryRun: false,
         maxRuntimeMs: Number(req.query.maxRuntimeMs || 22000),
         maxRecords: Number(req.query.maxRecords || 50)
@@ -282,12 +331,12 @@ export default async function handler(req, res) {
     }
 
     const all = await getOrderCancellations();
-    const rows = dedupeRows(filterRows(all, req).map(normalizeRow));
+    const rows = dedupeRows(filterRows(all.flatMap(normalizeCancellationRows), req));
 
     return res.status(200).json({
       success: true,
-      mode: 'simple_all_stores_stock_impact_deduped',
-      note: 'Deze rapportage telt opgeslagen orderregels. Alles verversen uit SRS werkt alle winkels bij en toont daarna dit overzicht.',
+      mode: 'order_cancellation_problem_lines_deduped',
+      note: 'Deze rapportage telt opgeslagen orderregels per regel. Alles verversen uit SRS werkt winkels bij en toont daarna geannuleerde en niet-leverbare regels.',
       sync,
       totals: totals(rows),
       summary: summary(rows),
