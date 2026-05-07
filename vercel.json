@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/srs-cancellations-nightly",
-      "schedule": "15 */2 * * *"
+      "schedule": "15 * * * *"
     }
   ]
 }
