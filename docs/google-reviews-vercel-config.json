@@ -1,0 +1,135 @@
+[
+  {
+    "branchId": "1",
+    "store": "GENTS Almere",
+    "googleLocationCode": "20140652",
+    "address": "Stadhuisstraat 4, 1315 HC Almere",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "2",
+    "store": "GENTS Amersfoort",
+    "googleLocationCode": "20148579",
+    "address": "Langestraat 71, 3811 AD Amersfoort",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "15",
+    "store": "GENTS Amsterdam",
+    "googleLocationCode": "12779955",
+    "address": "Van Woustraat 68, 1073 LN Amsterdam",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "50",
+    "store": "GENTS Antwerpen",
+    "googleLocationCode": "05183390178707946985",
+    "address": "Nationalestraat 15, 17, 2000 Antwerpen, België",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "3",
+    "store": "GENTS Arnhem",
+    "googleLocationCode": "20136598",
+    "address": "Bakkerstraat 28, 6811 EH Arnhem",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "4",
+    "store": "GENTS Breda",
+    "googleLocationCode": "19448955",
+    "address": "Karrestraat 1, 4811 WT Breda",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "5",
+    "store": "GENTS Delft",
+    "googleLocationCode": "55554444",
+    "address": "Oude Langendijk 10, 2611 GK Delft",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "23",
+    "store": "GENTS Den Bosch",
+    "googleLocationCode": "02055024136117576485",
+    "address": "Schapenmarkt 22, 5211 ET 's-Hertogenbosch",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "8",
+    "store": "GENTS Enschede",
+    "googleLocationCode": "17282629",
+    "address": "Langestraat 8, 7511 HC Enschede",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "10",
+    "store": "GENTS Groningen",
+    "googleLocationCode": "17282402",
+    "address": "Zwanestraat 41, 9712 CK Groningen",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "12",
+    "store": "GENTS Hilversum",
+    "googleLocationCode": "17274676",
+    "address": "Gijsbrecht van Amstelstraat 127, 1214 AW Hilversum",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "13",
+    "store": "GENTS Leiden",
+    "googleLocationCode": "45697896",
+    "address": "Haarlemmerstraat 149, 2312 DN Leiden",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "14",
+    "store": "GENTS Maastricht",
+    "googleLocationCode": "13346523",
+    "address": "Sint Amorsplein 8, 6211 GT Maastricht",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "16",
+    "store": "GENTS Nijmegen",
+    "googleLocationCode": "12345679",
+    "address": "Molenstraat 56, 6511 HG Nijmegen",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "20",
+    "store": "GENTS Rotterdam",
+    "googleLocationCode": "00313082151883485763",
+    "address": "Oude Binnenweg 102A, 3012 JG Rotterdam",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "17",
+    "store": "GENTS Tilburg",
+    "googleLocationCode": "54789645",
+    "address": "Emmapassage 30, 5038 XA Tilburg",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "18",
+    "store": "GENTS Utrecht",
+    "googleLocationCode": "12364553",
+    "address": "Steenweg 43, 3511 JM Utrecht",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "19",
+    "store": "GENTS Zoetermeer",
+    "googleLocationCode": "33668844",
+    "address": "Noordwaarts 212, 2711 HP Zoetermeer",
+    "status": "Geverifieerd"
+  },
+  {
+    "branchId": "22",
+    "store": "GENTS Zwolle",
+    "googleLocationCode": "16495324567232556186",
+    "address": "Luttekestraat 42, 8011 LS Zwolle",
+    "status": "Geverifieerd"
+  }
+]
