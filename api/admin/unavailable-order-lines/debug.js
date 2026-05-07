@@ -1,60 +1,32 @@
 import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-service.js';
 import { findShopifyOrderByName } from '../../../lib/shopify-unavailable-refund-client.js';
 
-function clean(value) {
-  return String(value || '').trim();
-}
-
-function normalizeStatus(value) {
-  return clean(value).toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-}
+function clean(value) { return String(value || '').trim(); }
+function normalizeStatus(value) { return clean(value).toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' '); }
 
 function isAuthorized(req) {
   const adminToken = process.env.ADMIN_TOKEN || '12345';
-  const token = String(
-    req.headers['x-admin-token'] ||
-    req.headers['x-admin-pin'] ||
-    req.headers.authorization ||
-    req.query.adminToken ||
-    req.query.admin_token ||
-    ''
-  ).replace(/^Bearer\s+/i, '').trim();
+  const token = String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.headers.authorization || req.query.adminToken || req.query.admin_token || '').replace(/^Bearer\s+/i, '').trim();
   return token === adminToken;
 }
 
-function baseCancellationId(value) {
-  return clean(value).split('::')[0] || clean(value);
-}
-
+function baseCancellationId(value) { return clean(value).split('::')[0] || clean(value); }
 function sameRow(row = {}, id = '') {
   const cleanId = clean(id);
   const baseId = baseCancellationId(cleanId);
-  return row.id === cleanId ||
-    row.cancellationId === cleanId ||
-    row.cancellationId === baseId ||
-    cleanId.startsWith(`${row.cancellationId}::`);
+  return row.id === cleanId || row.cancellationId === cleanId || row.cancellationId === baseId || cleanId.startsWith(`${row.cancellationId}::`);
 }
-
-function norm(value) {
-  return clean(value).toLowerCase();
-}
-
-function digits(value) {
-  return String(value || '').replace(/\D+/g, '');
-}
+function norm(value) { return clean(value).toLowerCase(); }
+function digits(value) { return String(value || '').replace(/\D+/g, ''); }
 
 function collectLineValues(line = {}) {
   const values = [line.sku, line.title, line.variant_title, line.name, line.vendor, line.product_id, line.variant_id, line.barcode];
-  if (Array.isArray(line.properties)) {
-    line.properties.forEach((property) => values.push(property.name, property.value));
-  }
+  if (Array.isArray(line.properties)) line.properties.forEach((property) => values.push(property.name, property.value));
   return values.map(norm).filter(Boolean);
 }
 
 function itemNeedles(row = {}) {
-  return [row.sku, row.barcode, row.title, row.articleNumber, row.articleId, row.orderLineNr]
-    .map(norm)
-    .filter(Boolean);
+  return [row.sku, row.barcode, row.title, row.articleNumber, row.articleId, row.orderLineNr].map(norm).filter(Boolean);
 }
 
 function lineMatches(line = {}, row = {}) {
@@ -62,11 +34,9 @@ function lineMatches(line = {}, row = {}) {
   const values = collectLineValues(line);
   const lineSku = norm(line.sku);
   const direct = Boolean(lineSku && needles.includes(lineSku)) || needles.some((needle) => values.includes(needle));
-
   const digitNeedles = needles.map(digits).filter((value) => value.length >= 6);
   const digitValues = values.map(digits).filter((value) => value.length >= 6);
   const digit = digitNeedles.some((needle) => digitValues.some((value) => value === needle || value.includes(needle) || needle.includes(value)));
-
   return { matched: direct || digit, direct, digit, needles, values, digitNeedles, digitValues };
 }
 
@@ -135,12 +105,11 @@ export default async function handler(req, res) {
     const id = clean(req.query.id || req.query.lineId || '');
     const orderNr = clean(req.query.orderNr || req.query.order || '');
     const sku = clean(req.query.sku || req.query.barcode || '');
-
     const { rows, totals } = await listUnavailableOrderLines({ status: 'all' });
 
     let candidates = rows;
-    if (id) candidates = rows.filter((row) => sameRow(row, id));
-    if (!candidates.length && orderNr) candidates = rows.filter((row) => clean(row.orderNr) === orderNr);
+    if (id) candidates = candidates.filter((row) => sameRow(row, id));
+    if (orderNr) candidates = candidates.filter((row) => clean(row.orderNr).replace(/^#/, '') === orderNr.replace(/^#/, ''));
     if (sku) candidates = candidates.filter((row) => clean(row.sku) === sku || clean(row.barcode) === sku || clean(row.articleNumber) === sku);
 
     const row = candidates[0] || null;
@@ -162,11 +131,7 @@ export default async function handler(req, res) {
           matchedLineItems: lineItems.filter((line) => line.matched)
         };
       } catch (error) {
-        shopify = {
-          foundOrder: false,
-          error: error.message,
-          data: error.data || null
-        };
+        shopify = { foundOrder: false, error: error.message, data: error.data || null };
       }
     }
 
@@ -182,7 +147,7 @@ export default async function handler(req, res) {
       shopify,
       nextSteps: row
         ? ['Controleer selectedRow.id/cancellationId', 'Controleer shopify.matchedLineItems', 'Als matchedLineItems leeg is, matching probleem', 'Als bedrag selectedRow 0 maar Shopify line price gevuld is, verrijking/refundpad testen']
-        : ['Geen opgeslagen niet-leverbare regel gevonden. Gebruik eerst Order zoeken in SRS of SRS sync nu.']
+        : ['Geen opgeslagen niet-leverbare regel gevonden voor deze filters. Gebruik eerst Order zoeken in SRS of SRS sync nu, of controleer het ordernummer.']
     });
   } catch (error) {
     console.error('[admin/unavailable-order-lines/debug]', error);
