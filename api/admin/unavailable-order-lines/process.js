@@ -23,6 +23,15 @@ function isAuthorized(req) {
   return token === adminToken;
 }
 
+function cleanStep(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function allowedSteps(steps) {
+  const requested = Array.isArray(steps) && steps.length ? steps.map(cleanStep) : ['refund', 'srs_cancel'];
+  return requested.filter((step) => step === 'refund' || step === 'srs_cancel');
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -38,9 +47,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'Geen orderregel geselecteerd.' });
     }
 
-    const steps = Array.isArray(body.steps) && body.steps.length
-      ? body.steps
-      : ['mail', 'refund', 'srs_cancel'];
+    const steps = allowedSteps(body.steps);
+    if (!steps.length) {
+      return res.status(400).json({ success: false, message: 'Geen geldige verwerkingstappen geselecteerd.' });
+    }
 
     const results = [];
     const errors = [];
@@ -62,7 +72,7 @@ export default async function handler(req, res) {
       success: errors.length === 0,
       partial: errors.length > 0 && results.length > 0,
       message: errors.length
-        ? `${results.length} verwerkt, ${errors.length} mislukt.`
+        ? `${results.length} verwerkt, ${errors.length} mislukt. ${errors.map((item) => item.message).filter(Boolean).join(' | ')}`
         : `${results.length} orderregel(s) verwerkt.`,
       results,
       errors
