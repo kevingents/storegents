@@ -48,13 +48,77 @@ function unavailableStatusesOnly(value) {
     .join(',') || DEFAULT_UNAVAILABLE_STATUSES;
 }
 
+function lineRowsFromRecords(records = []) {
+  return records.flatMap((record) => {
+    const lines = Array.isArray(record.items) && record.items.length ? record.items : [{}];
+
+    return lines.map((line, index) => ({
+      id: [record.id, line.fulfillmentId || '', line.orderLineNr || '', line.sku || line.barcode || '', index].join('::'),
+      cancellationId: record.id,
+      lineIndex: index,
+      idempotencyKey: record.idempotencyKey || '',
+      createdAt: record.createdAt || '',
+      updatedAt: record.updatedAt || '',
+      month: record.month || '',
+      store: clean(record.store || line.lastResponsibleStore || 'Onbekend'),
+      orderNr: record.orderNr || '',
+      employeeName: record.employeeName || '',
+      customerName: record.customerName || '',
+      customerEmail: record.customerEmail || '',
+      reason: record.reason || 'Niet leverbaar',
+      currency: record.currency || 'EUR',
+      amount: Number(line.amount || record.amount || 0),
+      quantity: Number(line.quantity || line.pieces || 1),
+      fulfillmentId: clean(line.fulfillmentId),
+      orderLineNr: clean(line.orderLineNr),
+      articleNumber: clean(line.articleNumber || line.artikelnummer || line.sku || ''),
+      articleId: clean(line.articleId || line.artikelId || ''),
+      sku: clean(line.sku || line.barcode || ''),
+      barcode: clean(line.barcode || line.sku || ''),
+      title: clean(line.title || line.productName || line.sku || line.barcode || ''),
+      color: clean(line.color || line.kleur || ''),
+      size: clean(line.size || line.maat || ''),
+      branchId: clean(line.branchId || record.branchId || ''),
+      currentBranch: clean(line.currentBranch || line.huidigFiliaal || line.branchId || ''),
+      originBranch: clean(line.originBranch || line.herkomstFiliaal || record.store || ''),
+      lastResponsibleStore: clean(line.lastResponsibleStore || record.store || 'Onbekend'),
+      srsUnavailableStore: clean(line.srsUnavailableStore || ''),
+      srsLineStatus: clean(line.srsStatus || line.status || record.srsSourceStatus || ''),
+      srsStatus: clean(record.srsStatus || line.srsStatus || record.srsSourceStatus || ''),
+      srsSourceStatus: clean(record.srsSourceStatus || ''),
+      source: record.source || '',
+      status: record.status || 'open',
+      mailStatus: record.mailStatus || 'shopify_refund_mail',
+      refundStatus: record.refundStatus || 'pending',
+      srsCancelStatus: record.srsCancelStatus || 'pending',
+      stockReturnStatus: record.stockReturnStatus || 'skipped_no_stock_return',
+      processedAt: record.processedAt || '',
+      processedBy: record.processedBy || '',
+      processAttempts: Number(record.processAttempts || 0),
+      error: record.error || '',
+      problemType: 'niet_leverbaar',
+      originalCancellation: record
+    }));
+  });
+}
+
+function mergeRows(primary = [], fallback = []) {
+  const map = new Map();
+
+  [...fallback, ...primary].forEach((row) => {
+    const key = row.id || [row.cancellationId, row.fulfillmentId, row.orderLineNr, row.sku, row.barcode].join('::');
+    if (key) map.set(key, row);
+  });
+
+  return Array.from(map.values());
+}
+
 function totalsForRows(rows = []) {
   return rows.reduce((acc, row) => {
-    const mail = normalizeStatus(row.mailStatus);
     const refund = normalizeStatus(row.refundStatus);
     const srs = normalizeStatus(row.srsCancelStatus || row.srsStatus);
     acc.total += 1;
-    if (mail !== 'sent') acc.mailPending += 1;
+    acc.mailPending = 0;
     if (!(refund.includes('refund') || refund.includes('already'))) acc.refundPending += 1;
     if (!srs.includes('cancel')) acc.srsCancelPending += 1;
     if (row.error || normalizeStatus(row.status).includes('failed')) acc.failed += 1;
@@ -120,7 +184,8 @@ export default async function handler(req, res) {
       query: queryParts.join(' ')
     });
 
-    const rows = result.rows || [];
+    const syncedRows = lineRowsFromRecords(sync?.records || []);
+    const rows = mergeRows(result.rows || [], syncedRows);
 
     return res.status(200).json({
       success: true,
