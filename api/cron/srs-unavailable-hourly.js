@@ -1,6 +1,5 @@
 import { syncGlobalUnavailableOrderLines } from '../../lib/srs-unavailable-global-sync-service.js';
 import { listUnavailableOrderLines } from '../../lib/unavailable-order-line-service.js';
-import { appendUnavailableCronRun } from '../../lib/unavailable-cron-state-store.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -37,8 +36,6 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd voor cron.' });
   }
 
-  const startedAt = Date.now();
-
   try {
     const daysBack = Number(req.query.daysBack || process.env.SRS_UNAVAILABLE_CRON_DAYS_BACK || 30);
     const dateFrom = clean(req.query.dateFrom || '') || isoDateDaysAgo(daysBack);
@@ -56,48 +53,26 @@ export default async function handler(req, res) {
       maxRecords
     });
 
-    const open = await listUnavailableOrderLines({ status: 'open', dateFrom, dateTo });
+    const open = await listUnavailableOrderLines({
+      status: 'open',
+      dateFrom,
+      dateTo
+    });
 
-    const totals = {
-      found: Number(sync.found || 0),
-      scanned: Number(sync.scanned || 0),
-      created: Number(sync.created || 0),
-      duplicates: Number(sync.duplicates || 0),
-      errors: Array.isArray(sync.errors) ? sync.errors.length : 0,
-      open: open.rows.length,
-      openAmount: Math.round(open.rows.reduce((sum, row) => sum + Number(row.amount || 0), 0) * 100) / 100
-    };
-
-    const run = {
+    return res.status(200).json({
       success: true,
       mode: 'srs_unavailable_hourly_cron',
       dateFrom,
       dateTo,
       dryRun,
-      runtimeMs: Date.now() - startedAt,
-      totals,
-      message: `Niet-leverbaar cron klaar. ${totals.created} nieuw, ${totals.duplicates} al bekend, ${totals.open} open.`
-    };
-
-    await appendUnavailableCronRun(run);
-
-    return res.status(200).json({
-      success: true,
-      ...run,
       sync,
       openTotals: open.totals,
-      openPreview: open.rows.slice(0, Number(req.query.previewLimit || 25))
+      openCount: open.rows.length,
+      openPreview: open.rows.slice(0, Number(req.query.previewLimit || 25)),
+      message: `Niet-leverbaar cron klaar. ${sync.created || 0} nieuw, ${sync.duplicates || 0} al bekend. ${open.rows.length} open regel(s).`
     });
   } catch (error) {
-    const run = {
-      success: false,
-      mode: 'srs_unavailable_hourly_cron',
-      runtimeMs: Date.now() - startedAt,
-      totals: { found: 0, scanned: 0, created: 0, duplicates: 0, errors: 1, open: 0, openAmount: 0 },
-      message: error.message || 'SRS niet-leverbaar cron mislukt.'
-    };
-    await appendUnavailableCronRun(run).catch(() => null);
     console.error('[cron/srs-unavailable-hourly]', error);
-    return res.status(500).json({ success: false, ...run });
+    return res.status(500).json({ success: false, message: error.message || 'SRS niet-leverbaar cron mislukt.' });
   }
 }
