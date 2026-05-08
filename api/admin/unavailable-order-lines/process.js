@@ -1,4 +1,5 @@
 import { processUnavailableOrderLine } from '../../../lib/unavailable-order-line-service.js';
+import { syncGlobalUnavailableOrderLines } from '../../../lib/srs-unavailable-global-sync-service.js';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -27,9 +28,42 @@ function cleanStep(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function clean(value) {
+  return String(value || '').trim();
+}
+
 function allowedSteps(steps) {
   const requested = Array.isArray(steps) && steps.length ? steps.map(cleanStep) : ['refund', 'srs_cancel'];
   return requested.filter((step) => step === 'refund' || step === 'srs_cancel');
+}
+
+function orderNrFromBody(body = {}) {
+  return clean(
+    body.orderNr ||
+    body.order ||
+    body.orderNumber ||
+    body.weborderNr ||
+    body.webOrderNr ||
+    body.shopifyOrderNr ||
+    body.shopifyOrderName ||
+    body.srsOrderNr ||
+    body.customerOrderNr ||
+    body.klantBestellingNr ||
+    body.klantbestellingNr ||
+    ''
+  ).replace(/^#/, '');
+}
+
+async function syncOrderIfProvided(orderNr) {
+  if (!orderNr) return null;
+
+  return syncGlobalUnavailableOrderLines({
+    orderNr,
+    statuses: 'unavailable,niet leverbaar,not available',
+    maxRuntimeMs: 30000,
+    maxRecords: 25,
+    dryRun: false
+  });
 }
 
 export default async function handler(req, res) {
@@ -50,6 +84,19 @@ export default async function handler(req, res) {
     const steps = allowedSteps(body.steps);
     if (!steps.length) {
       return res.status(400).json({ success: false, message: 'Geen geldige verwerkingstappen geselecteerd.' });
+    }
+
+    const orderNr = orderNrFromBody(body);
+    let preSync = null;
+
+    try {
+      preSync = await syncOrderIfProvided(orderNr);
+    } catch (error) {
+      preSync = {
+        success: false,
+        orderNr,
+        message: error.message || 'SRS sync vooraf mislukt.'
+      };
     }
 
     const results = [];
@@ -84,6 +131,7 @@ export default async function handler(req, res) {
       message: hasProblems
         ? `${doneCount} volledig verwerkt, ${partialCount} gedeeltelijk, ${failedCount} mislukt. ${[...partials, ...errors].map((item) => item.message).filter(Boolean).join(' | ')}`
         : `${doneCount} orderregel(s) volledig verwerkt.`,
+      preSync,
       results,
       partials,
       errors
