@@ -1,5 +1,6 @@
 import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-service.js';
 import { getUnavailableCronState } from '../../../lib/unavailable-cron-state-store.js';
+import { listUnavailableProcessingLogs, summarizeUnavailableProcessingLogs } from '../../../lib/unavailable-processing-log-store.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -31,24 +32,30 @@ function isRefunded(row = {}) {
   return status.includes('refund') || status.includes('already');
 }
 
+function isAlreadyRefunded(row = {}) {
+  return statusText(row.refundStatus).includes('already');
+}
+
 function isSrsCancelled(row = {}) {
   const status = statusText(row.srsCancelStatus || row.srsStatus);
   return status.includes('cancel');
 }
 
 function isFailed(row = {}) {
-  return Boolean(row.error) || statusText(row.status).includes('failed');
+  return Boolean(row.error) || statusText(row.status).includes('failed') || statusText(row.srsCancelStatus).includes('failed');
 }
 
 function bucketBy(rows = [], keyFn) {
   const map = new Map();
   rows.forEach((row) => {
     const key = keyFn(row) || 'Onbekend';
-    const current = map.get(key) || { key, rows: 0, amount: 0, refunded: 0, srsCancelled: 0, failed: 0 };
+    const current = map.get(key) || { key, rows: 0, amount: 0, refunded: 0, alreadyRefunded: 0, srsCancelled: 0, srsPending: 0, failed: 0 };
     current.rows += 1;
     current.amount += Number(row.amount || 0);
     if (isRefunded(row)) current.refunded += 1;
+    if (isAlreadyRefunded(row)) current.alreadyRefunded += 1;
     if (isSrsCancelled(row)) current.srsCancelled += 1;
+    else current.srsPending += 1;
     if (isFailed(row)) current.failed += 1;
     map.set(key, current);
   });
@@ -66,12 +73,20 @@ function summarize(rows = []) {
       acc.refundedRows += 1;
       acc.refundedAmount += Number(row.amount || 0);
     }
+    if (isAlreadyRefunded(row)) {
+      acc.alreadyRefundedRows += 1;
+      acc.alreadyRefundedAmount += Number(row.amount || 0);
+    }
     if (!isRefunded(row)) {
       acc.refundPendingRows += 1;
       acc.refundPendingAmount += Number(row.amount || 0);
     }
     if (isSrsCancelled(row)) acc.srsCancelledRows += 1;
     else acc.srsPendingRows += 1;
+    if (isRefunded(row) && !isSrsCancelled(row)) {
+      acc.refundedButSrsPendingRows += 1;
+      acc.refundedButSrsPendingAmount += Number(row.amount || 0);
+    }
     if (isFailed(row)) acc.failedRows += 1;
     return acc;
   }, {
@@ -79,10 +94,14 @@ function summarize(rows = []) {
     totalAmount: 0,
     refundedRows: 0,
     refundedAmount: 0,
+    alreadyRefundedRows: 0,
+    alreadyRefundedAmount: 0,
     refundPendingRows: 0,
     refundPendingAmount: 0,
     srsCancelledRows: 0,
     srsPendingRows: 0,
+    refundedButSrsPendingRows: 0,
+    refundedButSrsPendingAmount: 0,
     failedRows: 0
   });
 
@@ -90,7 +109,9 @@ function summarize(rows = []) {
     ...summary,
     totalAmount: euro(summary.totalAmount),
     refundedAmount: euro(summary.refundedAmount),
-    refundPendingAmount: euro(summary.refundPendingAmount)
+    alreadyRefundedAmount: euro(summary.alreadyRefundedAmount),
+    refundPendingAmount: euro(summary.refundPendingAmount),
+    refundedButSrsPendingAmount: euro(summary.refundedButSrsPendingAmount)
   };
 }
 
@@ -112,9 +133,11 @@ export default async function handler(req, res) {
     const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
 
     const all = await listUnavailableOrderLines({ status: 'all', dateFrom, dateTo, store, query });
+    const logs = await listUnavailableProcessingLogs({ dateFrom, dateTo, store, orderNr: query, limit: 500 });
     const open = all.rows.filter((row) => !isRefunded(row) || !isSrsCancelled(row) || isFailed(row));
     const processed = all.rows.filter((row) => isRefunded(row) && isSrsCancelled(row) && !isFailed(row));
     const failed = all.rows.filter(isFailed);
+    const refundedButSrsPending = all.rows.filter((row) => isRefunded(row) && !isSrsCancelled(row));
     const cron = await getUnavailableCronState();
 
     return res.status(200).json({
@@ -132,11 +155,15 @@ export default async function handler(req, res) {
       openSummary: summarize(open),
       processedSummary: summarize(processed),
       failedSummary: summarize(failed),
+      refundedButSrsPendingSummary: summarize(refundedButSrsPending),
+      logSummary: summarizeUnavailableProcessingLogs(logs),
       byStore: bucketBy(all.rows, (row) => row.lastResponsibleStore || row.store),
       byArticle: bucketBy(all.rows, (row) => row.sku || row.barcode || row.title).slice(0, 50),
       openRows: open.slice(0, limit),
       processedRows: processed.slice(0, limit),
-      failedRows: failed.slice(0, limit)
+      failedRows: failed.slice(0, limit),
+      refundedButSrsPendingRows: refundedButSrsPending.slice(0, limit),
+      recentLogs: logs.slice(0, 100)
     });
   } catch (error) {
     console.error('[admin/unavailable-order-lines/dashboard]', error);
