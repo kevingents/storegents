@@ -54,6 +54,35 @@ function orderNrFromBody(body = {}) {
   ).replace(/^#/, '');
 }
 
+function rowIdFromRecord(record = {}, line = {}, index = 0) {
+  return [
+    record.id,
+    line.fulfillmentId || '',
+    line.orderLineNr || '',
+    line.sku || line.barcode || '',
+    index
+  ].join('::');
+}
+
+function syncedIdsFromPreSync(preSync) {
+  const records = [
+    ...(Array.isArray(preSync?.records) ? preSync.records : []),
+    ...(Array.isArray(preSync?.createdRecords) ? preSync.createdRecords : []),
+    ...(Array.isArray(preSync?.duplicateRecords) ? preSync.duplicateRecords : [])
+  ];
+
+  const ids = [];
+  for (const record of records) {
+    const lines = Array.isArray(record.items) && record.items.length ? record.items : [{}];
+    lines.forEach((line, index) => {
+      ids.push(rowIdFromRecord(record, line, index));
+      if (record.id) ids.push(record.id);
+    });
+  }
+
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
 async function syncOrderIfProvided(orderNr) {
   if (!orderNr) return null;
 
@@ -64,6 +93,33 @@ async function syncOrderIfProvided(orderNr) {
     maxRecords: 25,
     dryRun: false
   });
+}
+
+async function processWithFallbackIds({ id, fallbackIds = [], steps, employeeName, force }) {
+  const attempts = Array.from(new Set([id, ...fallbackIds].map(clean).filter(Boolean)));
+  const errors = [];
+
+  for (const attemptId of attempts) {
+    try {
+      const result = await processUnavailableOrderLine({
+        id: attemptId,
+        steps,
+        employeeName,
+        force
+      });
+      return { result, attemptId, attempts, errors };
+    } catch (error) {
+      errors.push({ id: attemptId, message: error.message || 'Verwerking mislukt.' });
+      const message = String(error.message || '').toLowerCase();
+      if (!message.includes('niet-leverbare orderregel niet gevonden')) break;
+    }
+  }
+
+  const last = errors[errors.length - 1];
+  const error = new Error(last?.message || 'Verwerking mislukt.');
+  error.attempts = attempts;
+  error.errors = errors;
+  throw error;
 }
 
 export default async function handler(req, res) {
@@ -99,24 +155,38 @@ export default async function handler(req, res) {
       };
     }
 
+    const syncedFallbackIds = syncedIdsFromPreSync(preSync);
     const results = [];
     const errors = [];
     const partials = [];
 
     for (const id of ids) {
       try {
-        const result = await processUnavailableOrderLine({
+        const processed = await processWithFallbackIds({
           id,
+          fallbackIds: syncedFallbackIds,
           steps,
           employeeName: body.employeeName || 'Administratie',
           force: Boolean(body.force)
         });
+        const result = {
+          ...processed.result,
+          selectedId: id,
+          processedId: processed.attemptId,
+          idFallbackAttempts: processed.attempts,
+          idFallbackErrors: processed.errors
+        };
         results.push(result);
         if (result.partial || result.success === false) {
           partials.push({ id, message: result.message || 'Gedeeltelijk verwerkt. Controleer SRS cancel.' });
         }
       } catch (error) {
-        errors.push({ id, message: error.message || 'Verwerking mislukt.' });
+        errors.push({
+          id,
+          message: error.message || 'Verwerking mislukt.',
+          attempts: error.attempts || [id],
+          errors: error.errors || []
+        });
       }
     }
 
@@ -132,6 +202,7 @@ export default async function handler(req, res) {
         ? `${doneCount} volledig verwerkt, ${partialCount} gedeeltelijk, ${failedCount} mislukt. ${[...partials, ...errors].map((item) => item.message).filter(Boolean).join(' | ')}`
         : `${doneCount} orderregel(s) volledig verwerkt.`,
       preSync,
+      syncedFallbackIds,
       results,
       partials,
       errors
