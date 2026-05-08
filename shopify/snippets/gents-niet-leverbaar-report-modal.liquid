@@ -1,0 +1,33 @@
+<div class="portal-modal" data-modal="admin-unavailable-report">
+  <div class="modal-inner modal-wide">
+    <button class="modal-close" type="button" data-modal-close>x</button>
+    <h2>Niet leverbaar rapportage</h2>
+    <p class="form-hint">Rapportage op basis van opgeslagen niet-leverbare orderregels. Deze rapportage haalt niet live opnieuw SRS op. De cron vult de data ieder uur aan.</p>
+    <div class="admin-toolbar">
+      <div><label>Vanaf</label><input id="unavailable-report-from" type="date"></div>
+      <div><label>T/m</label><input id="unavailable-report-to" type="date"></div>
+      <div><label>Winkel</label><select id="unavailable-report-store"><option value="">Alle winkels</option>{{ stores_html }}</select></div>
+      <button type="button" class="secondary-button" id="unavailable-report-refresh">Rapportage vernieuwen</button>
+    </div>
+    <div id="unavailable-report-message" class="declaration-message"></div>
+    <div class="declaration-summary-grid" id="unavailable-report-kpis">
+      <div><span>Laatste cron</span><strong>-</strong></div>
+      <div><span>Nieuw laatste run</span><strong>-</strong></div>
+      <div><span>Totaal bedrag</span><strong>-</strong></div>
+      <div><span>Verwerkt bedrag</span><strong>-</strong></div>
+      <div><span>Open bedrag</span><strong>-</strong></div>
+      <div><span>Fouten</span><strong>-</strong></div>
+    </div>
+    <div class="declaration-summary-grid" id="unavailable-report-extra-kpis">
+      <div><span>Openstaande regels</span><strong>-</strong></div>
+      <div><span>Verwerkte regels</span><strong>-</strong></div>
+      <div><span>SRS cancel klaar</span><strong>-</strong></div>
+      <div><span>Cron gevonden</span><strong>-</strong></div>
+      <div><span>Cron nieuw</span><strong>-</strong></div>
+      <div><span>Cron open bedrag</span><strong>-</strong></div>
+    </div>
+    <div class="admin-section"><h3>Cronstatus</h3><div class="declaration-table-wrap"><table class="declaration-table"><thead><tr><th>Tijd</th><th>Status</th><th>Gevonden</th><th>Nieuw</th><th>Bekend</th><th>Open</th><th>Open bedrag</th><th>Melding</th></tr></thead><tbody id="unavailable-report-cron-body"><tr><td colspan="8">Klik op rapportage vernieuwen.</td></tr></tbody></table></div></div>
+    <div class="admin-section"><h3>Per winkel</h3><div class="declaration-table-wrap"><table class="declaration-table"><thead><tr><th>Winkel</th><th>Regels</th><th>Bedrag</th><th>Verwerkt</th><th>SRS cancel</th><th>Fouten</th></tr></thead><tbody id="unavailable-report-store-body"><tr><td colspan="6">Klik op rapportage vernieuwen.</td></tr></tbody></table></div></div>
+    <div class="admin-section"><h3>Per artikel</h3><div class="declaration-table-wrap"><table class="declaration-table"><thead><tr><th>Artikel/SKU</th><th>Regels</th><th>Bedrag</th><th>Verwerkt</th><th>SRS cancel</th><th>Fouten</th></tr></thead><tbody id="unavailable-report-article-body"><tr><td colspan="6">Klik op rapportage vernieuwen.</td></tr></tbody></table></div></div>
+  </div>
+</div>
