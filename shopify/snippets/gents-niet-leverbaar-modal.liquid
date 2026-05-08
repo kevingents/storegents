@@ -1,0 +1,36 @@
+<div class="portal-modal" data-modal="admin-unavailable-order-lines">
+  <div class="modal-inner modal-wide">
+    <button class="modal-close" type="button" data-modal-close>x</button>
+    <h2>Niet leverbaar verwerken</h2>
+    <p class="form-hint">Verwerk openstaande SRS orderregels met status niet leverbaar. Shopify verwerkt de terugbetaling zonder voorraadterugboeking en SRS Cancel wordt per orderregel uitgevoerd.</p>
+    <div class="admin-toolbar">
+      <div><label>Vanaf</label><input id="unavailable-lines-from" type="date"></div>
+      <div><label>T/m</label><input id="unavailable-lines-to" type="date"></div>
+      <div><label>Winkel</label><select id="unavailable-lines-store"><option value="">Alle winkels</option>{{ stores_html }}</select></div>
+      <div><label>Ordernummer</label><input id="unavailable-lines-order" type="text" placeholder="Bijv. 32125"></div>
+      <div><label>Status</label><select id="unavailable-lines-status"><option value="open">Openstaand</option><option value="processed">Verwerkt</option><option value="failed">Fout</option><option value="all">Alles</option></select></div>
+      <button type="button" class="secondary-button" id="unavailable-lines-load">Openstaand laden</button>
+      <button type="button" class="secondary-button" id="unavailable-order-search">Order zoeken in SRS</button>
+      <button type="button" class="secondary-button" id="unavailable-lines-sync-all">SRS sync nu</button>
+    </div>
+    <div id="unavailable-lines-message" class="declaration-message"></div>
+    <div class="declaration-summary-grid" id="unavailable-lines-kpis">
+      <div><span>Regels</span><strong>-</strong></div>
+      <div><span>Nog mailen</span><strong>-</strong></div>
+      <div><span>Nog terugbetalen</span><strong>-</strong></div>
+      <div><span>Nog SRS cancel</span><strong>-</strong></div>
+      <div><span>Fouten</span><strong>-</strong></div>
+      <div><span>Bedrag</span><strong>-</strong></div>
+    </div>
+    <div class="admin-toolbar unavailable-action-toolbar">
+      <button type="button" class="secondary-button" id="unavailable-lines-process-selected">Geselecteerde regels verwerken</button>
+      <small>Acties: terugbetaling zonder voorraadterugboeking, Shopify mail, SRS Cancel per orderregel.</small>
+    </div>
+    <div class="declaration-table-wrap">
+      <table class="declaration-table unavailable-lines-table">
+        <thead><tr><th><input type="checkbox" id="unavailable-lines-select-all"></th><th>Datum</th><th>Winkel / laatste filiaal</th><th>Order</th><th>Klant</th><th>E-mail</th><th>Artikel</th><th>Barcode/SKU</th><th>Aantal</th><th>Bedrag</th><th>SRS status</th><th>Mail</th><th>Terugbetaling</th><th>SRS cancel</th><th>Voorraad</th><th>Actie</th></tr></thead>
+        <tbody id="unavailable-lines-body"><tr><td colspan="16">Klik op openstaand laden of zoek een order in SRS.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
