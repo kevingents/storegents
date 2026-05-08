@@ -54,27 +54,38 @@ export default async function handler(req, res) {
 
     const results = [];
     const errors = [];
+    const partials = [];
 
     for (const id of ids) {
       try {
-        results.push(await processUnavailableOrderLine({
+        const result = await processUnavailableOrderLine({
           id,
           steps,
           employeeName: body.employeeName || 'Administratie',
           force: Boolean(body.force)
-        }));
+        });
+        results.push(result);
+        if (result.partial || result.success === false) {
+          partials.push({ id, message: result.message || 'Gedeeltelijk verwerkt. Controleer SRS cancel.' });
+        }
       } catch (error) {
         errors.push({ id, message: error.message || 'Verwerking mislukt.' });
       }
     }
 
-    return res.status(errors.length ? 207 : 200).json({
-      success: errors.length === 0,
-      partial: errors.length > 0 && results.length > 0,
-      message: errors.length
-        ? `${results.length} verwerkt, ${errors.length} mislukt. ${errors.map((item) => item.message).filter(Boolean).join(' | ')}`
-        : `${results.length} orderregel(s) verwerkt.`,
+    const doneCount = results.filter((item) => item.success && !item.partial).length;
+    const partialCount = partials.length;
+    const failedCount = errors.length;
+    const hasProblems = partialCount > 0 || failedCount > 0;
+
+    return res.status(hasProblems ? 207 : 200).json({
+      success: !hasProblems,
+      partial: hasProblems && results.length > 0,
+      message: hasProblems
+        ? `${doneCount} volledig verwerkt, ${partialCount} gedeeltelijk, ${failedCount} mislukt. ${[...partials, ...errors].map((item) => item.message).filter(Boolean).join(' | ')}`
+        : `${doneCount} orderregel(s) volledig verwerkt.`,
       results,
+      partials,
       errors
     });
   } catch (error) {
