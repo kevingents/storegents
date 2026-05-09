@@ -83,9 +83,7 @@ function weekRange(year, week) {
     start: monday,
     end: nextMonday
   };
-}
-
-function selectedWeek(req) {
+}\nfunction selectedWeek(req) {
   const current = isoWeek(new Date());
 
   return {
@@ -180,7 +178,7 @@ function closedOrNotStoreLine(item = {}) {
 }
 
 async function readSrsOpenWeborders() {
-  const client = await import('../../../lib/srs-open-weborders-client.js');
+  const client = await import('../../lib/srs-open-weborders-client.js');
 
   if (typeof client.getSrsOpenWeborders !== 'function') {
     throw new Error('SRS open-weborders client ontbreekt.');
@@ -191,7 +189,7 @@ async function readSrsOpenWeborders() {
 
 async function getNormalizer() {
   try {
-    const helpers = await import('../../../lib/weborder-request-store.js');
+    const helpers = await import('../../lib/weborder-request-store.js');
     return helpers.normalizeWeborder || normalizeFallback;
   } catch (_error) {
     return normalizeFallback;
