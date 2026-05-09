@@ -200,6 +200,16 @@ async function getNormalizer() {
 
 function buildRows(items, normalize, range) {
   const map = new Map();
+  const debug = {
+    totalInputItems: Array.isArray(items) ? items.length : 0,
+    missingStore: 0,
+    closedOrNotStore: 0,
+    missingDate: 0,
+    outsideWeek: 0,
+    includedLines: 0,
+    sampleDates: [],
+    sampleStores: []
+  };
 
   items.map(normalize).forEach((item) => {
     const store = clean(firstFilled(
@@ -218,9 +228,27 @@ function buildRows(items, normalize, range) {
       item.datum
     );
 
-    if (!store) return;
-    if (closedOrNotStoreLine({ ...item, currentStore: store })) return;
-    if (!inWeek(createdAt, range)) return;
+    if (store && debug.sampleStores.length < 10 && !debug.sampleStores.includes(store)) debug.sampleStores.push(store);
+    if (createdAt && debug.sampleDates.length < 10 && !debug.sampleDates.includes(createdAt)) debug.sampleDates.push(createdAt);
+
+    if (!store) {
+      debug.missingStore += 1;
+      return;
+    }
+    if (closedOrNotStoreLine({ ...item, currentStore: store })) {
+      debug.closedOrNotStore += 1;
+      return;
+    }
+    if (!createdAt) {
+      debug.missingDate += 1;
+      return;
+    }
+    if (!inWeek(createdAt, range)) {
+      debug.outsideWeek += 1;
+      return;
+    }
+
+    debug.includedLines += 1;
 
     if (!map.has(store)) {
       map.set(store, {
@@ -265,16 +293,19 @@ function buildRows(items, normalize, range) {
     }
   });
 
-  return Array.from(map.values())
-    .map((row) => {
-      const { orders, lateOrders, lines, ...safeRow } = row;
-      return safeRow;
-    })
-    .sort((a, b) =>
-      b.orderCount - a.orderCount ||
-      b.lateCount - a.lateCount ||
-      a.store.localeCompare(b.store)
-    );
+  return {
+    rows: Array.from(map.values())
+      .map((row) => {
+        const { orders, lateOrders, lines, ...safeRow } = row;
+        return safeRow;
+      })
+      .sort((a, b) =>
+        b.orderCount - a.orderCount ||
+        b.lateCount - a.lateCount ||
+        a.store.localeCompare(b.store)
+      ),
+    debug
+  };
 }
 
 export default async function handler(req, res) {
@@ -305,11 +336,12 @@ export default async function handler(req, res) {
       getNormalizer()
     ]);
 
-    const rows = buildRows(
+    const built = buildRows(
       Array.isArray(srs.items) ? srs.items : [],
       normalize,
       range
     );
+    const rows = built.rows;
 
     const totals = rows.reduce((sum, row) => {
       sum.orderCount += Number(row.orderCount || 0);
@@ -327,7 +359,7 @@ export default async function handler(req, res) {
 
     totals.storeCount = rows.length;
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       year,
       week,
@@ -344,7 +376,11 @@ export default async function handler(req, res) {
       totals,
       rows,
       updatedAt: new Date().toISOString()
-    });
+    };
+
+    if (String(req.query.debug || '') === '1') payload.debug = built.debug;
+
+    return res.status(200).json(payload);
   } catch (error) {
     console.error('[admin/store-weekly-order-report]', error);
 
