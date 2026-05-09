@@ -3,7 +3,7 @@
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
 const DEADLINE_HOURS = 48;
 const PICK_PACK_MINUTES_PER_ORDER = 10;
-const REPORT_STATUSES = ['accepted', 'pending', 'processed', 'completed'];
+const REPORT_STATUSES = ['accepted', 'pending', 'processed'];
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -62,7 +62,7 @@ function hoursBetween(startValue, endValue) {
 
 function isClosedStatus(value) {
   const status = clean(value).toLowerCase();
-  return status.includes('processed') || status.includes('completed') || status.includes('fulfilled') || status.includes('geleverd') || status.includes('afgerond');
+  return status.includes('processed') || status.includes('fulfilled') || status.includes('geleverd') || status.includes('afgerond');
 }
 
 function orderKey(item = {}) {
