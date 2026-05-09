@@ -83,7 +83,9 @@ function weekRange(year, week) {
     start: monday,
     end: nextMonday
   };
-}\nfunction selectedWeek(req) {
+}
+
+function selectedWeek(req) {
   const current = isoWeek(new Date());
 
   return {
