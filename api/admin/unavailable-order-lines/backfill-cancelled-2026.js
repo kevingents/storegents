@@ -2,7 +2,7 @@ import { getFulfillments, getWebordersWithDetails, isSrsCancelledStatus } from '
 import { getShopifyOrderLineContext } from '../../../lib/shopify-order-line-context-client.js';
 import { addOrderCancellationsBulk } from '../../../lib/order-cancellation-bulk-store.js';
 
-const CANCELLED_STATUSES = ['cancelled', 'canceled', 'geannuleerd', 'annulled'];
+const CANCELLED_STATUSES = ['cancelled'];
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -62,7 +62,8 @@ function monthKey(value) {
   return date ? date.toISOString().slice(0, 7) : new Date().toISOString().slice(0, 7);
 }
 
-async function getDetail(orderNr, cache, errors) {
+async function getDetail(orderNr, cache, errors, includeDetails) {
+  if (!includeDetails) return null;
   const cleanOrderNr = clean(orderNr).replace(/^#/, '');
   if (!cleanOrderNr) return null;
   if (cache.has(cleanOrderNr)) return cache.get(cleanOrderNr);
@@ -209,6 +210,7 @@ export default async function handler(req, res) {
     const dateTo = clean(req.query.dateTo || '2026-12-31');
     const maxRecords = Math.max(1, Math.min(1000, Number(req.query.maxRecords || 250)));
     const dryRun = truthy(req.query.dryRun);
+    const includeDetails = truthy(req.query.includeDetails);
     const statuses = clean(req.query.statuses).split(/[;,]+/).map(clean).filter(Boolean);
     const selectedStatuses = statuses.length ? statuses : CANCELLED_STATUSES;
     const errors = [];
@@ -228,7 +230,7 @@ export default async function handler(req, res) {
       }
 
       const orderNr = clean(fulfillment.orderNr).replace(/^#/, '');
-      const detail = await getDetail(orderNr, detailCache, errors);
+      const detail = await getDetail(orderNr, detailCache, errors, includeDetails);
       const detailLine = findDetailLine(detail, fulfillment);
       const item = {
         sku: clean(fulfillment.sku || fulfillment.barcode || detailLine?.sku || detailLine?.barcode),
@@ -251,6 +253,7 @@ export default async function handler(req, res) {
       dryRun,
       dateFrom,
       dateTo,
+      includeDetails,
       statuses: selectedStatuses,
       found: fulfillments.length,
       prepared: records.length,
