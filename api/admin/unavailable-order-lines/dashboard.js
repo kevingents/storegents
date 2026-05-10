@@ -58,13 +58,34 @@ function isRefundLog(log = {}) {
     refundStatus.includes('already_refunded');
 }
 
+function isNoOpenQuantityLog(log = {}) {
+  const text = statusText([
+    log.type,
+    log.message,
+    log.srsCancelStatus,
+    log.result?.message,
+    ...(Array.isArray(log.result?.messages) ? log.result.messages : [])
+  ].filter(Boolean).join(' '));
+
+  return text.includes('niet meer retour nemen dan er openstaat') ||
+    text.includes('meer retour nemen dan er openstaat') ||
+    text.includes('geen open aantal') ||
+    text.includes('no open quantity') ||
+    text.includes('nothing open') ||
+    text.includes('already processed') ||
+    text.includes('already cancelled') ||
+    text.includes('already canceled');
+}
+
 function isSrsSuccessLog(log = {}) {
   const type = statusText(log.type);
   const srsStatus = statusText(log.srsCancelStatus);
   return type === 'srs_cancel_success' ||
     type === 'srs_already_cancelled' ||
+    type === 'srs_cancel_failed' && isNoOpenQuantityLog(log) ||
     srsStatus.includes('cancelled_in_srs') ||
-    srsStatus.includes('cancelled');
+    srsStatus.includes('cancelled') ||
+    isNoOpenQuantityLog(log);
 }
 
 function dateValue(value) {
