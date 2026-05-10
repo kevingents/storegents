@@ -1,5 +1,6 @@
 import { syncGlobalUnavailableOrderLines } from '../../lib/srs-unavailable-global-sync-service.js';
-import { listUnavailableOrderLines, processUnavailableOrderLine } from '../../lib/unavailable-order-line-service.js';
+import { listUnavailableOrderLines } from '../../lib/unavailable-order-line-service.js';
+import { processSyncedUnavailableRecord } from '../../lib/unavailable-cron-record-processor.js';
 import { appendUnavailableCronRun } from '../../lib/unavailable-cron-state-store.js';
 
 function clean(value) {
@@ -144,26 +145,16 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
 
   for (const row of candidates) {
     if (Date.now() - startedAt > maxRuntimeMs) break;
-    const id = rowProcessId(row);
-    if (!id) {
-      failed += 1;
-      errors.push({ orderNr: row.orderNr || '', message: 'Geen lokale regel-id gevonden.' });
-      continue;
-    }
-
     try {
-      const result = await processUnavailableOrderLine({
-        id,
-        steps: ['refund', 'srs_cancel'],
-        employeeName: 'Automatische niet-leverbaar cron',
-        force: true
+      const result = await processSyncedUnavailableRecord(row, {
+        employeeName: 'Automatische niet-leverbaar cron'
       });
 
       if (result.success && !result.partial) success += 1;
       else partial += 1;
 
       results.push({
-        id,
+        id: result.id || rowProcessId(row),
         orderNr: row.orderNr || result.cancellation?.orderNr || '',
         sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode || '',
         success: Boolean(result.success),
@@ -175,7 +166,7 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
       });
     } catch (error) {
       failed += 1;
-      errors.push({ id, orderNr: row.orderNr || '', sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode || '', message: error.message || 'Verwerking mislukt.' });
+      errors.push({ id: rowProcessId(row), orderNr: row.orderNr || '', sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode || '', message: error.message || 'Verwerking mislukt.' });
     }
   }
 
