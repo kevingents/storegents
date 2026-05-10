@@ -40,8 +40,40 @@ function isUnavailableRow(row = {}) {
   return text.includes('niet leverbaar') || text.includes('unavailable') || text.includes('not available');
 }
 
-function shouldCheck(row = {}, { since } = {}) {
+function hasSnapshot(snapshot = null) {
+  return Boolean(snapshot && snapshot.checkedAt && (snapshot.storeStock !== null || snapshot.lostFoundStock !== null));
+}
+
+function rowKey(row = {}) {
+  return [
+    row.orderNr,
+    row.fulfillmentId,
+    row.orderLineNr,
+    row.sku || row.barcode,
+    row.lastResponsibleStore || row.store
+  ].map((value) => clean(value).toLowerCase()).join('::');
+}
+
+function rowScore(row = {}) {
+  const snapshotScore = hasSnapshot(row.stockSnapshot) ? 100 : 0;
+  const checkScore = row.lostFoundCheck?.checkedAt ? 20 : 0;
+  const processedScore = row.status === 'processed' ? 5 : 0;
+  return snapshotScore + checkScore + processedScore + Number(row.amount || 0) / 100000;
+}
+
+function dedupeRows(rows = []) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = rowKey(row);
+    const existing = map.get(key);
+    if (!existing || rowScore(row) >= rowScore(existing)) map.set(key, row);
+  }
+  return Array.from(map.values());
+}
+
+function shouldCheck(row = {}, { since, requireSnapshot = false } = {}) {
   if (!isUnavailableRow(row)) return false;
+  if (requireSnapshot && !hasSnapshot(row.stockSnapshot)) return false;
   const created = new Date(row.createdAt || row.updatedAt || '');
   if (since && created && !Number.isNaN(created.getTime()) && created < since) return false;
   const sku = clean(row.barcode || row.sku);
@@ -49,25 +81,32 @@ function shouldCheck(row = {}, { since } = {}) {
   return true;
 }
 
-function suspicionFrom({ row, snapshot, current } = {}) {
-  const stockAtUnavailable = Number(snapshot?.storeStock ?? 0);
-  const lostFoundAtUnavailable = Number(snapshot?.lostFoundStock ?? 0);
-  const storeNow = Number(current?.storeStock ?? 0);
-  const lostFoundNow = Number(current?.lostFoundStock ?? 0);
-  const lostFoundDelta = lostFoundNow - lostFoundAtUnavailable;
-  const storeDelta = storeNow - stockAtUnavailable;
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
-  let status = 'no_signal';
+function suspicionFrom({ row, snapshot, current } = {}) {
+  const snapshotAvailable = hasSnapshot(snapshot);
+  const stockAtUnavailable = snapshotAvailable ? numberOrNull(snapshot.storeStock) : null;
+  const lostFoundAtUnavailable = snapshotAvailable ? numberOrNull(snapshot.lostFoundStock) : null;
+  const storeNow = numberOrNull(current?.storeStock) ?? 0;
+  const lostFoundNow = numberOrNull(current?.lostFoundStock) ?? 0;
+  const lostFoundDelta = lostFoundAtUnavailable === null ? null : lostFoundNow - lostFoundAtUnavailable;
+  const storeDelta = stockAtUnavailable === null ? null : storeNow - stockAtUnavailable;
+
+  let status = snapshotAvailable ? 'no_signal' : 'no_snapshot_yet';
   let level = 'low';
   let score = 0;
 
-  if (stockAtUnavailable > 0) {
+  if (stockAtUnavailable !== null && stockAtUnavailable > 0) {
     status = 'stock_present_at_unavailable';
     level = 'medium';
     score = 50;
   }
 
-  if (lostFoundDelta > 0) {
+  if (lostFoundDelta !== null && lostFoundDelta > 0) {
     status = stockAtUnavailable > 0 ? 'found_after_balance' : 'lost_found_increased_after_unavailable';
     level = 'high';
     score = Math.max(score, 80);
@@ -79,7 +118,7 @@ function suspicionFrom({ row, snapshot, current } = {}) {
     score = 95;
   }
 
-  if (storeDelta > 0) {
+  if (storeDelta !== null && storeDelta > 0) {
     status = 'store_stock_returned';
     level = score >= 80 ? level : 'medium';
     score = Math.max(score, 60);
@@ -89,6 +128,7 @@ function suspicionFrom({ row, snapshot, current } = {}) {
     status,
     level,
     score,
+    snapshotAvailable,
     stockAtUnavailable,
     lostFoundAtUnavailable,
     storeStockNow: storeNow,
@@ -128,10 +168,12 @@ export default async function handler(req, res) {
     const maxRecords = Math.max(1, Math.min(100, Number(req.query.maxRecords || 25)));
     const lostFoundBranchId = clean(req.query.lostFoundBranchId || process.env.SRS_LOST_FOUND_BRANCH_ID || '706');
     const dryRun = ['1', 'true', 'yes', 'ja'].includes(clean(req.query.dryRun).toLowerCase());
+    const requireSnapshot = ['1', 'true', 'yes', 'ja'].includes(clean(req.query.requireSnapshot).toLowerCase());
     const since = daysAgoDate(daysBack);
 
     const cancellations = await getOrderCancellations();
-    const rows = cancellationLineRows(cancellations).filter((row) => shouldCheck(row, { since }));
+    const rawRows = cancellationLineRows(cancellations).filter((row) => shouldCheck(row, { since, requireSnapshot }));
+    const rows = dedupeRows(rawRows);
     const selected = rows.slice(0, maxRecords);
     const results = [];
     const errors = [];
@@ -179,7 +221,8 @@ export default async function handler(req, res) {
 
     const high = results.filter((item) => ['high', 'very_high'].includes(item.signal?.level)).length;
     const medium = results.filter((item) => item.signal?.level === 'medium').length;
-    const message = `Lost & Found check klaar. ${results.length} gecontroleerd, ${high} hoog signaal, ${medium} middel signaal.`;
+    const noSnapshot = results.filter((item) => item.signal?.status === 'no_snapshot_yet').length;
+    const message = `Lost & Found check klaar. ${results.length} gecontroleerd, ${high} hoog signaal, ${medium} middel signaal, ${noSnapshot} zonder oude snapshot.`;
 
     await appendUnavailableCronRun({
       type: 'srs_unavailable_lost_found_check',
@@ -187,9 +230,12 @@ export default async function handler(req, res) {
       message,
       totals: {
         type: 'srs_unavailable_lost_found_check',
+        candidatesRaw: rawRows.length,
+        candidates: rows.length,
         checked: results.length,
         high,
         medium,
+        noSnapshot,
         errors: errors.length,
         runtimeMs: Date.now() - startedAt
       },
@@ -203,10 +249,12 @@ export default async function handler(req, res) {
       dryRun,
       daysBack,
       lostFoundBranchId,
+      candidatesRaw: rawRows.length,
       candidates: rows.length,
       checked: results.length,
       high,
       medium,
+      noSnapshot,
       results,
       errors,
       message
