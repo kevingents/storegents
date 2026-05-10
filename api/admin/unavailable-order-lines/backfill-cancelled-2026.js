@@ -209,6 +209,7 @@ export default async function handler(req, res) {
     const dateFrom = clean(req.query.dateFrom || '2026-01-01');
     const dateTo = clean(req.query.dateTo || '2026-12-31');
     const maxRecords = Math.max(1, Math.min(1000, Number(req.query.maxRecords || 250)));
+    const offset = Math.max(0, Number(req.query.offset || 0));
     const dryRun = truthy(req.query.dryRun);
     const includeDetails = truthy(req.query.includeDetails);
     const statuses = clean(req.query.statuses).split(/[;,]+/).map(clean).filter(Boolean);
@@ -218,16 +219,26 @@ export default async function handler(req, res) {
     const shopifyCache = new Map();
     const records = [];
     let skippedByDate = 0;
+    let matchedInDate = 0;
+    let skippedByOffset = 0;
 
     const fulfillments = await getCancelledFulfillments(selectedStatuses, errors);
 
     for (const fulfillment of fulfillments) {
-      if (records.length >= maxRecords) break;
       const date = lineDate(fulfillment);
       if (!inDateRange(date, dateFrom, dateTo)) {
         skippedByDate += 1;
         continue;
       }
+
+      if (matchedInDate < offset) {
+        matchedInDate += 1;
+        skippedByOffset += 1;
+        continue;
+      }
+      matchedInDate += 1;
+
+      if (records.length >= maxRecords) break;
 
       const orderNr = clean(fulfillment.orderNr).replace(/^#/, '');
       const detail = await getDetail(orderNr, detailCache, errors, includeDetails);
@@ -253,6 +264,10 @@ export default async function handler(req, res) {
       dryRun,
       dateFrom,
       dateTo,
+      offset,
+      limit: maxRecords,
+      nextOffset: offset + records.length,
+      hasMore: offset + records.length < Math.max(0, fulfillments.length - skippedByDate),
       includeDetails,
       statuses: selectedStatuses,
       found: fulfillments.length,
@@ -260,11 +275,12 @@ export default async function handler(req, res) {
       created: saved.created || 0,
       duplicates: saved.duplicates || 0,
       skippedByDate,
+      skippedByOffset,
       errors,
       preview: records.slice(0, Number(req.query.previewLimit || 25)),
       message: dryRun
-        ? `Dry-run klaar. ${records.length} geannuleerde SRS regel(s) voorbereid.`
-        : `Backfill klaar. ${saved.created || 0} nieuw opgeslagen, ${saved.duplicates || 0} al bekend.`
+        ? `Dry-run klaar. ${records.length} geannuleerde SRS regel(s) voorbereid. Volgende offset: ${offset + records.length}.`
+        : `Backfill klaar. ${saved.created || 0} nieuw opgeslagen, ${saved.duplicates || 0} al bekend. Volgende offset: ${offset + records.length}.`
     });
   } catch (error) {
     console.error('[backfill-cancelled-2026]', error);
