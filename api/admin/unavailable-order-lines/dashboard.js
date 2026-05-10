@@ -1,6 +1,6 @@
 import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-service.js';
 import { getUnavailableCronState } from '../../../lib/unavailable-cron-state-store.js';
-import { listUnavailableProcessingLogs, summarizeUnavailableProcessingLogs } from '../../../lib/unavailable-processing-log-store.js';
+import { listUnavailableProcessingLogs, summarizeUnavailableProcessingLogs, unavailableLineKey } from '../../../lib/unavailable-processing-log-store.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -42,7 +42,84 @@ function isSrsCancelled(row = {}) {
 }
 
 function isFailed(row = {}) {
-  return Boolean(row.error) || statusText(row.status).includes('failed') || statusText(row.srsCancelStatus).includes('failed');
+  const refundDone = isRefunded(row);
+  const srsDone = isSrsCancelled(row);
+  const srsFailed = statusText(row.srsCancelStatus).includes('failed') || statusText(row.srsStatus).includes('failed');
+  if (refundDone && srsDone) return false;
+  return Boolean(row.error) || statusText(row.status).includes('failed') || srsFailed;
+}
+
+function isRefundLog(log = {}) {
+  const type = statusText(log.type);
+  const refundStatus = statusText(log.refundStatus);
+  return type === 'shopify_refund_created' ||
+    type === 'shopify_already_refunded' ||
+    refundStatus.includes('refunded') ||
+    refundStatus.includes('already_refunded');
+}
+
+function isSrsSuccessLog(log = {}) {
+  const type = statusText(log.type);
+  const srsStatus = statusText(log.srsCancelStatus);
+  return type === 'srs_cancel_success' ||
+    type === 'srs_already_cancelled' ||
+    srsStatus.includes('cancelled_in_srs') ||
+    srsStatus.includes('cancelled');
+}
+
+function lineKeyForRow(row = {}) {
+  return clean(row.lineKey || unavailableLineKey(row)).toLowerCase();
+}
+
+function buildLogIndex(logs = []) {
+  const map = new Map();
+  logs.forEach((log) => {
+    const keys = [
+      clean(log.lineKey).toLowerCase(),
+      unavailableLineKey(log).toLowerCase(),
+      [clean(log.orderNr), clean(log.fulfillmentId), clean(log.orderLineNr), clean(log.sku || log.barcode)].join('::').toLowerCase()
+    ].filter(Boolean);
+
+    keys.forEach((key) => {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(log);
+    });
+  });
+  return map;
+}
+
+function enrichRowsWithLogs(rows = [], logs = []) {
+  const logIndex = buildLogIndex(logs);
+
+  return rows.map((row) => {
+    const key = lineKeyForRow(row);
+    const rowLogs = logIndex.get(key) || [];
+    const refundLog = rowLogs.find(isRefundLog);
+    const srsLog = rowLogs.find(isSrsSuccessLog);
+    const amountFromLog = rowLogs.find((log) => Number(log.amount || 0) > 0)?.amount;
+    const patch = {};
+
+    if (refundLog && !isRefunded(row)) {
+      patch.refundStatus = statusText(refundLog.type).includes('already') || statusText(refundLog.refundStatus).includes('already')
+        ? 'already_refunded'
+        : 'refunded';
+    }
+
+    if (srsLog && !isSrsCancelled(row)) {
+      patch.srsCancelStatus = 'cancelled_in_srs';
+      patch.srsStatus = 'cancelled_in_srs';
+      patch.error = '';
+    }
+
+    if (!Number(row.amount || 0) && Number(amountFromLog || 0) > 0) patch.amount = euro(amountFromLog);
+
+    const enriched = { ...row, ...patch, reportLogs: rowLogs };
+    if (isRefunded(enriched) && isSrsCancelled(enriched)) {
+      enriched.status = 'processed';
+      enriched.error = '';
+    }
+    return enriched;
+  });
 }
 
 function bucketBy(rows = [], keyFn) {
@@ -134,10 +211,11 @@ export default async function handler(req, res) {
 
     const all = await listUnavailableOrderLines({ status: 'all', dateFrom, dateTo, store, query });
     const logs = await listUnavailableProcessingLogs({ dateFrom, dateTo, store, orderNr: query, limit: 500 });
-    const open = all.rows.filter((row) => !isRefunded(row) || !isSrsCancelled(row) || isFailed(row));
-    const processed = all.rows.filter((row) => isRefunded(row) && isSrsCancelled(row) && !isFailed(row));
-    const failed = all.rows.filter(isFailed);
-    const refundedButSrsPending = all.rows.filter((row) => isRefunded(row) && !isSrsCancelled(row));
+    const rows = enrichRowsWithLogs(all.rows, logs);
+    const open = rows.filter((row) => !isRefunded(row) || !isSrsCancelled(row) || isFailed(row));
+    const processed = rows.filter((row) => isRefunded(row) && isSrsCancelled(row) && !isFailed(row));
+    const failed = rows.filter(isFailed);
+    const refundedButSrsPending = rows.filter((row) => isRefunded(row) && !isSrsCancelled(row));
     const cron = await getUnavailableCronState();
 
     return res.status(200).json({
@@ -151,14 +229,14 @@ export default async function handler(req, res) {
         lastTotals: cron.lastTotals || null,
         recentRuns: (cron.runs || []).slice(0, 10)
       },
-      summary: summarize(all.rows),
+      summary: summarize(rows),
       openSummary: summarize(open),
       processedSummary: summarize(processed),
       failedSummary: summarize(failed),
       refundedButSrsPendingSummary: summarize(refundedButSrsPending),
       logSummary: summarizeUnavailableProcessingLogs(logs),
-      byStore: bucketBy(all.rows, (row) => row.lastResponsibleStore || row.store),
-      byArticle: bucketBy(all.rows, (row) => row.sku || row.barcode || row.title).slice(0, 50),
+      byStore: bucketBy(rows, (row) => row.lastResponsibleStore || row.store),
+      byArticle: bucketBy(rows, (row) => row.sku || row.barcode || row.title).slice(0, 50),
       openRows: open.slice(0, limit),
       processedRows: processed.slice(0, limit),
       failedRows: failed.slice(0, limit),
