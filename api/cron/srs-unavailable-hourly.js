@@ -43,10 +43,50 @@ function isoDateDaysAgo(days) {
 }
 
 function rowProcessId(row = {}) {
+  if (row.id && String(row.id).includes('::')) return clean(row.id);
+  const firstLine = Array.isArray(row.items) ? row.items[0] : null;
+  if (row.id && firstLine) {
+    return [
+      row.id,
+      firstLine.fulfillmentId || '',
+      firstLine.orderLineNr || '',
+      firstLine.sku || firstLine.barcode || '',
+      0
+    ].join('::');
+  }
   return clean(row.id || row.cancellationId || '');
 }
 
-function buildTotals({ sync = {}, open = {}, processed = {}, after = {}, dateFrom = '', dateTo = '', dryRun = false } = {}) {
+function rowKey(row = {}) {
+  const firstLine = Array.isArray(row.items) ? row.items[0] : row;
+  return [
+    row.orderNr || row.weborderNr || row.shopifyOrderNr || '',
+    firstLine?.fulfillmentId || row.fulfillmentId || '',
+    firstLine?.orderLineNr || row.orderLineNr || '',
+    firstLine?.sku || firstLine?.barcode || row.sku || row.barcode || '',
+    rowProcessId(row)
+  ].map((value) => clean(value).toLowerCase()).join('::');
+}
+
+function uniqueRows(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    if (!row) return;
+    const key = rowKey(row);
+    if (!map.has(key)) map.set(key, row);
+  });
+  return Array.from(map.values());
+}
+
+function syncRows(sync = {}) {
+  return uniqueRows([
+    ...(Array.isArray(sync.createdRecords) ? sync.createdRecords : []),
+    ...(Array.isArray(sync.duplicateRecords) ? sync.duplicateRecords : []),
+    ...(Array.isArray(sync.records) ? sync.records : [])
+  ]);
+}
+
+function buildTotals({ sync = {}, open = {}, processed = {}, after = {}, processCandidates = [], dateFrom = '', dateTo = '', dryRun = false } = {}) {
   return {
     dateFrom,
     dateTo,
@@ -57,6 +97,7 @@ function buildTotals({ sync = {}, open = {}, processed = {}, after = {}, dateFro
     skippedByDate: Number(sync.skippedByDate || 0),
     skippedByLimit: Number(sync.skippedByLimit || 0),
     openBeforeProcessing: Number(open.rows?.length || 0),
+    processCandidates: Number(processCandidates.length || 0),
     open: Number(after.rows?.length ?? open.rows?.length ?? 0),
     openAmount: Number(after.totals?.amount ?? open.totals?.amount ?? 0),
     openRefundPending: Number(after.totals?.refundPending ?? open.totals?.refundPending ?? 0),
@@ -96,7 +137,7 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
       partial: 0,
       failed: 0,
       runtimeMs: 0,
-      results: candidates.map((row) => ({ id: rowProcessId(row), orderNr: row.orderNr, sku: row.sku || row.barcode, dryRun: true })),
+      results: candidates.map((row) => ({ id: rowProcessId(row), orderNr: row.orderNr, sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode, dryRun: true })),
       errors: []
     };
   }
@@ -123,8 +164,8 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
 
       results.push({
         id,
-        orderNr: row.orderNr || '',
-        sku: row.sku || row.barcode || '',
+        orderNr: row.orderNr || result.cancellation?.orderNr || '',
+        sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode || '',
         success: Boolean(result.success),
         partial: Boolean(result.partial),
         refundStatus: result.cancellation?.refundStatus || '',
@@ -134,7 +175,7 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
       });
     } catch (error) {
       failed += 1;
-      errors.push({ id, orderNr: row.orderNr || '', sku: row.sku || row.barcode || '', message: error.message || 'Verwerking mislukt.' });
+      errors.push({ id, orderNr: row.orderNr || '', sku: row.sku || row.barcode || row.items?.[0]?.sku || row.items?.[0]?.barcode || '', message: error.message || 'Verwerking mislukt.' });
     }
   }
 
@@ -193,8 +234,13 @@ export default async function handler(req, res) {
       dateTo
     });
 
+    const candidates = uniqueRows([
+      ...syncRows(sync),
+      ...(Array.isArray(open.rows) ? open.rows : [])
+    ]);
+
     const processed = autoProcess
-      ? await processOpenUnavailableRows({ rows: open.rows, maxProcessRecords, maxRuntimeMs: processMaxRuntimeMs, dryRun })
+      ? await processOpenUnavailableRows({ rows: candidates, maxProcessRecords, maxRuntimeMs: processMaxRuntimeMs, dryRun })
       : { dryRun, attempted: 0, success: 0, partial: 0, failed: 0, runtimeMs: 0, results: [], errors: [] };
 
     const after = await listUnavailableOrderLines({
@@ -206,7 +252,7 @@ export default async function handler(req, res) {
     const message = autoProcess
       ? `Niet-leverbaar cron klaar. ${sync.created || 0} nieuw, ${sync.duplicates || 0} al bekend. ${processed.success || 0} automatisch verwerkt, ${processed.partial || 0} gedeeltelijk, ${processed.failed || 0} fout. ${after.rows.length} open regel(s).`
       : `Niet-leverbaar cron klaar. ${sync.created || 0} nieuw, ${sync.duplicates || 0} al bekend. ${after.rows.length} open regel(s).`;
-    const totals = buildTotals({ sync, open, processed, after, dateFrom, dateTo, dryRun });
+    const totals = buildTotals({ sync, open, processed, after, processCandidates: candidates, dateFrom, dateTo, dryRun });
     const cronState = await saveCronRun({
       success: processed.failed === 0,
       message,
@@ -225,6 +271,7 @@ export default async function handler(req, res) {
         success: processed.success || 0,
         partial: processed.partial || 0,
         failed: processed.failed || 0,
+        candidates: candidates.length,
         errors: Array.isArray(processed.errors) ? processed.errors.slice(0, 10) : []
       }
     });
@@ -238,6 +285,7 @@ export default async function handler(req, res) {
       dryRun,
       autoProcess,
       sync,
+      processCandidates: candidates.length,
       processed,
       openTotals: after.totals,
       openCount: after.rows.length,
