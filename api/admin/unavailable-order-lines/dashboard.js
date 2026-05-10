@@ -67,6 +67,26 @@ function isSrsSuccessLog(log = {}) {
     srsStatus.includes('cancelled');
 }
 
+function dateValue(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function inDateRange(row = {}, { dateFrom = '', dateTo = '' } = {}) {
+  const from = dateValue(dateFrom);
+  const to = dateValue(dateTo);
+  const toExclusive = to ? new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1) : null;
+  const candidates = [row.processedAt, row.updatedAt, row.createdAt, ...(row.reportLogs || []).map((log) => log.createdAt)].filter(Boolean);
+  if (!from && !toExclusive) return true;
+  return candidates.some((value) => {
+    const d = dateValue(value);
+    if (!d) return false;
+    if (from && d < from) return false;
+    if (toExclusive && d >= toExclusive) return false;
+    return true;
+  });
+}
+
 function lineKeyForRow(row = {}) {
   return clean(row.lineKey || unavailableLineKey(row)).toLowerCase();
 }
@@ -88,11 +108,48 @@ function buildLogIndex(logs = []) {
   return map;
 }
 
+function fallbackRowFromLogs(lineKey, logs = []) {
+  const sorted = [...logs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const latest = sorted[0] || {};
+  const refundLog = sorted.find(isRefundLog);
+  const srsLog = sorted.find(isSrsSuccessLog);
+  const amountLog = sorted.find((log) => Number(log.amount || 0) > 0) || latest;
+  return {
+    id: latest.cancellationId || latest.id || lineKey,
+    cancellationId: latest.cancellationId || '',
+    lineKey,
+    createdAt: latest.createdAt || '',
+    updatedAt: latest.createdAt || '',
+    processedAt: latest.createdAt || '',
+    store: latest.store || 'Onbekend',
+    lastResponsibleStore: latest.store || 'Onbekend',
+    orderNr: latest.orderNr || '',
+    shopifyOrderNr: latest.orderNr || '',
+    weborderNr: latest.orderNr || '',
+    customerName: '',
+    customerEmail: '',
+    title: latest.title || '',
+    sku: latest.sku || latest.barcode || '',
+    barcode: latest.barcode || latest.sku || '',
+    quantity: 1,
+    amount: euro(amountLog.amount || 0),
+    refundStatus: refundLog ? (statusText(refundLog.type).includes('already') || statusText(refundLog.refundStatus).includes('already') ? 'already_refunded' : 'refunded') : latest.refundStatus || 'pending',
+    srsCancelStatus: srsLog ? 'cancelled_in_srs' : latest.srsCancelStatus || 'pending',
+    srsStatus: srsLog ? 'cancelled_in_srs' : latest.srsCancelStatus || 'pending',
+    status: refundLog && srsLog ? 'processed' : 'open',
+    error: '',
+    source: 'processing_log_only',
+    reportLogs: sorted
+  };
+}
+
 function enrichRowsWithLogs(rows = [], logs = []) {
   const logIndex = buildLogIndex(logs);
+  const usedKeys = new Set();
 
-  return rows.map((row) => {
+  const enrichedRows = rows.map((row) => {
     const key = lineKeyForRow(row);
+    usedKeys.add(key);
     const rowLogs = logIndex.get(key) || [];
     const refundLog = rowLogs.find(isRefundLog);
     const srsLog = rowLogs.find(isSrsSuccessLog);
@@ -113,12 +170,50 @@ function enrichRowsWithLogs(rows = [], logs = []) {
 
     if (!Number(row.amount || 0) && Number(amountFromLog || 0) > 0) patch.amount = euro(amountFromLog);
 
-    const enriched = { ...row, ...patch, reportLogs: rowLogs };
+    const enriched = { ...row, ...patch, lineKey: key, reportLogs: rowLogs };
     if (isRefunded(enriched) && isSrsCancelled(enriched)) {
       enriched.status = 'processed';
       enriched.error = '';
     }
     return enriched;
+  });
+
+  for (const [key, rowLogs] of logIndex.entries()) {
+    if (!key || usedKeys.has(key)) continue;
+    const meaningful = rowLogs.some((log) => log.orderNr || log.sku || log.barcode || Number(log.amount || 0) > 0);
+    if (meaningful) enrichedRows.push(fallbackRowFromLogs(key, rowLogs));
+  }
+
+  return enrichedRows;
+}
+
+function dedupeReportRows(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = lineKeyForRow(row) || [row.orderNr, row.fulfillmentId, row.orderLineNr, row.sku || row.barcode, row.id].map(clean).join('::').toLowerCase();
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, row);
+      return;
+    }
+    const existingScore = Number(isRefunded(existing)) * 10 + Number(isSrsCancelled(existing)) * 10 + Number(existing.amount || 0) / 100000 + Number((existing.reportLogs || []).length);
+    const rowScore = Number(isRefunded(row)) * 10 + Number(isSrsCancelled(row)) * 10 + Number(row.amount || 0) / 100000 + Number((row.reportLogs || []).length);
+    if (rowScore >= existingScore) map.set(key, row);
+  });
+  return Array.from(map.values());
+}
+
+function filterReportRows(rows = [], { dateFrom = '', dateTo = '', store = '', query = '' } = {}) {
+  const storeFilter = clean(store).toLowerCase();
+  const q = clean(query).replace(/^#/, '').toLowerCase();
+  return rows.filter((row) => {
+    if (!inDateRange(row, { dateFrom, dateTo })) return false;
+    if (storeFilter && !['all', 'alle', '*'].includes(storeFilter)) {
+      const rowStore = clean(row.lastResponsibleStore || row.store).toLowerCase();
+      if (rowStore !== storeFilter) return false;
+    }
+    if (q && !JSON.stringify(row).toLowerCase().includes(q)) return false;
+    return true;
   });
 }
 
@@ -209,9 +304,11 @@ export default async function handler(req, res) {
     const query = clean(req.query.q || req.query.query || req.query.orderNr || req.query.order || '');
     const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
 
-    const all = await listUnavailableOrderLines({ status: 'all', dateFrom, dateTo, store, query });
-    const logs = await listUnavailableProcessingLogs({ dateFrom, dateTo, store, orderNr: query, limit: 500 });
-    const rows = enrichRowsWithLogs(all.rows, logs);
+    const all = await listUnavailableOrderLines({ status: 'all' });
+    const logs = await listUnavailableProcessingLogs({ limit: 5000 });
+    const allRows = dedupeReportRows(enrichRowsWithLogs(all.rows, logs));
+    const rows = filterReportRows(allRows, { dateFrom, dateTo, store, query });
+    const filteredLogs = logs.filter((log) => filterReportRows([fallbackRowFromLogs(clean(log.lineKey || unavailableLineKey(log)).toLowerCase(), [log])], { dateFrom, dateTo, store, query }).length > 0);
     const open = rows.filter((row) => !isRefunded(row) || !isSrsCancelled(row) || isFailed(row));
     const processed = rows.filter((row) => isRefunded(row) && isSrsCancelled(row) && !isFailed(row));
     const failed = rows.filter(isFailed);
@@ -234,14 +331,21 @@ export default async function handler(req, res) {
       processedSummary: summarize(processed),
       failedSummary: summarize(failed),
       refundedButSrsPendingSummary: summarize(refundedButSrsPending),
-      logSummary: summarizeUnavailableProcessingLogs(logs),
+      logSummary: summarizeUnavailableProcessingLogs(filteredLogs),
       byStore: bucketBy(rows, (row) => row.lastResponsibleStore || row.store),
       byArticle: bucketBy(rows, (row) => row.sku || row.barcode || row.title).slice(0, 50),
       openRows: open.slice(0, limit),
       processedRows: processed.slice(0, limit),
       failedRows: failed.slice(0, limit),
       refundedButSrsPendingRows: refundedButSrsPending.slice(0, limit),
-      recentLogs: logs.slice(0, 100)
+      recentLogs: filteredLogs.slice(0, 100),
+      debug: {
+        allLocalRows: all.rows.length,
+        allReportRows: allRows.length,
+        filteredRows: rows.length,
+        logs: logs.length,
+        filteredLogs: filteredLogs.length
+      }
     });
   } catch (error) {
     console.error('[admin/unavailable-order-lines/dashboard]', error);
