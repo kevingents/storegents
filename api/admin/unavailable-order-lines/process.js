@@ -83,6 +83,12 @@ function syncedIdsFromPreSync(preSync) {
   return Array.from(new Set(ids.filter(Boolean)));
 }
 
+function concreteLineIds(ids = []) {
+  const list = Array.from(new Set((ids || []).map(clean).filter(Boolean)));
+  const concrete = list.filter((id) => id.split('::').length >= 5);
+  return concrete.length ? concrete : list;
+}
+
 async function syncOrderIfProvided(orderNr) {
   if (!orderNr) return null;
 
@@ -152,7 +158,7 @@ export default async function handler(req, res) {
     }
 
     const syncedFallbackIds = syncedIdsFromPreSync(preSync);
-    const ids = requestedIds.length ? requestedIds : syncedFallbackIds;
+    const ids = requestedIds.length ? concreteLineIds(requestedIds) : concreteLineIds(syncedFallbackIds);
 
     if (!ids.length) {
       return res.status(400).json({
@@ -212,6 +218,7 @@ export default async function handler(req, res) {
         : `${doneCount} orderregel(s) volledig verwerkt.`,
       preSync,
       syncedFallbackIds,
+      processedIds: ids,
       results,
       partials,
       errors
