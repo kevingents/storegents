@@ -21,8 +21,8 @@
       "schedule": "20 * * * *"
     },
     {
-      "path": "/api/cron/srs-cancelled-backfill-2026",
-      "schedule": "45 * * * *"
+      "path": "/api/cron/weborder-mail-run",
+      "schedule": "0 8 * * *"
     },
     {
       "path": "/api/cron/srs-unavailable-lost-found-check",
