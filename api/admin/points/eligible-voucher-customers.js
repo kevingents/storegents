@@ -62,6 +62,19 @@ function getRules(req) {
   return { minimumAmount, pointValue, minimumPoints };
 }
 
+async function findShopifyCustomerForSrsIds({ ids, namespace, key }) {
+  for (const id of ids) {
+    const cleanId = String(id || '').trim();
+    if (!cleanId) continue;
+    const customer = await findShopifyCustomerBySrsCustomerId(cleanId, namespace, key);
+    if (customer?.id) {
+      return { customer, matchedSrsCustomerId: cleanId };
+    }
+  }
+
+  return { customer: null, matchedSrsCustomerId: '' };
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
@@ -107,20 +120,29 @@ export default async function handler(req, res) {
 
     for (const balance of eligibleBalances) {
       const srsCustomerId = String(balance.customerId || '').trim();
+      const originalSrsCustomerId = String(balance.originalCustomerId || '').trim();
       const latestMutation = latestBranchByCustomer.get(srsCustomerId);
       const branchId = latestMutation?.branchId || '';
       const branchName = getBranchName(branchId);
       const estimatedVoucherAmount = Number((Number(balance.balance || 0) * rules.pointValue).toFixed(2));
 
       let shopifyCustomer = null;
+      let matchedSrsCustomerId = '';
 
       if (includeShopify) {
-        shopifyCustomer = await findShopifyCustomerBySrsCustomerId(srsCustomerId, srsCustomerNamespace, srsCustomerKey);
+        const lookup = await findShopifyCustomerForSrsIds({
+          ids: [srsCustomerId, originalSrsCustomerId],
+          namespace: srsCustomerNamespace,
+          key: srsCustomerKey
+        });
+        shopifyCustomer = lookup.customer;
+        matchedSrsCustomerId = lookup.matchedSrsCustomerId;
       }
 
       const row = {
         srsCustomerId,
-        originalSrsCustomerId: balance.originalCustomerId || '',
+        originalSrsCustomerId,
+        matchedSrsCustomerId,
         pointsBalance: Number(balance.balance || 0),
         estimatedVoucherAmount,
         minimumPoints: rules.minimumPoints,
@@ -145,7 +167,7 @@ export default async function handler(req, res) {
             status: 'not_found',
             message: `Klant heeft genoeg punten maar geen Shopify klant gevonden met ${srsCustomerNamespace}.${srsCustomerKey}.`,
             srsCustomerId,
-            originalSrsCustomerId: balance.originalCustomerId || '',
+            originalSrsCustomerId,
             pointsBalance: balance.balance,
             branchId,
             branchName,
