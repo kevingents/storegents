@@ -58,6 +58,38 @@ function getRange(req) {
   return { customerFrom, customerTo, dateFrom, dateTo, mutationDateFrom };
 }
 
+function removeLeadingLetters(value) {
+  return String(value || '').trim().replace(/^[A-Za-z]+/, '');
+}
+
+function uniqueIds(ids) {
+  return Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+}
+
+function customerLookupIds(...ids) {
+  const values = [];
+
+  ids.forEach((id) => {
+    const clean = String(id || '').trim();
+    if (!clean) return;
+    const withoutLetters = removeLeadingLetters(clean);
+    values.push(withoutLetters, clean);
+  });
+
+  return uniqueIds(values);
+}
+
+async function findShopifyCustomerForSrsIds({ ids, namespace, key }) {
+  for (const id of customerLookupIds(...ids)) {
+    const customer = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
+    if (customer?.id) {
+      return { customer, matchedSrsCustomerId: id };
+    }
+  }
+
+  return { customer: null, matchedSrsCustomerId: '' };
+}
+
 async function runSync(req) {
   const dryRun = String(req.query.dryRun || req.body?.dryRun || '') === 'true';
   const pointsNamespace = String(process.env.POINTS_METAFIELD_NAMESPACE || 'gents');
@@ -90,14 +122,21 @@ async function runSync(req) {
 
   for (const balance of balances) {
     const srsCustomerId = String(balance.customerId || '').trim();
-    if (!srsCustomerId) continue;
+    const originalSrsCustomerId = String(balance.originalCustomerId || '').trim();
+    const normalizedSrsCustomerId = removeLeadingLetters(originalSrsCustomerId || srsCustomerId);
+    if (!srsCustomerId && !originalSrsCustomerId) continue;
 
     const latestMutation = latestBranchByCustomer.get(srsCustomerId);
     const branchId = latestMutation?.branchId || '';
     const branchName = getBranchName(branchId);
 
     try {
-      const customer = await findShopifyCustomerBySrsCustomerId(srsCustomerId, srsCustomerNamespace, srsCustomerKey);
+      const lookup = await findShopifyCustomerForSrsIds({
+        ids: [normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId],
+        namespace: srsCustomerNamespace,
+        key: srsCustomerKey
+      });
+      const customer = lookup.customer;
 
       if (!customer?.id) {
         const log = await appendPointsSyncLog({
@@ -105,14 +144,18 @@ async function runSync(req) {
           status: 'not_found',
           message: `Geen Shopify klant gevonden met ${srsCustomerNamespace}.${srsCustomerKey}.`,
           srsCustomerId,
-          originalSrsCustomerId: balance.originalCustomerId || '',
+          originalSrsCustomerId,
           pointsBalance: balance.balance,
           branchId,
           branchName,
-          details: latestMutation || null
+          details: {
+            latestMutation: latestMutation || null,
+            normalizedSrsCustomerId,
+            triedCustomerIds: customerLookupIds(normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId)
+          }
         });
 
-        results.push({ success: false, reason: 'shopify_customer_not_found', srsCustomerId, branchId, branchName, logId: log.id });
+        results.push({ success: false, reason: 'shopify_customer_not_found', srsCustomerId, originalSrsCustomerId, normalizedSrsCustomerId, branchId, branchName, logId: log.id });
         continue;
       }
 
@@ -136,6 +179,9 @@ async function runSync(req) {
       results.push({
         success: true,
         srsCustomerId,
+        originalSrsCustomerId,
+        normalizedSrsCustomerId,
+        matchedSrsCustomerId: lookup.matchedSrsCustomerId,
         pointsBalance: balance.balance,
         branchId,
         branchName,
@@ -149,14 +195,14 @@ async function runSync(req) {
         status: 'error',
         message: error.message || 'Spaarpunten sync fout.',
         srsCustomerId,
-        originalSrsCustomerId: balance.originalCustomerId || '',
+        originalSrsCustomerId,
         pointsBalance: balance.balance,
         branchId,
         branchName,
-        details: { stack: error.stack || '' }
+        details: { stack: error.stack || '', normalizedSrsCustomerId }
       });
 
-      results.push({ success: false, reason: 'error', srsCustomerId, branchId, branchName, error: error.message, logId: log.id });
+      results.push({ success: false, reason: 'error', srsCustomerId, originalSrsCustomerId, normalizedSrsCustomerId, branchId, branchName, error: error.message, logId: log.id });
     }
   }
 
