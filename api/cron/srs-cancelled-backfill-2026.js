@@ -75,7 +75,7 @@ async function callBackfill(req, { offset, limit, dryRun }) {
   } catch (_error) {
     data = { success: false, message: text };
   }
-  return { status: response.status, data };
+  return { status: response.status, data, url: url.toString().replace(/admin(Token|_token)=[^&]+/g, 'adminToken=***') };
 }
 
 export default async function handler(req, res) {
@@ -93,13 +93,20 @@ export default async function handler(req, res) {
     const offset = reset ? 0 : Math.max(0, Number.isFinite(requestedOffset) ? requestedOffset : getNextOffset(state));
     const existingTotals = reset ? { created: 0, duplicates: 0, prepared: 0, runs: 0 } : getTotals(state);
 
-    const { status, data } = await callBackfill(req, { offset, limit, dryRun });
-    const nextOffset = Number(data.nextOffset || offset + Number(data.prepared || 0));
-    const completed = Boolean(data.hasMore === false || Number(data.prepared || 0) === 0);
-    const ok = status < 400 && (data.success !== false || completed);
+    const { status, data, url } = await callBackfill(req, { offset, limit, dryRun });
+    const prepared = Number(data.prepared || 0);
+    const eligibleInDate = Number(data.eligibleInDate || 0);
+    const nextOffset = Number(data.nextOffset || offset + prepared);
+    const hasMore = data.hasMore === true;
+    const exhausted = data.exhausted === true || data.hasMore === false;
+    const completed = Boolean(exhausted && nextOffset >= eligibleInDate && eligibleInDate > 0);
+    const emptyButNotDone = prepared === 0 && eligibleInDate > 0 && nextOffset < eligibleInDate;
+    const ok = status < 400 && data.success !== false && !emptyButNotDone;
     const message = completed
-      ? `SRS cancelled backfill 2026 klaar. Offset ${offset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel.`
-      : `SRS cancelled backfill 2026 batch klaar. Offset ${offset} -> ${nextOffset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel.`;
+      ? `SRS cancelled backfill 2026 klaar. ${eligibleInDate} binnen datumfilter. Offset ${offset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel.`
+      : emptyButNotDone
+        ? `SRS cancelled backfill 2026 kon niet verder. Offset ${offset}, 0 voorbereid terwijl ${eligibleInDate} binnen datumfilter staan. Controleer deploy/backfill endpoint.`
+        : `SRS cancelled backfill 2026 batch klaar. Offset ${offset} -> ${nextOffset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel. ${eligibleInDate || data.found || 0} binnen datumfilter.`;
 
     await appendUnavailableCronRun({
       type: 'srs_cancelled_backfill_2026',
@@ -110,7 +117,8 @@ export default async function handler(req, res) {
       nextOffset,
       limit,
       found: data.found || 0,
-      prepared: data.prepared || 0,
+      eligibleInDate,
+      prepared,
       created: data.created || 0,
       duplicates: data.duplicates || 0,
       totalCreated: existingTotals.created + Number(data.created || 0),
@@ -118,15 +126,18 @@ export default async function handler(req, res) {
       errors: data.errors || [],
       preview: data.preview || [],
       message,
+      diagnosticUrl: url,
       totals: {
         type: 'srs_cancelled_backfill_2026',
         offset,
         nextOffset,
         found: data.found || 0,
-        prepared: data.prepared || 0,
+        eligibleInDate,
+        prepared,
         created: data.created || 0,
         duplicates: data.duplicates || 0,
-        completed
+        completed,
+        emptyButNotDone
       }
     });
 
@@ -134,12 +145,14 @@ export default async function handler(req, res) {
       success: ok,
       mode: 'srs_cancelled_backfill_2026_cron',
       completed,
+      emptyButNotDone,
       dryRun,
       offset,
       nextOffset,
       limit,
       totalsBefore: existingTotals,
       backfill: data,
+      diagnosticUrl: url,
       message
     });
   } catch (error) {
