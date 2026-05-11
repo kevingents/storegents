@@ -9,6 +9,10 @@
       "schedule": "0 7 * * *"
     },
     {
+      "path": "/api/cron/sync-shopify-points",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/cron/srs-cancellations-nightly",
       "schedule": "15 * * * *"
     },
