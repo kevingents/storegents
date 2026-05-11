@@ -62,8 +62,27 @@ function getRules(req) {
   const minimumAmount = Number(String(query.minimumAmount || body.minimumAmount || process.env.LOYALTY_VOUCHER_MINIMUM || process.env.VOUCHER_MIN_AMOUNT_EUR || '25').replace(',', '.')) || 25;
   const pointValue = Number(String(query.pointValue || body.pointValue || process.env.VOUCHER_POINT_VALUE_EUR || '0.05').replace(',', '.')) || 0.05;
   const minimumPoints = Math.ceil(minimumAmount / pointValue);
+  const maxVouchersPerCustomer = Number(query.maxVouchersPerCustomer || body.maxVouchersPerCustomer || process.env.LOYALTY_VOUCHER_MAX_PER_CUSTOMER || 10) || 10;
 
-  return { minimumAmount, pointValue, minimumPoints };
+  return { minimumAmount, pointValue, minimumPoints, maxVouchersPerCustomer };
+}
+
+function getVoucherBreakdown(pointsBalance, rules) {
+  const points = Math.floor(Number(pointsBalance || 0));
+  const rawVoucherCount = Math.floor(points / rules.minimumPoints);
+  const voucherCount = Math.max(0, Math.min(rawVoucherCount, rules.maxVouchersPerCustomer));
+  const remainingPoints = points - (voucherCount * rules.minimumPoints);
+  const voucherAmount = Number(rules.minimumAmount.toFixed(2));
+  const totalVoucherAmount = Number((voucherCount * voucherAmount).toFixed(2));
+
+  return {
+    voucherCount,
+    voucherAmount,
+    totalVoucherAmount,
+    remainingPoints,
+    capped: rawVoucherCount > voucherCount,
+    rawVoucherCount
+  };
 }
 
 function removeLeadingLetters(value) {
@@ -169,6 +188,7 @@ export default async function handler(req, res) {
       const branchId = latestMutation?.branchId || '';
       const branchName = getBranchName(branchId);
       const estimatedVoucherAmount = Number((Number(balance.balance || 0) * rules.pointValue).toFixed(2));
+      const voucherBreakdown = getVoucherBreakdown(balance.balance, rules);
       const srsCustomerLookup = await getSrsCustomerByIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId]);
       const srsCustomer = srsCustomerLookup.customer;
       const srsEmail = String(srsCustomer?.email || '').trim().toLowerCase();
@@ -200,6 +220,12 @@ export default async function handler(req, res) {
         matchedValue,
         pointsBalance: Number(balance.balance || 0),
         estimatedVoucherAmount,
+        voucherCount: voucherBreakdown.voucherCount,
+        voucherAmount: voucherBreakdown.voucherAmount,
+        totalVoucherAmount: voucherBreakdown.totalVoucherAmount,
+        remainingPoints: voucherBreakdown.remainingPoints,
+        rawVoucherCount: voucherBreakdown.rawVoucherCount,
+        voucherCountCapped: voucherBreakdown.capped,
         minimumPoints: rules.minimumPoints,
         minimumAmount: rules.minimumAmount,
         branchId,
@@ -243,6 +269,8 @@ export default async function handler(req, res) {
       primaryLookup: 'email',
       totalBalances: balances.length,
       eligibleCount: eligible.length,
+      totalVoucherCount: eligible.reduce((sum, item) => sum + Number(item.voucherCount || 0), 0),
+      totalVoucherAmount: Number(eligible.reduce((sum, item) => sum + Number(item.totalVoucherAmount || 0), 0).toFixed(2)),
       shopifyMatched: eligible.filter((item) => item.shopifyFound).length,
       unmatchedCount: unmatched.length,
       eligible,
