@@ -8,6 +8,19 @@ function setNoStore(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 }
 
+function hasAdminAccess(req) {
+  const expected = getAdminToken();
+  const given = String(
+    req.headers['x-admin-token'] ||
+    req.headers['x-admin-pin'] ||
+    req.headers.authorization ||
+    req.query.adminToken ||
+    req.query.token ||
+    ''
+  ).replace(/^Bearer\s+/i, '').trim();
+  return Boolean(expected && given && expected === given);
+}
+
 function isoDate(date) { return date.toISOString().slice(0, 10); }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
 function startOfPreviousWeek() {
@@ -135,9 +148,9 @@ function reportHtml(summary, dateFrom, dateTo) {
 export default async function handler(req, res) {
   setNoStore(res);
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
-  if (!requireCronSecret(req, res, 'REGION_REPORT_SECRET')) return;
-
   const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
+  if (!hasAdminAccess(req) && !requireCronSecret(req, res, 'REGION_REPORT_SECRET')) return;
+
   const dateFrom = String(req.query.dateFrom || req.query.from || isoDate(startOfPreviousWeek())).trim();
   const dateTo = String(req.query.dateTo || req.query.to || isoDate(endOfPreviousWeek())).trim();
   const onlyRegion = String(req.query.region || '').trim();
