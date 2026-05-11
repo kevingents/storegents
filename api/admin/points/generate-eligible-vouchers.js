@@ -79,6 +79,10 @@ function splitCustomerTokens(value) {
     .filter(Boolean);
 }
 
+function digitsOnly(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
 function customerLookupIds(...ids) {
   const values = [];
 
@@ -92,6 +96,31 @@ function customerLookupIds(...ids) {
   });
 
   return uniqueIds(values);
+}
+
+function srsVoucherCustomerId(balance) {
+  const explicit = String(process.env.SRS_VOUCHER_CUSTOMER_ID_OVERRIDE || '').trim();
+  if (explicit) return explicit;
+
+  const originalTokens = splitCustomerTokens(balance.originalCustomerId || '');
+  const normalizedTokens = splitCustomerTokens(balance.customerId || '');
+  const tokens = [...originalTokens, ...normalizedTokens];
+
+  const preferredShort = tokens
+    .map((token) => removeLeadingLetters(token))
+    .map((token) => digitsOnly(token))
+    .find((token) => token.length >= 4 && token.length <= 6);
+
+  if (preferredShort) return preferredShort;
+
+  const longToken = tokens
+    .map((token) => digitsOnly(token))
+    .find((token) => token.length > 6);
+
+  if (longToken) return longToken.slice(-5);
+
+  const fallback = digitsOnly(removeLeadingLetters(balance.customerId || balance.originalCustomerId || ''));
+  return fallback.length > 6 ? fallback.slice(-5) : fallback;
 }
 
 async function findShopifyCustomerForIds(ids, namespace, key) {
@@ -183,7 +212,8 @@ export default async function handler(req, res) {
       const srsCustomerId = String(balance.customerId || '').trim();
       const originalSrsCustomerId = String(balance.originalCustomerId || '').trim();
       const normalizedSrsCustomerId = removeLeadingLetters(originalSrsCustomerId || srsCustomerId);
-      const lookup = await findShopifyCustomerForIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId], srsCustomerNamespace, srsCustomerKey);
+      const voucherCustomerId = srsVoucherCustomerId(balance);
+      const lookup = await findShopifyCustomerForIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId, voucherCustomerId], srsCustomerNamespace, srsCustomerKey);
       const customer = lookup.customer;
       const customerEmail = String(customer?.email || '').trim();
       const customerName = String(customer?.displayName || [customer?.firstName, customer?.lastName].filter(Boolean).join(' ') || '').trim();
@@ -195,6 +225,7 @@ export default async function handler(req, res) {
         srsCustomerId,
         originalSrsCustomerId,
         normalizedSrsCustomerId,
+        srsVoucherCustomerId: voucherCustomerId,
         matchedValue: lookup.matchedValue,
         shopifyFound: Boolean(customer?.id),
         shopifyCustomerId: customer?.id || '',
@@ -211,6 +242,12 @@ export default async function handler(req, res) {
         vouchers: [],
         errors: []
       };
+
+      if (!voucherCustomerId) {
+        customerResult.errors.push('Geen geldig SRS klantnummer gevonden voor voucher aanmaken.');
+        results.push(customerResult);
+        continue;
+      }
 
       if (!customer?.id || !customerEmail) {
         customerResult.errors.push(customer?.id ? 'Shopify klant heeft geen e-mail.' : 'Shopify klant niet gevonden.');
@@ -229,7 +266,7 @@ export default async function handler(req, res) {
         try {
           const created = await makeVoucher({
             voucherType: voucherGroup.voucherGroupId,
-            customerId: lookup.matchedValue || normalizedSrsCustomerId || srsCustomerId,
+            customerId: voucherCustomerId,
             validFrom,
             validTo
           });
@@ -257,7 +294,7 @@ export default async function handler(req, res) {
             employeeName,
             customerName,
             customerEmail,
-            srsCustomerId: lookup.matchedValue || normalizedSrsCustomerId || srsCustomerId,
+            srsCustomerId: voucherCustomerId,
             voucherGroupId: voucherGroup.voucherGroupId,
             voucherCode: created.barcode,
             amount,
@@ -266,7 +303,7 @@ export default async function handler(req, res) {
             validTo,
             mailed: Boolean(mailResult),
             shopifyEnabled: false,
-            note: `${rules.pointsPerVoucher} spaarpunten verzilverd. Automatische loyalty voucher ${index + 1}/${voucherCount}.`,
+            note: `${rules.pointsPerVoucher} spaarpunten verzilverd. Automatische loyalty voucher ${index + 1}/${voucherCount}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
             status: 'Aangemaakt'
           });
 
@@ -286,12 +323,12 @@ export default async function handler(req, res) {
             employeeName,
             customerName,
             customerEmail,
-            srsCustomerId: lookup.matchedValue || normalizedSrsCustomerId || srsCustomerId,
+            srsCustomerId: voucherCustomerId,
             amount: rules.voucherAmount,
             currency: 'EUR',
             mailed: false,
             shopifyEnabled: false,
-            note: 'Automatische loyalty voucher mislukt.',
+            note: `Automatische loyalty voucher mislukt. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
             status: 'Mislukt',
             error: error.message || 'Voucher aanmaken mislukt.'
           });
@@ -300,7 +337,7 @@ export default async function handler(req, res) {
 
       if (customerResult.vouchers.length === voucherCount) {
         const redeemed = await changePoints({
-          customerId: lookup.matchedValue || normalizedSrsCustomerId || srsCustomerId,
+          customerId: voucherCustomerId,
           action: 'redeem',
           points: redeemPointsTotal,
           sender: 'Webshop',
