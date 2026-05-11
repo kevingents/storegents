@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/daily-loyalty-vouchers",
-      "schedule": "0 7 * * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/api/cron/sync-shopify-points",
