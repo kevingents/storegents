@@ -29,10 +29,6 @@
       "schedule": "30 6 * * 1,2"
     },
     {
-      "path": "/api/cron/weborder-mail-run",
-      "schedule": "0 8 * * *"
-    },
-    {
       "path": "/api/cron/region-manager-weekly-report",
       "schedule": "0 8 * * 1"
     }
