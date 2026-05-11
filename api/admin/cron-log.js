@@ -1,4 +1,5 @@
 import { cronStats, getCronLog } from '../../lib/gents-cron-log-store.js';
+import { getMailLog } from '../../lib/gents-mail-log-store.js';
 import { getAdminToken } from '../../lib/gents-mail-config.js';
 
 function setCors(res) {
@@ -30,6 +31,26 @@ function inRange(row, from, to) {
   return true;
 }
 
+function mailLogToCronRows(mailRows = []) {
+  return mailRows
+    .filter((row) => String(row.type || '').includes('weborder') || String(row.type || '').includes('pickup') || String(row.type || '').includes('region_manager'))
+    .map((row) => {
+      let job = 'mail-automation';
+      if (String(row.type || '').includes('weborder')) job = 'weborder-mail-run';
+      if (String(row.type || '').includes('pickup')) job = 'pickup-mail-run';
+      if (String(row.type || '').includes('region_manager')) job = 'region-manager-weekly-report';
+      return {
+        id: `mail-${row.id || row.createdAt}`,
+        createdAt: row.createdAt || row.sentAt,
+        job,
+        source: 'mail-log-derived',
+        status: row.status === 'error' ? 'error' : 'success',
+        message: row.message || row.order || row.key || '',
+        meta: { type: row.type, store: row.store, recipient: row.recipient }
+      };
+    });
+}
+
 const CONFIGURED_CRONS = [
   { job: 'voucher-reminders', path: '/api/cron/voucher-reminders', schedule: '0 8 * * *' },
   { job: 'daily-loyalty-vouchers', path: '/api/cron/daily-loyalty-vouchers', schedule: '0 * * * *' },
@@ -38,6 +59,7 @@ const CONFIGURED_CRONS = [
   { job: 'srs-unavailable-hourly', path: '/api/cron/srs-unavailable-hourly', schedule: '20 * * * *' },
   { job: 'srs-cancelled-backfill-2026', path: '/api/cron/srs-cancelled-backfill-2026', schedule: '45 * * * *' },
   { job: 'srs-unavailable-lost-found-check', path: '/api/cron/srs-unavailable-lost-found-check', schedule: '30 6 * * 1,2' },
+  { job: 'pickup-mail-run', path: '/api/cron/pickup-mail-run', schedule: '*/30 * * * *' },
   { job: 'weborder-mail-run', path: '/api/cron/weborder-mail-run', schedule: '0 8 * * *' },
   { job: 'region-manager-weekly-report', path: '/api/cron/region-manager-weekly-report', schedule: '0 8 * * 1' }
 ];
@@ -53,11 +75,15 @@ export default async function handler(req, res) {
   const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 250)));
   const job = String(req.query.job || '').trim();
 
-  const rows = (await getCronLog()).filter((row) => {
-    if (!inRange(row, from, to)) return false;
-    if (job && row.job !== job) return false;
-    return true;
-  });
+  const explicitRows = await getCronLog();
+  const derivedRows = mailLogToCronRows(await getMailLog());
+  const rows = [...explicitRows, ...derivedRows]
+    .filter((row) => {
+      if (!inRange(row, from, to)) return false;
+      if (job && row.job !== job) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 
   const stats = cronStats(rows);
   const errorCount = rows.filter((row) => row.status === 'error').length;
@@ -70,6 +96,10 @@ export default async function handler(req, res) {
     successCount,
     errorCount,
     stats,
-    rows: rows.slice(0, limit)
+    rows: rows.slice(0, limit),
+    sources: {
+      explicitCronLog: explicitRows.length,
+      derivedFromMailLog: derivedRows.length
+    }
   });
 }
