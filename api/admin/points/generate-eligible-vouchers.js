@@ -123,6 +123,10 @@ function srsVoucherCustomerId(balance) {
   return fallback.length > 6 ? fallback.slice(-5) : fallback;
 }
 
+function srsPointsCustomerId(balance) {
+  return String(balance.originalCustomerId || balance.customerId || '').trim();
+}
+
 async function findShopifyCustomerForIds(ids, namespace, key) {
   for (const id of customerLookupIds(...ids)) {
     const customer = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
@@ -181,6 +185,7 @@ export default async function handler(req, res) {
 
   const dryRun = String(req.query.dryRun || req.body?.dryRun || 'true') !== 'false';
   const sendEmail = String(req.query.sendEmail || req.body?.sendEmail || 'true') !== 'false';
+  const redeemPoints = String(req.query.redeemPoints || req.body?.redeemPoints || 'false') === 'true';
   const store = field(req.query.store || req.body?.store || 'GENTS Administratie').trim();
   const employeeName = field(req.query.employeeName || req.body?.employeeName || 'Beheerder').trim();
   const range = getRange(req);
@@ -213,6 +218,7 @@ export default async function handler(req, res) {
       const originalSrsCustomerId = String(balance.originalCustomerId || '').trim();
       const normalizedSrsCustomerId = removeLeadingLetters(originalSrsCustomerId || srsCustomerId);
       const voucherCustomerId = srsVoucherCustomerId(balance);
+      const pointsCustomerId = srsPointsCustomerId(balance);
       const lookup = await findShopifyCustomerForIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId, voucherCustomerId], srsCustomerNamespace, srsCustomerKey);
       const customer = lookup.customer;
       const customerEmail = String(customer?.email || '').trim();
@@ -226,6 +232,7 @@ export default async function handler(req, res) {
         originalSrsCustomerId,
         normalizedSrsCustomerId,
         srsVoucherCustomerId: voucherCustomerId,
+        srsPointsCustomerId: pointsCustomerId,
         matchedValue: lookup.matchedValue,
         shopifyFound: Boolean(customer?.id),
         shopifyCustomerId: customer?.id || '',
@@ -239,6 +246,7 @@ export default async function handler(req, res) {
         redeemPointsTotal,
         remainingPoints: Number(balance.balance || 0) - redeemPointsTotal,
         dryRun,
+        redeemPoints,
         vouchers: [],
         errors: []
       };
@@ -303,7 +311,7 @@ export default async function handler(req, res) {
             validTo,
             mailed: Boolean(mailResult),
             shopifyEnabled: false,
-            note: `${rules.pointsPerVoucher} spaarpunten verzilverd. Automatische loyalty voucher ${index + 1}/${voucherCount}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
+            note: `${rules.pointsPerVoucher} spaarpunten voucher aangemaakt. Puntenafboeking: ${redeemPoints ? 'aan' : 'uit'}. Automatische loyalty voucher ${index + 1}/${voucherCount}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
             status: 'Aangemaakt'
           });
 
@@ -336,16 +344,21 @@ export default async function handler(req, res) {
       }
 
       if (customerResult.vouchers.length === voucherCount) {
-        const redeemed = await changePoints({
-          customerId: voucherCustomerId,
-          action: 'redeem',
-          points: redeemPointsTotal,
-          sender: 'Webshop',
-          sessionId: pointsSessionId
-        });
-        customerResult.pointsRedeem = redeemed;
-        customerResult.remainingPoints = Number.isFinite(redeemed.balanceAfter) ? redeemed.balanceAfter : customerResult.remainingPoints;
-        await updatePointsMetafield(customer.id, customerResult.remainingPoints);
+        if (redeemPoints) {
+          const redeemed = await changePoints({
+            customerId: pointsCustomerId,
+            action: 'redeem',
+            points: redeemPointsTotal,
+            sender: 'Webshop',
+            sessionId: pointsSessionId
+          });
+          customerResult.pointsRedeem = redeemed;
+          customerResult.remainingPoints = Number.isFinite(redeemed.balanceAfter) ? redeemed.balanceAfter : customerResult.remainingPoints;
+          await updatePointsMetafield(customer.id, customerResult.remainingPoints);
+        } else {
+          customerResult.pointsRedeemSkipped = true;
+          customerResult.errors.push('Punten zijn nog niet afgeboekt omdat redeemPoints=false. Controleer eerst welk SRS klantnummer changePoints verwacht.');
+        }
       } else {
         customerResult.errors.push('Niet alle vouchers zijn aangemaakt; punten zijn daarom niet afgeboekt. Controleer handmatig.');
       }
@@ -358,6 +371,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       dryRun,
+      redeemPoints,
       range,
       rules,
       validFrom,
