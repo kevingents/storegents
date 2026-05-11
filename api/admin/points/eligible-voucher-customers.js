@@ -4,7 +4,11 @@ import {
   getPointsMutations,
   getLatestBranchByCustomer
 } from '../../../lib/srs-points-client.js';
-import { findShopifyCustomerBySrsCustomerId } from '../../../lib/shopify-gift-card-client.js';
+import { getCustomers } from '../../../lib/srs-customers-client.js';
+import {
+  findShopifyCustomerByEmail,
+  findShopifyCustomerBySrsCustomerId
+} from '../../../lib/shopify-gift-card-client.js';
 import { appendPointsSyncLog } from '../../../lib/points-sync-log-store.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
@@ -83,15 +87,35 @@ function customerLookupIds(...ids) {
   return uniqueIds(values);
 }
 
-async function findShopifyCustomerForSrsIds({ ids, namespace, key }) {
+async function getSrsCustomerByIds(ids) {
   for (const id of customerLookupIds(...ids)) {
-    const customer = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
-    if (customer?.id) {
-      return { customer, matchedSrsCustomerId: id };
+    try {
+      const result = await getCustomers({ customerId: id });
+      const customer = result.customers?.[0] || null;
+      if (customer?.email) return { customer, matchedSrsCustomerId: id };
+      if (customer?.customerId) return { customer, matchedSrsCustomerId: id };
+    } catch (error) {
+      console.error('SRS customer lookup error:', id, error.message);
     }
   }
 
   return { customer: null, matchedSrsCustomerId: '' };
+}
+
+async function findShopifyCustomer({ email, ids, namespace, key }) {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+
+  if (cleanEmail) {
+    const byEmail = await findShopifyCustomerByEmail(cleanEmail);
+    if (byEmail?.id) return { customer: byEmail, matchType: 'email', matchedValue: cleanEmail };
+  }
+
+  for (const id of customerLookupIds(...ids)) {
+    const bySrsId = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
+    if (bySrsId?.id) return { customer: bySrsId, matchType: 'srs_customer_id', matchedValue: id };
+  }
+
+  return { customer: null, matchType: '', matchedValue: '' };
 }
 
 export default async function handler(req, res) {
@@ -145,25 +169,35 @@ export default async function handler(req, res) {
       const branchId = latestMutation?.branchId || '';
       const branchName = getBranchName(branchId);
       const estimatedVoucherAmount = Number((Number(balance.balance || 0) * rules.pointValue).toFixed(2));
+      const srsCustomerLookup = await getSrsCustomerByIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId]);
+      const srsCustomer = srsCustomerLookup.customer;
+      const srsEmail = String(srsCustomer?.email || '').trim().toLowerCase();
 
       let shopifyCustomer = null;
-      let matchedSrsCustomerId = '';
+      let matchType = '';
+      let matchedValue = '';
 
       if (includeShopify) {
-        const lookup = await findShopifyCustomerForSrsIds({
+        const lookup = await findShopifyCustomer({
+          email: srsEmail,
           ids: [normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId],
           namespace: srsCustomerNamespace,
           key: srsCustomerKey
         });
         shopifyCustomer = lookup.customer;
-        matchedSrsCustomerId = lookup.matchedSrsCustomerId;
+        matchType = lookup.matchType;
+        matchedValue = lookup.matchedValue;
       }
 
       const row = {
         srsCustomerId,
         originalSrsCustomerId,
         normalizedSrsCustomerId,
-        matchedSrsCustomerId,
+        srsCustomerLookupId: srsCustomerLookup.matchedSrsCustomerId,
+        srsEmail,
+        srsCustomerName: srsCustomer?.name || '',
+        matchType,
+        matchedValue,
         pointsBalance: Number(balance.balance || 0),
         estimatedVoucherAmount,
         minimumPoints: rules.minimumPoints,
@@ -186,12 +220,15 @@ export default async function handler(req, res) {
           await appendPointsSyncLog({
             type: 'eligible_customer_unmatched',
             status: 'not_found',
-            message: `Klant heeft genoeg punten maar geen Shopify klant gevonden met ${srsCustomerNamespace}.${srsCustomerKey}.`,
+            message: srsEmail
+              ? 'Klant heeft genoeg punten maar geen Shopify klant gevonden op e-mail.'
+              : 'Klant heeft genoeg punten maar geen SRS e-mail gevonden.',
             srsCustomerId,
             originalSrsCustomerId,
             pointsBalance: balance.balance,
             branchId,
             branchName,
+            shopifyCustomerEmail: srsEmail,
             details: row
           });
         }
@@ -203,6 +240,7 @@ export default async function handler(req, res) {
       range,
       rules,
       lookupMetafield: `${srsCustomerNamespace}.${srsCustomerKey}`,
+      primaryLookup: 'email',
       totalBalances: balances.length,
       eligibleCount: eligible.length,
       shopifyMatched: eligible.filter((item) => item.shopifyFound).length,
