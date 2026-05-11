@@ -60,10 +60,11 @@ function getRange(req) {
 
 async function runSync(req) {
   const dryRun = String(req.query.dryRun || req.body?.dryRun || '') === 'true';
-  const namespace = String(process.env.POINTS_METAFIELD_NAMESPACE || 'gents');
+  const pointsNamespace = String(process.env.POINTS_METAFIELD_NAMESPACE || 'gents');
   const balanceKey = String(process.env.POINTS_METAFIELD_BALANCE_KEY || 'spaarpunten_saldo');
   const updatedKey = String(process.env.POINTS_METAFIELD_UPDATED_KEY || 'spaarpunten_laatst_bijgewerkt');
-  const srsCustomerKey = String(process.env.SRS_CUSTOMER_ID_METAFIELD_KEY || 'srs_customer_id');
+  const srsCustomerNamespace = String(process.env.SRS_CUSTOMER_ID_METAFIELD_NAMESPACE || 'SRSERP');
+  const srsCustomerKey = String(process.env.SRS_CUSTOMER_ID_METAFIELD_KEY || 'customer_id');
 
   const range = getRange(req);
   const sessionId = await loginSrsPointsService();
@@ -96,13 +97,13 @@ async function runSync(req) {
     const branchName = getBranchName(branchId);
 
     try {
-      const customer = await findShopifyCustomerBySrsCustomerId(srsCustomerId, namespace, srsCustomerKey);
+      const customer = await findShopifyCustomerBySrsCustomerId(srsCustomerId, srsCustomerNamespace, srsCustomerKey);
 
       if (!customer?.id) {
         const log = await appendPointsSyncLog({
           type: 'unmatched_customer',
           status: 'not_found',
-          message: 'Geen Shopify klant gevonden met dit SRS klantnummer metafield.',
+          message: `Geen Shopify klant gevonden met ${srsCustomerNamespace}.${srsCustomerKey}.`,
           srsCustomerId,
           originalSrsCustomerId: balance.originalCustomerId || '',
           pointsBalance: balance.balance,
@@ -118,13 +119,13 @@ async function runSync(req) {
       if (!dryRun) {
         await updateShopifyCustomerMetafields(customer.id, [
           {
-            namespace,
+            namespace: pointsNamespace,
             key: balanceKey,
             type: 'number_integer',
             value: String(Math.round(Number(balance.balance || 0)))
           },
           {
-            namespace,
+            namespace: pointsNamespace,
             key: updatedKey,
             type: 'date_time',
             value: new Date().toISOString()
@@ -162,6 +163,8 @@ async function runSync(req) {
   return {
     dryRun,
     range,
+    lookupMetafield: `${srsCustomerNamespace}.${srsCustomerKey}`,
+    pointsMetafield: `${pointsNamespace}.${balanceKey}`,
     totalBalances: balances.length,
     processed: results.length,
     updated: results.filter((item) => item.success).length,
