@@ -106,18 +106,18 @@ function srsVoucherCustomerId(balance) {
   const normalizedTokens = splitCustomerTokens(balance.customerId || '');
   const tokens = [...originalTokens, ...normalizedTokens];
 
+  const firstLongToken = tokens
+    .map((token) => digitsOnly(token))
+    .find((token) => token.length > 6);
+
+  if (firstLongToken) return firstLongToken.slice(-5);
+
   const preferredShort = tokens
     .map((token) => removeLeadingLetters(token))
     .map((token) => digitsOnly(token))
     .find((token) => token.length >= 4 && token.length <= 6);
 
   if (preferredShort) return preferredShort;
-
-  const longToken = tokens
-    .map((token) => digitsOnly(token))
-    .find((token) => token.length > 6);
-
-  if (longToken) return longToken.slice(-5);
 
   const fallback = digitsOnly(removeLeadingLetters(balance.customerId || balance.originalCustomerId || ''));
   return fallback.length > 6 ? fallback.slice(-5) : fallback;
