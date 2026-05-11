@@ -62,6 +62,17 @@ function monthKey(value) {
   return date ? date.toISOString().slice(0, 7) : new Date().toISOString().slice(0, 7);
 }
 
+function srsUnavailableNow(errors = []) {
+  return errors.some((error) => {
+    const message = clean(error.message).toLowerCase();
+    return error.source === 'get_fulfillments' ||
+      message.includes('limit reached') ||
+      message.includes('rate limit') ||
+      message.includes('timeout') ||
+      message.includes('temporarily');
+  });
+}
+
 async function getDetail(orderNr, cache, errors, includeDetails) {
   if (!includeDetails) return null;
   const cleanOrderNr = clean(orderNr).replace(/^#/, '');
@@ -230,6 +241,34 @@ export default async function handler(req, res) {
         continue;
       }
       eligibleFulfillments.push(fulfillment);
+    }
+
+    if (!fulfillments.length && srsUnavailableNow(errors)) {
+      return res.status(503).json({
+        success: false,
+        retryable: true,
+        mode: 'backfill_cancelled_2026',
+        dryRun,
+        dateFrom,
+        dateTo,
+        offset,
+        limit: maxRecords,
+        nextOffset: offset,
+        hasMore: true,
+        includeDetails,
+        statuses: selectedStatuses,
+        found: 0,
+        eligibleInDate: 0,
+        prepared: 0,
+        created: 0,
+        duplicates: 0,
+        skippedByDate,
+        skippedByOffset: 0,
+        exhausted: false,
+        errors,
+        preview: [],
+        message: 'SRS cancelled backfill tijdelijk niet beschikbaar. Offset is niet verhoogd; probeer later opnieuw.'
+      });
     }
 
     const selectedFulfillments = eligibleFulfillments.slice(offset, offset + maxRecords);
