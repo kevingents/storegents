@@ -62,13 +62,32 @@ function getRules(req) {
   return { minimumAmount, pointValue, minimumPoints };
 }
 
+function removeLeadingLetters(value) {
+  return String(value || '').trim().replace(/^[A-Za-z]+/, '');
+}
+
+function uniqueIds(ids) {
+  return Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+}
+
+function customerLookupIds(...ids) {
+  const values = [];
+
+  ids.forEach((id) => {
+    const clean = String(id || '').trim();
+    if (!clean) return;
+    const withoutLetters = removeLeadingLetters(clean);
+    values.push(withoutLetters, clean);
+  });
+
+  return uniqueIds(values);
+}
+
 async function findShopifyCustomerForSrsIds({ ids, namespace, key }) {
-  for (const id of ids) {
-    const cleanId = String(id || '').trim();
-    if (!cleanId) continue;
-    const customer = await findShopifyCustomerBySrsCustomerId(cleanId, namespace, key);
+  for (const id of customerLookupIds(...ids)) {
+    const customer = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
     if (customer?.id) {
-      return { customer, matchedSrsCustomerId: cleanId };
+      return { customer, matchedSrsCustomerId: id };
     }
   }
 
@@ -121,6 +140,7 @@ export default async function handler(req, res) {
     for (const balance of eligibleBalances) {
       const srsCustomerId = String(balance.customerId || '').trim();
       const originalSrsCustomerId = String(balance.originalCustomerId || '').trim();
+      const normalizedSrsCustomerId = removeLeadingLetters(originalSrsCustomerId || srsCustomerId);
       const latestMutation = latestBranchByCustomer.get(srsCustomerId);
       const branchId = latestMutation?.branchId || '';
       const branchName = getBranchName(branchId);
@@ -131,7 +151,7 @@ export default async function handler(req, res) {
 
       if (includeShopify) {
         const lookup = await findShopifyCustomerForSrsIds({
-          ids: [srsCustomerId, originalSrsCustomerId],
+          ids: [normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId],
           namespace: srsCustomerNamespace,
           key: srsCustomerKey
         });
@@ -142,6 +162,7 @@ export default async function handler(req, res) {
       const row = {
         srsCustomerId,
         originalSrsCustomerId,
+        normalizedSrsCustomerId,
         matchedSrsCustomerId,
         pointsBalance: Number(balance.balance || 0),
         estimatedVoucherAmount,
