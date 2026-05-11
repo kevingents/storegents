@@ -1,17 +1,7 @@
 import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.setHeader('Cache-Control', 'no-store, max-age=0');
-}
-
 function isAuthorized(req) {
-  if (String(req.query.public || '') === 'true') return true;
-
   const adminToken = process.env.ADMIN_TOKEN || '12345';
 
   const token = String(
@@ -25,7 +15,6 @@ function isAuthorized(req) {
 
   return token === adminToken;
 }
-
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
@@ -47,9 +36,13 @@ export default async function handler(req, res) {
   }
 
   const body = req.body || {};
-
   const to = String(req.query.to || body.to || '').trim();
   const customerName = String(req.query.name || body.customerName || 'Test klant').trim();
+  const voucherCode = String(
+    req.query.voucherCode ||
+    body.voucherCode ||
+    `TEST-${Date.now().toString().slice(-6)}`
+  ).trim();
 
   if (!to) {
     return res.status(400).json({
@@ -58,11 +51,18 @@ export default async function handler(req, res) {
     });
   }
 
+  if (!voucherCode) {
+    return res.status(400).json({
+      success: false,
+      message: 'Vouchercode ontbreekt.'
+    });
+  }
+
   try {
     const result = await sendVoucherEmail({
       to,
       customerName,
-      voucherCode: `TEST-${Date.now().toString().slice(-6)}`,
+      voucherCode,
       amount: Number(req.query.amount || body.amount || 25),
       currency: 'EUR',
       validFrom: new Date().toISOString().slice(0, 10),
@@ -74,6 +74,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       message: `Testmail verstuurd naar ${to}.`,
+      voucherCode,
       result
     });
   } catch (error) {

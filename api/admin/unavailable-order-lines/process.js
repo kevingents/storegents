@@ -83,6 +83,12 @@ function syncedIdsFromPreSync(preSync) {
   return Array.from(new Set(ids.filter(Boolean)));
 }
 
+function concreteLineIds(ids = []) {
+  const list = Array.from(new Set((ids || []).map(clean).filter(Boolean)));
+  const concrete = list.filter((id) => id.split('::').length >= 5);
+  return concrete.length ? concrete : list;
+}
+
 async function syncOrderIfProvided(orderNr) {
   if (!orderNr) return null;
 
@@ -91,7 +97,8 @@ async function syncOrderIfProvided(orderNr) {
     statuses: 'unavailable,niet leverbaar,not available',
     maxRuntimeMs: 30000,
     maxRecords: 25,
-    dryRun: false
+    dryRun: false,
+    includeResolved: true
   });
 }
 
@@ -131,20 +138,15 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const ids = Array.isArray(body.ids) ? body.ids : [body.id].filter(Boolean);
-
-    if (!ids.length) {
-      return res.status(400).json({ success: false, message: 'Geen orderregel geselecteerd.' });
-    }
+    const orderNr = orderNrFromBody(body);
+    const requestedIds = Array.isArray(body.ids) ? body.ids : [body.id].filter(Boolean);
 
     const steps = allowedSteps(body.steps);
     if (!steps.length) {
       return res.status(400).json({ success: false, message: 'Geen geldige verwerkingstappen geselecteerd.' });
     }
 
-    const orderNr = orderNrFromBody(body);
     let preSync = null;
-
     try {
       preSync = await syncOrderIfProvided(orderNr);
     } catch (error) {
@@ -156,6 +158,19 @@ export default async function handler(req, res) {
     }
 
     const syncedFallbackIds = syncedIdsFromPreSync(preSync);
+    const ids = requestedIds.length ? concreteLineIds(requestedIds) : concreteLineIds(syncedFallbackIds);
+
+    if (!ids.length) {
+      return res.status(400).json({
+        success: false,
+        message: orderNr
+          ? `Geen lokale niet-leverbare orderregel gevonden of aangemaakt voor order ${orderNr}. Controleer of SRS deze order als unavailable/cancelled teruggeeft.`
+          : 'Geen orderregel geselecteerd.',
+        preSync,
+        syncedFallbackIds
+      });
+    }
+
     const results = [];
     const errors = [];
     const partials = [];
@@ -203,6 +218,7 @@ export default async function handler(req, res) {
         : `${doneCount} orderregel(s) volledig verwerkt.`,
       preSync,
       syncedFallbackIds,
+      processedIds: ids,
       results,
       partials,
       errors
