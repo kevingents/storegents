@@ -218,11 +218,10 @@ export default async function handler(req, res) {
     const detailCache = new Map();
     const shopifyCache = new Map();
     const records = [];
-    let skippedByDate = 0;
-    let matchedInDate = 0;
-    let skippedByOffset = 0;
 
     const fulfillments = await getCancelledFulfillments(selectedStatuses, errors);
+    const eligibleFulfillments = [];
+    let skippedByDate = 0;
 
     for (const fulfillment of fulfillments) {
       const date = lineDate(fulfillment);
@@ -230,16 +229,13 @@ export default async function handler(req, res) {
         skippedByDate += 1;
         continue;
       }
+      eligibleFulfillments.push(fulfillment);
+    }
 
-      if (matchedInDate < offset) {
-        matchedInDate += 1;
-        skippedByOffset += 1;
-        continue;
-      }
-      matchedInDate += 1;
+    const selectedFulfillments = eligibleFulfillments.slice(offset, offset + maxRecords);
+    const skippedByOffset = Math.min(offset, eligibleFulfillments.length);
 
-      if (records.length >= maxRecords) break;
-
+    for (const fulfillment of selectedFulfillments) {
       const orderNr = clean(fulfillment.orderNr).replace(/^#/, '');
       const detail = await getDetail(orderNr, detailCache, errors, includeDetails);
       const detailLine = findDetailLine(detail, fulfillment);
@@ -257,6 +253,8 @@ export default async function handler(req, res) {
     }
 
     const saved = dryRun ? { created: 0, duplicates: 0, createdRecords: [], duplicateRecords: [] } : await addOrderCancellationsBulk(records);
+    const nextOffset = offset + records.length;
+    const hasMore = nextOffset < eligibleFulfillments.length;
 
     return res.status(200).json({
       success: true,
@@ -266,21 +264,23 @@ export default async function handler(req, res) {
       dateTo,
       offset,
       limit: maxRecords,
-      nextOffset: offset + records.length,
-      hasMore: offset + records.length < Math.max(0, fulfillments.length - skippedByDate),
+      nextOffset,
+      hasMore,
       includeDetails,
       statuses: selectedStatuses,
       found: fulfillments.length,
+      eligibleInDate: eligibleFulfillments.length,
       prepared: records.length,
       created: saved.created || 0,
       duplicates: saved.duplicates || 0,
       skippedByDate,
       skippedByOffset,
+      exhausted: !hasMore,
       errors,
       preview: records.slice(0, Number(req.query.previewLimit || 25)),
       message: dryRun
-        ? `Dry-run klaar. ${records.length} geannuleerde SRS regel(s) voorbereid. Volgende offset: ${offset + records.length}.`
-        : `Backfill klaar. ${saved.created || 0} nieuw opgeslagen, ${saved.duplicates || 0} al bekend. Volgende offset: ${offset + records.length}.`
+        ? `Dry-run klaar. ${records.length} geannuleerde SRS regel(s) voorbereid. ${eligibleFulfillments.length} binnen datumfilter. Volgende offset: ${nextOffset}.`
+        : `Backfill klaar. ${saved.created || 0} nieuw opgeslagen, ${saved.duplicates || 0} al bekend. ${eligibleFulfillments.length} binnen datumfilter. Volgende offset: ${nextOffset}.`
     });
   } catch (error) {
     console.error('[backfill-cancelled-2026]', error);
