@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@vercel/blob": "^2.0.0",
+    "bwip-js": "^4.5.1",
     "fast-xml-parser": "^4.5.1",
     "formidable": "^3.5.2",
     "qrcode": "^1.5.4",
