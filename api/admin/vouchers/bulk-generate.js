@@ -33,7 +33,6 @@ function isAuthorized(req) {
   return token === adminToken;
 }
 
-
 function field(value) {
   if (Array.isArray(value)) return value[0] || '';
   return value || '';
@@ -165,6 +164,21 @@ function groupCustomersByAmount(customers, groupMap) {
   return Array.from(grouped.values());
 }
 
+function previewCustomer(customer, group) {
+  return {
+    rowNumber: customer.rowNumber,
+    srsCustomerId: customer.srsCustomerId,
+    customerEmail: customer.customerEmail,
+    customerName: customer.customerName,
+    points: customer.points,
+    amount: customer.amount,
+    voucherGroupId: group?.voucherGroup?.voucherGroupId || '',
+    voucherGroupName: group?.voucherGroup?.voucherGroupName || '',
+    voucherValue: group?.voucherGroup?.voucherValue || '',
+    valid: true
+  };
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['POST', 'OPTIONS']);
@@ -249,6 +263,10 @@ export default async function handler(req, res) {
     const readyCustomers = grouped.flatMap((group) => group.customers);
 
     if (dryRun) {
+      const preview = grouped.flatMap((group) =>
+        group.customers.map((customer) => previewCustomer(customer, group))
+      );
+
       return res.status(200).json({
         success: true,
         dryRun: true,
@@ -259,12 +277,15 @@ export default async function handler(req, res) {
           skipped: skipped.length,
           groups: grouped.length
         },
+        preview,
+        readyCustomers: preview,
         groups: grouped.map((group) => ({
           voucherGroupId: group.voucherGroup.voucherGroupId,
           voucherGroupName: group.voucherGroup.voucherGroupName,
           voucherValue: group.voucherGroup.voucherValue,
           amount: group.amount,
-          customerCount: group.customers.length
+          customerCount: group.customers.length,
+          customers: group.customers.map((customer) => previewCustomer(customer, group))
         })),
         skipped,
         availableVoucherGroups: groups
