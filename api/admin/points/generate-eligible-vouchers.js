@@ -3,10 +3,11 @@ import {
   getPointsBalance,
   changePoints
 } from '../../../lib/srs-points-client.js';
+import { getCustomers } from '../../../lib/srs-customers-client.js';
 import { getVoucherGroups, makeVoucher, checkVoucher } from '../../../lib/srs-vouchers-client.js';
 import { findShopifyCustomerBySrsCustomerId, updateShopifyCustomerMetafields } from '../../../lib/shopify-gift-card-client.js';
 import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
-import { createVoucherLog } from '../../../lib/voucher-log-store.js';
+import { createVoucherLog, getVoucherLogs } from '../../../lib/voucher-log-store.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 function isAuthorized(req) {
@@ -60,8 +61,9 @@ function getRules(req) {
   const pointsPerVoucher = Math.ceil(voucherAmount / pointValue);
   const maxVouchersPerCustomer = Number(query.maxVouchersPerCustomer || body.maxVouchersPerCustomer || process.env.LOYALTY_VOUCHER_MAX_PER_CUSTOMER || 10) || 10;
   const limit = Number(query.limit || body.limit || 1) || 1;
+  const duplicateWindowDays = Number(query.duplicateWindowDays || body.duplicateWindowDays || process.env.LOYALTY_VOUCHER_DUPLICATE_WINDOW_DAYS || 120) || 120;
 
-  return { voucherAmount, pointValue, pointsPerVoucher, maxVouchersPerCustomer, limit };
+  return { voucherAmount, pointValue, pointsPerVoucher, maxVouchersPerCustomer, limit, duplicateWindowDays };
 }
 
 function removeLeadingLetters(value) {
@@ -127,6 +129,55 @@ function srsPointsCustomerId(balance) {
   return String(balance.originalCustomerId || balance.customerId || '').trim();
 }
 
+function srsCustomerLookupIds(balance, voucherCustomerId) {
+  const tokens = [
+    ...splitCustomerTokens(balance.originalCustomerId || ''),
+    ...splitCustomerTokens(balance.customerId || '')
+  ];
+
+  const shortTokens = tokens
+    .map((token) => digitsOnly(removeLeadingLetters(token)))
+    .filter((token) => token.length >= 4 && token.length <= 6);
+
+  return uniqueIds([...shortTokens, voucherCustomerId]);
+}
+
+async function getSrsCustomerForBalance(balance, voucherCustomerId) {
+  for (const id of srsCustomerLookupIds(balance, voucherCustomerId)) {
+    try {
+      const result = await getCustomers({ customerId: id });
+      const customer = result.customers?.[0] || null;
+      if (customer?.customerId || customer?.email || customer?.name) {
+        return { customer, matchedValue: id };
+      }
+    } catch (error) {
+      console.error('SRS customer lookup failed:', id, error.message);
+    }
+  }
+
+  return { customer: null, matchedValue: '' };
+}
+
+function customerNameFromSrs(customer = {}) {
+  return String(customer.name || [customer.title, customer.firstName, customer.lastName].filter(Boolean).join(' ') || '').trim();
+}
+
+function isRecentAutomaticLoyaltyLog(log, customerId, customerEmail, duplicateWindowDays) {
+  const logCustomerId = String(log.srsCustomerId || '').trim();
+  const logEmail = String(log.customerEmail || '').trim().toLowerCase();
+  const email = String(customerEmail || '').trim().toLowerCase();
+  const note = String(log.note || '').toLowerCase();
+  const status = String(log.status || '').toLowerCase();
+  const createdAt = new Date(log.createdAt || 0).getTime();
+  const cutoff = Date.now() - duplicateWindowDays * 24 * 60 * 60 * 1000;
+
+  if (!createdAt || Number.isNaN(createdAt) || createdAt < cutoff) return false;
+  if (status.includes('mislukt') || status.includes('failed')) return false;
+  if (!note.includes('automatische loyalty voucher') && !note.includes('spaarpunten voucher')) return false;
+
+  return logCustomerId === String(customerId || '').trim() || (email && logEmail === email);
+}
+
 async function findShopifyCustomerForIds(ids, namespace, key) {
   for (const id of customerLookupIds(...ids)) {
     const customer = await findShopifyCustomerBySrsCustomerId(id, namespace, key);
@@ -186,6 +237,7 @@ export default async function handler(req, res) {
   const dryRun = String(req.query.dryRun || req.body?.dryRun || 'true') !== 'false';
   const sendEmail = String(req.query.sendEmail || req.body?.sendEmail || 'true') !== 'false';
   const redeemPoints = String(req.query.redeemPoints || req.body?.redeemPoints || 'false') === 'true';
+  const allowDuplicates = String(req.query.allowDuplicates || req.body?.allowDuplicates || 'false') === 'true';
   const store = field(req.query.store || req.body?.store || 'GENTS Administratie').trim();
   const employeeName = field(req.query.employeeName || req.body?.employeeName || 'Beheerder').trim();
   const range = getRange(req);
@@ -198,6 +250,7 @@ export default async function handler(req, res) {
 
   try {
     const pointsSessionId = await loginSrsPointsService();
+    const voucherLogs = await getVoucherLogs();
     const { balances } = await getPointsBalance({
       customerFrom: range.customerFrom,
       customerTo: range.customerTo,
@@ -219,13 +272,20 @@ export default async function handler(req, res) {
       const normalizedSrsCustomerId = removeLeadingLetters(originalSrsCustomerId || srsCustomerId);
       const voucherCustomerId = srsVoucherCustomerId(balance);
       const pointsCustomerId = srsPointsCustomerId(balance);
-      const lookup = await findShopifyCustomerForIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId, voucherCustomerId], srsCustomerNamespace, srsCustomerKey);
-      const customer = lookup.customer;
-      const customerEmail = String(customer?.email || '').trim();
-      const customerName = String(customer?.displayName || [customer?.firstName, customer?.lastName].filter(Boolean).join(' ') || '').trim();
+      const srsCustomerLookup = await getSrsCustomerForBalance(balance, voucherCustomerId);
+      const srsCustomer = srsCustomerLookup.customer;
+      const srsCustomerEmail = String(srsCustomer?.email || '').trim();
+      const srsCustomerName = customerNameFromSrs(srsCustomer);
+      const lookup = await findShopifyCustomerForIds([normalizedSrsCustomerId, srsCustomerId, originalSrsCustomerId, voucherCustomerId, srsCustomerLookup.matchedValue], srsCustomerNamespace, srsCustomerKey);
+      const shopifyCustomer = lookup.customer;
+      const shopifyCustomerEmail = String(shopifyCustomer?.email || '').trim();
+      const shopifyCustomerName = String(shopifyCustomer?.displayName || [shopifyCustomer?.firstName, shopifyCustomer?.lastName].filter(Boolean).join(' ') || '').trim();
+      const customerEmail = srsCustomerEmail;
+      const customerName = srsCustomerName;
       const rawVoucherCount = Math.floor(Number(balance.balance || 0) / rules.pointsPerVoucher);
       const voucherCount = Math.min(rawVoucherCount, rules.maxVouchersPerCustomer);
       const redeemPointsTotal = voucherCount * rules.pointsPerVoucher;
+      const duplicateLogs = voucherLogs.filter((log) => isRecentAutomaticLoyaltyLog(log, voucherCustomerId, customerEmail, rules.duplicateWindowDays));
 
       const customerResult = {
         srsCustomerId,
@@ -233,9 +293,16 @@ export default async function handler(req, res) {
         normalizedSrsCustomerId,
         srsVoucherCustomerId: voucherCustomerId,
         srsPointsCustomerId: pointsCustomerId,
-        matchedValue: lookup.matchedValue,
-        shopifyFound: Boolean(customer?.id),
-        shopifyCustomerId: customer?.id || '',
+        srsCustomerLookupId: srsCustomerLookup.matchedValue,
+        srsCustomerFound: Boolean(srsCustomer),
+        srsCustomerEmail,
+        srsCustomerName,
+        shopifyMatchedValue: lookup.matchedValue,
+        shopifyFound: Boolean(shopifyCustomer?.id),
+        shopifyCustomerId: shopifyCustomer?.id || '',
+        shopifyCustomerEmail,
+        shopifyCustomerName,
+        emailUsed: customerEmail,
         customerEmail,
         customerName,
         pointsBalance: Number(balance.balance || 0),
@@ -247,6 +314,10 @@ export default async function handler(req, res) {
         remainingPoints: Number(balance.balance || 0) - redeemPointsTotal,
         dryRun,
         redeemPoints,
+        duplicateProtection: !allowDuplicates,
+        duplicateWindowDays: rules.duplicateWindowDays,
+        duplicateVoucherCount: duplicateLogs.length,
+        duplicateVoucherCodes: duplicateLogs.map((log) => log.voucherCode).filter(Boolean),
         vouchers: [],
         errors: []
       };
@@ -257,8 +328,26 @@ export default async function handler(req, res) {
         continue;
       }
 
-      if (!customer?.id || !customerEmail) {
-        customerResult.errors.push(customer?.id ? 'Shopify klant heeft geen e-mail.' : 'Shopify klant niet gevonden.');
+      if (!srsCustomer?.customerId) {
+        customerResult.errors.push('SRS klant niet gevonden via Customers. Er wordt niet gemaild op basis van Shopify.');
+        results.push(customerResult);
+        continue;
+      }
+
+      if (!customerEmail) {
+        customerResult.errors.push('SRS klant heeft geen e-mail. Er wordt niet gemaild op basis van Shopify.');
+        results.push(customerResult);
+        continue;
+      }
+
+      if (!allowDuplicates && duplicateLogs.length) {
+        customerResult.skipped = true;
+        customerResult.skipReason = 'duplicate_automatic_loyalty_voucher';
+        customerResult.voucherCount = 0;
+        customerResult.totalVoucherAmount = 0;
+        customerResult.redeemPointsTotal = 0;
+        customerResult.remainingPoints = Number(balance.balance || 0);
+        customerResult.errors.push(`Overgeslagen: er bestaan al automatische loyalty vouchers voor deze klant binnen ${rules.duplicateWindowDays} dagen.`);
         results.push(customerResult);
         continue;
       }
@@ -311,7 +400,7 @@ export default async function handler(req, res) {
             validTo,
             mailed: Boolean(mailResult),
             shopifyEnabled: false,
-            note: `${rules.pointsPerVoucher} spaarpunten voucher aangemaakt. Puntenafboeking: ${redeemPoints ? 'aan' : 'uit'}. Automatische loyalty voucher ${index + 1}/${voucherCount}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
+            note: `${rules.pointsPerVoucher} spaarpunten voucher aangemaakt. Puntenafboeking: ${redeemPoints ? 'aan' : 'uit'}. Automatische loyalty voucher ${index + 1}/${voucherCount}. SRS Customers lookup: ${srsCustomerLookup.matchedValue || '-'}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
             status: 'Aangemaakt'
           });
 
@@ -336,7 +425,7 @@ export default async function handler(req, res) {
             currency: 'EUR',
             mailed: false,
             shopifyEnabled: false,
-            note: `Automatische loyalty voucher mislukt. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
+            note: `Automatische loyalty voucher mislukt. SRS Customers lookup: ${srsCustomerLookup.matchedValue || '-'}. Shopify matchwaarde: ${lookup.matchedValue || '-'}.`,
             status: 'Mislukt',
             error: error.message || 'Voucher aanmaken mislukt.'
           });
@@ -354,7 +443,7 @@ export default async function handler(req, res) {
           });
           customerResult.pointsRedeem = redeemed;
           customerResult.remainingPoints = Number.isFinite(redeemed.balanceAfter) ? redeemed.balanceAfter : customerResult.remainingPoints;
-          await updatePointsMetafield(customer.id, customerResult.remainingPoints);
+          if (shopifyCustomer?.id) await updatePointsMetafield(shopifyCustomer.id, customerResult.remainingPoints);
         } else {
           customerResult.pointsRedeemSkipped = true;
           customerResult.errors.push('Punten zijn nog niet afgeboekt omdat redeemPoints=false. Controleer eerst welk SRS klantnummer changePoints verwacht.');
@@ -372,6 +461,8 @@ export default async function handler(req, res) {
       success: true,
       dryRun,
       redeemPoints,
+      allowDuplicates,
+      emailSource: 'srs_customers',
       range,
       rules,
       validFrom,
@@ -379,6 +470,7 @@ export default async function handler(req, res) {
       totalBalances: balances.length,
       eligibleCustomers: eligibleBalances.length,
       processedCustomers,
+      skippedCustomers: results.filter((item) => item.skipped).length,
       vouchersPlanned: results.reduce((sum, item) => sum + Number(item.voucherCount || 0), 0),
       vouchersCreated,
       totalVoucherAmount: Number(results.reduce((sum, item) => sum + Number(item.totalVoucherAmount || 0), 0).toFixed(2)),
