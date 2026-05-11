@@ -96,13 +96,14 @@ export default async function handler(req, res) {
     const { status, data } = await callBackfill(req, { offset, limit, dryRun });
     const nextOffset = Number(data.nextOffset || offset + Number(data.prepared || 0));
     const completed = Boolean(data.hasMore === false || Number(data.prepared || 0) === 0);
+    const ok = status < 400 && (data.success !== false || completed);
     const message = completed
       ? `SRS cancelled backfill 2026 klaar. Offset ${offset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel.`
       : `SRS cancelled backfill 2026 batch klaar. Offset ${offset} -> ${nextOffset}, ${data.created || 0} nieuw, ${data.duplicates || 0} dubbel.`;
 
     await appendUnavailableCronRun({
       type: 'srs_cancelled_backfill_2026',
-      success: status < 400 && data.success !== false,
+      success: ok,
       completed,
       dryRun,
       offset,
@@ -129,8 +130,8 @@ export default async function handler(req, res) {
       }
     });
 
-    return res.status(status < 400 ? 200 : status).json({
-      success: status < 400 && data.success !== false,
+    return res.status(ok ? 200 : (status < 400 ? 500 : status)).json({
+      success: ok,
       mode: 'srs_cancelled_backfill_2026_cron',
       completed,
       dryRun,
