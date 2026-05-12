@@ -23,6 +23,7 @@ export default async function handler(req, res) {
 
   try {
     const dryRun = String(req.query.dryRun || 'false') === 'true';
+    const includeRaw = String(req.query.includeRaw || 'false') === 'true';
     const storeFilter = String(req.query.store || '').trim().toLowerCase();
 
     const locations = getConfiguredGoogleStoreLocations().filter((location) => {
@@ -35,7 +36,7 @@ export default async function handler(req, res) {
 
     for (const location of locations) {
       try {
-        const result = await syncGoogleOpeningHoursToShopify(location, { dryRun });
+        const result = await syncGoogleOpeningHoursToShopify(location, { dryRun, includeRaw });
         results.push(result);
       } catch (error) {
         errors.push({
@@ -48,6 +49,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: errors.length === 0,
       dryRun,
+      includeRaw,
       synced: results.length,
       failed: errors.length,
       results,
