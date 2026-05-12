@@ -16,6 +16,8 @@ import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
 import { createShopifyGiftCard } from '../../../lib/shopify-gift-card-client.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
+const GENTS_LOYALTY_AMOUNT = '25.00';
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -157,7 +159,7 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
       shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
       shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
       shopifyCustomerId: shopifyResult?.customer?.id || '',
-      note: 'Automatisch tegen SRS loyalty points gegenereerd. Punten zijn door SRS CreateFromLoyaltyPoints omgezet.',
+      note: 'Automatisch tegen SRS loyalty points gegenereerd. GENTS-regel: 500 punten = EUR 25 voucher.',
       status,
       error: shopifyError || mailError
     });
@@ -195,7 +197,8 @@ export default async function handler(req, res) {
     }
 
     const runs = await getLoyaltyVoucherRuns();
-    const rules = getLoyaltyVoucherRules();
+    const baseRules = getLoyaltyVoucherRules();
+    const rules = { ...baseRules, stepsOf: GENTS_LOYALTY_AMOUNT, minimum: GENTS_LOYALTY_AMOUNT, maximum: GENTS_LOYALTY_AMOUNT };
     const validity = getDefaultValidity();
 
     return res.status(200).json({
@@ -223,16 +226,15 @@ export default async function handler(req, res) {
   const sendEmail = body.sendEmail !== false;
   const allowDuplicateReference = Boolean(body.allowDuplicateReference);
 
-  const rules = getLoyaltyVoucherRules();
   const validity = getDefaultValidity();
 
   const request = {
     reference,
     validFrom: field(body.validFrom).trim() || validity.validFrom,
     validTo: field(body.validTo).trim() || validity.validTo,
-    stepsOf: field(body.stepsOf).trim() || rules.stepsOf,
-    minimum: field(body.minimum).trim() || rules.minimum,
-    maximum: field(body.maximum).trim() || rules.maximum,
+    stepsOf: GENTS_LOYALTY_AMOUNT,
+    minimum: GENTS_LOYALTY_AMOUNT,
+    maximum: GENTS_LOYALTY_AMOUNT,
     customerIds
   };
 
@@ -252,7 +254,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         success: true,
         dryRun: true,
-        message: 'Dry-run: er zijn nog geen vouchers aangemaakt. Let op: SRS heeft geen echte preview zonder CreateFromLoyaltyPoints uit te voeren.',
+        message: 'Dry-run: er zijn nog geen vouchers aangemaakt. GENTS-regel staat op 500 punten = EUR 25 voucher.',
         request
       });
     }
