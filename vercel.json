@@ -29,6 +29,10 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/cron/drager-mail-run",
+      "schedule": "10 8 * * *"
+    },
+    {
       "path": "/api/cron/srs-unavailable-lost-found-check",
       "schedule": "30 6 * * 1,2"
     },
