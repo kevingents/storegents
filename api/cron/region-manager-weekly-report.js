@@ -5,13 +5,12 @@ import { getAdminToken, getApiBaseUrl, requireCronSecret } from '../../lib/gents
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 
 function setNoStore(res) {
-function setNoStore(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, x-admin-pin, authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-}}
+}
 
 function hasAdminAccess(req) {
   const expected = getAdminToken();
@@ -19,15 +18,14 @@ function hasAdminAccess(req) {
     req.headers['x-admin-token'] ||
     req.headers['x-admin-pin'] ||
     req.headers.authorization ||
-req.query.adminToken ||
-req.query.admin_token ||
-req.query.token ||
-''
+    req.query.adminToken ||
+    req.query.admin_token ||
+    req.query.token ||
     ''
   ).replace(/^Bearer\s+/i, '').trim();
+
   return Boolean(expected && given && expected === given);
 }
-
 function isoDate(date) { return date.toISOString().slice(0, 10); }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
 function startOfPreviousWeek() {
