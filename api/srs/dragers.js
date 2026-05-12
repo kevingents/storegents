@@ -10,6 +10,13 @@ function iso(date) {
   return date.toISOString();
 }
 
+function hoursAgo(hours) {
+  const d = new Date();
+  const h = Math.max(1, Number(hours || 2));
+  d.setHours(d.getHours() - h);
+  return d;
+}
+
 function daysAgo(days) {
   const d = new Date();
   d.setDate(d.getDate() - Math.max(1, Number(days || 1)));
@@ -41,8 +48,10 @@ export default async function handler(req, res) {
   const refresh = String(req.query.refresh || '') === '1';
   const admin = String(req.query.admin || '') === '1';
   const dragerId = clean(req.query.dragerId || req.query.id || req.query.drager);
-  const days = Number(req.query.days || process.env.SRS_DRAGER_SYNC_DAYS || 1);
-  const updatedFrom = clean(req.query.updatedFrom || req.query.from || (refresh ? iso(daysAgo(days)) : ''));
+  const hours = Number(req.query.hours || process.env.SRS_DRAGER_SYNC_HOURS || 2);
+  const days = Number(req.query.days || process.env.SRS_DRAGER_SYNC_DAYS || 0);
+  const defaultFrom = days > 0 ? iso(daysAgo(days)) : iso(hoursAgo(hours));
+  const updatedFrom = clean(req.query.updatedFrom || req.query.from || (refresh ? defaultFrom : ''));
   const updatedTo = clean(req.query.updatedTo || req.query.to || (refresh ? iso(new Date()) : ''));
 
   try {
