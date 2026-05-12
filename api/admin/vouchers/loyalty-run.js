@@ -3,7 +3,7 @@ import {
   getVouchersTransactionStatus,
   getDefaultValidity,
   getLoyaltyVoucherRules
-} from '../../../lib/srs-loyalty-vouchers-client.js';
+} from '../../../lib/srs-loyalty-vouchers-client-cents.js';
 import {
   createLoyaltyVoucherRun,
   updateLoyaltyVoucherRunById,
@@ -16,7 +16,7 @@ import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
 import { createShopifyGiftCard } from '../../../lib/shopify-gift-card-client.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
-const GENTS_LOYALTY_AMOUNT = '25.00';
+const GENTS_LOYALTY_AMOUNT = '2500';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -235,6 +235,7 @@ export default async function handler(req, res) {
     stepsOf: GENTS_LOYALTY_AMOUNT,
     minimum: GENTS_LOYALTY_AMOUNT,
     maximum: GENTS_LOYALTY_AMOUNT,
+    displayAmount: 25,
     customerIds
   };
 
@@ -294,14 +295,18 @@ export default async function handler(req, res) {
       });
     }
 
-    run = await updateLoyaltyVoucherRunById(run.id, {
+    const finalRunData = {
+      ...run,
       transactionId: result.transactionId || created.transactionId,
       status: result.status,
       request,
       voucherCount: result.vouchers?.length || 0,
       vouchers: mailData.enrichedVouchers,
-      mailStatus: mailData.mailStatus
-    });
+      mailStatus: mailData.mailStatus,
+      updatedAt: new Date().toISOString()
+    };
+
+    run = await updateLoyaltyVoucherRunById(run.id, finalRunData) || finalRunData;
 
     return res.status(200).json({
       success: true,
@@ -314,11 +319,14 @@ export default async function handler(req, res) {
     console.error('Loyalty voucher run error:', error);
 
     if (run?.id) {
-      run = await updateLoyaltyVoucherRunById(run.id, {
+      const failedRunData = {
+        ...run,
         status: 'failed_after_create',
         error: error.message || 'Loyalty voucher-run mislukt na SRS create.',
-        request
-      });
+        request,
+        updatedAt: new Date().toISOString()
+      };
+      run = await updateLoyaltyVoucherRunById(run.id, failedRunData) || failedRunData;
     } else {
       run = await createLoyaltyVoucherRun({
         transactionId: '',
