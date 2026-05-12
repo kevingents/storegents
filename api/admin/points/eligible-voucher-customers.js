@@ -175,6 +175,10 @@ export default async function handler(req, res) {
       })
     ]);
 
+    const totalPointsInCirculation = balances.reduce((sum, item) => sum + Math.max(0, Number(item.balance || 0)), 0);
+    const totalPointsRaw = balances.reduce((sum, item) => sum + Number(item.balance || 0), 0);
+    const totalPointsValue = Number((totalPointsInCirculation * rules.pointValue).toFixed(2));
+
     const latestBranchByCustomer = getLatestBranchByCustomer(mutations);
     const eligibleBalances = balances.filter((item) => Number(item.balance || 0) >= rules.minimumPoints);
     const eligible = [];
@@ -268,7 +272,11 @@ export default async function handler(req, res) {
       lookupMetafield: `${srsCustomerNamespace}.${srsCustomerKey}`,
       primaryLookup: 'email',
       totalBalances: balances.length,
+      totalPointsInCirculation,
+      totalPointsRaw,
+      totalPointsValue,
       eligibleCount: eligible.length,
+      totalEligiblePoints: eligible.reduce((sum, item) => sum + Number(item.pointsBalance || 0), 0),
       totalVoucherCount: eligible.reduce((sum, item) => sum + Number(item.voucherCount || 0), 0),
       totalVoucherAmount: Number(eligible.reduce((sum, item) => sum + Number(item.totalVoucherAmount || 0), 0).toFixed(2)),
       shopifyMatched: eligible.filter((item) => item.shopifyFound).length,
