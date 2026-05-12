@@ -18,19 +18,26 @@ export default async function handler(req, res) {
   const refresh = String(req.query.refresh || '') === '1';
   const admin = String(req.query.admin || '') === '1';
   const dragerId = clean(req.query.dragerId || req.query.id || req.query.drager);
+  const updatedFrom = clean(req.query.updatedFrom || req.query.from || '');
 
   try {
     let rows = await getDragerCache();
     let source = 'cache';
     let notice = '';
 
-    if (refresh && dragerId) {
-      const data = await getDragerInfo({ store, dragerId });
-      const existing = rows.filter((row) => clean(row.dragerId || row.id) !== dragerId);
-      rows = await saveDragerCache([...(data.rows || []), ...existing]);
+    if (refresh) {
+      const data = await getDragerInfo({ store: dragerId ? store : '', dragerId, updatedFrom });
+      const incoming = Array.isArray(data.rows) ? data.rows : [];
+
+      if (dragerId) {
+        const existing = rows.filter((row) => clean(row.dragerId || row.id) !== dragerId);
+        rows = await saveDragerCache([...incoming, ...existing]);
+      } else {
+        rows = await saveDragerCache(incoming);
+      }
+
       source = 'soap';
-    } else if (refresh && !dragerId) {
-      notice = 'SRS Drager SOAP heeft alleen GetDragerInfo per specifieke drager. Een live totaaloverzicht zonder dragernummer is niet beschikbaar via deze WSDL. Het overzicht toont daarom de lokale cache/log.';
+      if (!incoming.length) notice = 'SRS gaf geen dragers terug voor de opgegeven UpdatedFrom-periode.';
     }
 
     if (admin) {
@@ -39,7 +46,7 @@ export default async function handler(req, res) {
         success: true,
         source,
         notice,
-        requiresDragerIdForLiveRefresh: true,
+        requiresDragerIdForLiveRefresh: false,
         stores,
         totals: {
           openCount: stores.reduce((sum, row) => sum + Number(row.openCount || 0), 0),
@@ -50,14 +57,9 @@ export default async function handler(req, res) {
     }
 
     const summary = summarizeDragers(rows, store);
-    return res.status(200).json({ success: true, source, notice, requiresDragerIdForLiveRefresh: true, ...summary });
+    return res.status(200).json({ success: true, source, notice, requiresDragerIdForLiveRefresh: false, ...summary });
   } catch (error) {
     const message = String(error.message || 'Dragers konden niet worden geladen.');
-    return res.status(500).json({
-      success: false,
-      message: message.includes('Unknown error')
-        ? 'SRS geeft Unknown error terug. Controleer of een geldig dragernummer is meegegeven; GetDragerInfo lijkt geen lijst zonder drager-id te ondersteunen.'
-        : message
-    });
+    return res.status(500).json({ success: false, message });
   }
 }
