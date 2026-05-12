@@ -1,12 +1,12 @@
 import {
-  createAndPollVouchersFromLoyaltyPoints,
+  createVouchersFromLoyaltyPoints,
   getVouchersTransactionStatus,
   getDefaultValidity,
   getLoyaltyVoucherRules
 } from '../../../lib/srs-loyalty-vouchers-client.js';
 import {
   createLoyaltyVoucherRun,
-  updateLoyaltyVoucherRun,
+  updateLoyaltyVoucherRunById,
   getLoyaltyVoucherRuns,
   hasRunForReference
 } from '../../../lib/loyalty-voucher-run-store.js';
@@ -41,7 +41,6 @@ function isAuthorized(req) {
   return token === adminToken;
 }
 
-
 function field(value) {
   if (Array.isArray(value)) return value[0] || '';
   return value || '';
@@ -49,6 +48,44 @@ function field(value) {
 
 function todayReference(prefix = 'GENTS-loyalty') {
   return `${prefix}-${new Date().toISOString().slice(0, 10)}`;
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pollExistingTransaction({ transactionId, reference, request, runId }) {
+  const attempts = Number(process.env.LOYALTY_VOUCHER_POLL_ATTEMPTS || 4);
+  const delayMs = Number(process.env.LOYALTY_VOUCHER_POLL_DELAY_MS || 2500);
+  let latest = {
+    transactionId,
+    reference,
+    request,
+    status: 'processing',
+    vouchers: []
+  };
+
+  for (let i = 0; i < attempts; i += 1) {
+    await sleep(delayMs);
+    latest = await getVouchersTransactionStatus(transactionId);
+    latest = {
+      ...latest,
+      transactionId: latest.transactionId || transactionId,
+      reference,
+      request
+    };
+
+    await updateLoyaltyVoucherRunById(runId, {
+      transactionId: latest.transactionId,
+      status: latest.status,
+      voucherCount: latest.vouchers?.length || 0,
+      vouchers: latest.vouchers || []
+    });
+
+    if (latest.status === 'completed') return latest;
+  }
+
+  return latest;
 }
 
 async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify, sendEmail }) {
@@ -120,7 +157,7 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
       shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
       shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
       shopifyCustomerId: shopifyResult?.customer?.id || '',
-      note: 'Automatisch gegenereerd vanuit SRS loyalty points.',
+      note: 'Automatisch tegen SRS loyalty points gegenereerd. Punten zijn door SRS CreateFromLoyaltyPoints omgezet.',
       status,
       error: shopifyError || mailError
     });
@@ -199,13 +236,15 @@ export default async function handler(req, res) {
     customerIds
   };
 
+  let run = null;
+
   try {
     const runs = await getLoyaltyVoucherRuns();
 
     if (!allowDuplicateReference && hasRunForReference(runs, reference)) {
       return res.status(409).json({
         success: false,
-        message: `Er bestaat al een loyalty voucher-run voor referentie ${reference}.`
+        message: `Er bestaat al een loyalty voucher-run voor referentie ${reference}. Gebruik geen tweede run met dezelfde referentie, want SRS kan punten dan opnieuw omzetten.`
       });
     }
 
@@ -218,7 +257,26 @@ export default async function handler(req, res) {
       });
     }
 
-    const result = await createAndPollVouchersFromLoyaltyPoints(request);
+    const created = await createVouchersFromLoyaltyPoints(request);
+
+    run = await createLoyaltyVoucherRun({
+      transactionId: created.transactionId,
+      reference,
+      status: created.status || 'processing',
+      request,
+      voucherCount: created.vouchers?.length || 0,
+      vouchers: created.vouchers || [],
+      mailStatus: {}
+    });
+
+    const result = created.status === 'completed'
+      ? created
+      : await pollExistingTransaction({
+          transactionId: created.transactionId,
+          reference,
+          request,
+          runId: run.id
+        });
 
     let mailData = {
       mailStatus: {},
@@ -234,9 +292,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const run = await createLoyaltyVoucherRun({
-      transactionId: result.transactionId,
-      reference,
+    run = await updateLoyaltyVoucherRunById(run.id, {
+      transactionId: result.transactionId || created.transactionId,
       status: result.status,
       request,
       voucherCount: result.vouchers?.length || 0,
@@ -254,19 +311,29 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('Loyalty voucher run error:', error);
 
-    const run = await createLoyaltyVoucherRun({
-      transactionId: '',
-      reference,
-      status: 'failed',
-      request,
-      voucherCount: 0,
-      vouchers: [],
-      error: error.message || 'Loyalty voucher-run mislukt.'
-    });
+    if (run?.id) {
+      run = await updateLoyaltyVoucherRunById(run.id, {
+        status: 'failed_after_create',
+        error: error.message || 'Loyalty voucher-run mislukt na SRS create.',
+        request
+      });
+    } else {
+      run = await createLoyaltyVoucherRun({
+        transactionId: '',
+        reference,
+        status: 'failed',
+        request,
+        voucherCount: 0,
+        vouchers: [],
+        error: error.message || 'Loyalty voucher-run mislukt.'
+      });
+    }
 
     return res.status(error.status || 500).json({
       success: false,
-      message: error.message || 'Loyalty voucher-run mislukt.',
+      message: run?.status === 'failed_after_create'
+        ? `${error.message || 'Loyalty voucher-run mislukt.'} Let op: SRS CreateFromLoyaltyPoints was al gestart; draai niet opnieuw met dezelfde referentie.`
+        : error.message || 'Loyalty voucher-run mislukt.',
       run,
       details: error.fault || null
     });
