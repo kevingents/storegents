@@ -39,6 +39,10 @@
     {
       "path": "/api/cron/region-manager-weekly-report",
       "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/cron/region-manager-weekly-drager-report",
+      "schedule": "15 8 * * 1"
     }
   ]
 }
