@@ -5,8 +5,13 @@ import { getAdminToken, getApiBaseUrl, requireCronSecret } from '../../lib/gents
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 
 function setNoStore(res) {
+function setNoStore(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, x-admin-pin, authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-}
+}}
 
 function hasAdminAccess(req) {
   const expected = getAdminToken();
@@ -14,8 +19,10 @@ function hasAdminAccess(req) {
     req.headers['x-admin-token'] ||
     req.headers['x-admin-pin'] ||
     req.headers.authorization ||
-    req.query.adminToken ||
-    req.query.token ||
+req.query.adminToken ||
+req.query.admin_token ||
+req.query.token ||
+''
     ''
   ).replace(/^Bearer\s+/i, '').trim();
   return Boolean(expected && given && expected === given);
@@ -147,6 +154,7 @@ function reportHtml(summary, dateFrom, dateTo) {
 
 export default async function handler(req, res) {
   setNoStore(res);
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
   const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
   if (!hasAdminAccess(req) && !requireCronSecret(req, res, 'REGION_REPORT_SECRET')) return;
