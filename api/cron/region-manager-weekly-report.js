@@ -3,6 +3,7 @@ import { ageLabel, isOverdueWithWeekendRule, operationalDaysBetween } from '../.
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
+import { addCurrentOverdueOrder, addLoggedWeeklyOverdueOrders, ensureWeeklyStoreRow } from '../../lib/region-weekly-overdue-memory.js';
 
 function setNoStore(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -14,63 +15,39 @@ function setNoStore(res) {
 
 function hasAdminAccess(req) {
   const expected = getAdminToken();
-  const given = String(
-    req.headers['x-admin-token'] ||
-    req.headers['x-admin-pin'] ||
-    req.headers.authorization ||
-    req.query.adminToken ||
-    req.query.admin_token ||
-    req.query.token ||
-    ''
-  ).replace(/^Bearer\s+/i, '').trim();
-
+  const given = String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.headers.authorization || req.query.adminToken || req.query.admin_token || req.query.token || '').replace(/^Bearer\s+/i, '').trim();
   return Boolean(expected && given && expected === given);
 }
+
 function isoDate(date) { return date.toISOString().slice(0, 10); }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
-function startOfPreviousWeek() {
-  const now = new Date();
-  const day = now.getDay() || 7;
-  const mondayThisWeek = addDays(now, 1 - day);
-  return addDays(mondayThisWeek, -7);
-}
+function startOfPreviousWeek() { const now = new Date(); const day = now.getDay() || 7; return addDays(addDays(now, 1 - day), -7); }
 function endOfPreviousWeek() { return addDays(startOfPreviousWeek(), 6); }
+function number(value) { return Number.isFinite(Number(value)) ? Number(value) : 0; }
+function esc(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
+function orderKey(row = {}) { return String(row.fulfillmentId || row.id || row.orderNr || row.orderNumber || row.orderName || `${row.sku || ''}-${row.createdAt || ''}`).trim(); }
+function orderCreatedAt(row = {}) { return row.createdAt || row.created_at || row.dateTime || row.created || row.updatedAt || ''; }
+function exchangeStore(row = {}) { return row.store || row.toStore || row.destinationStore || row.targetStore || 'Onbekend'; }
 
-function orderKey(row = {}) {
-  return String(row.fulfillmentId || row.id || row.orderNr || row.orderNumber || row.orderName || `${row.sku || ''}-${row.createdAt || ''}`).trim();
-}
-function orderNumber(row = {}) {
-  return String(row.orderNr || row.orderNumber || row.orderName || row.name || row.orderId || row.id || '-').trim();
-}
-function orderCreatedAt(row = {}) {
-  return row.createdAt || row.created_at || row.dateTime || row.created || row.updatedAt || '';
-}
 function flattenOpenWeborders(data = {}) {
   const summary = data.summary || {};
   const combined = [];
   ['requests', 'items', 'rows'].forEach((key) => Array.isArray(data[key]) && combined.push(...data[key]));
   ['currentOpen', 'fulfilmentOpen', 'fulfillmentOpen', 'overdue'].forEach((key) => Array.isArray(summary[key]) && combined.push(...summary[key]));
   const map = new Map();
-  for (const row of combined) {
-    const key = orderKey(row);
-    if (key && !map.has(key)) map.set(key, row);
-  }
+  for (const row of combined) { const key = orderKey(row); if (key && !map.has(key)) map.set(key, row); }
   return Array.from(map.values());
-}
-function number(value) { return Number.isFinite(Number(value)) ? Number(value) : 0; }
-function esc(value) {
-  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
 async function fetchJson(url, label, timeoutMs = 45000) {
-  const response = await fetch(url, {
-    headers: { Accept: 'application/json', 'x-admin-token': getAdminToken() },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const response = await fetch(url, { headers: { Accept: 'application/json', 'x-admin-token': getAdminToken() }, signal: AbortSignal.timeout(timeoutMs) });
   const text = await response.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (_error) { data = { message: text }; }
-  if (!response.ok || data.success === false) throw new Error(`${label}: ${data.message || data.error || response.status}`);
+  if (!response.ok || data.success === false) {
+    const detail = typeof data.message === 'string' ? data.message : typeof data.error === 'string' ? data.error : data.message || data.error ? JSON.stringify(data.message || data.error) : response.status;
+    throw new Error(`${label}: ${detail}`);
+  }
   return data;
 }
 
@@ -85,17 +62,28 @@ function metricFromScoreboard(row = {}) {
   };
 }
 
+function exchangeTotalsByStore(exchangeRows = []) {
+  const map = new Map();
+  for (const row of exchangeRows) {
+    const store = exchangeStore(row);
+    if (!map.has(store)) map.set(store, { store, overdueExchanges: 0 });
+    map.get(store).overdueExchanges += 1;
+  }
+  return Array.from(map.values()).sort((a, b) => b.overdueExchanges - a.overdueExchanges || a.store.localeCompare(b.store, 'nl'));
+}
+
 function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows }) {
   const stores = new Set(region.stores || []);
   const metrics = scoreboardRows.filter((row) => stores.has(row.store)).map(metricFromScoreboard);
   const overdueStores = Array.from(overdueByStore.values()).filter((row) => stores.has(row.store) && row.overdueCount > 0);
-  const exchanges = exchangeRows.filter((row) => stores.has(row.store || row.toStore || row.destinationStore || row.targetStore));
+  const exchanges = exchangeRows.filter((row) => stores.has(exchangeStore(row)));
 
   return {
     region,
     metrics,
     overdueStores,
     exchanges,
+    exchangeTotals: exchangeTotalsByStore(exchanges),
     totals: {
       labelCreated: metrics.reduce((sum, row) => sum + row.labelCreated, 0),
       customersWithEmail: metrics.reduce((sum, row) => sum + row.customersWithEmail, 0),
@@ -103,6 +91,8 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows 
       customerRegistrations: metrics.reduce((sum, row) => sum + row.customerRegistrations, 0),
       overdueOrderStores: overdueStores.length,
       overdueOrders: overdueStores.reduce((sum, row) => sum + number(row.overdueCount), 0),
+      currentOverdueOrders: overdueStores.reduce((sum, row) => sum + number(row.currentOverdueCount), 0),
+      processedAfterOverdue: overdueStores.reduce((sum, row) => sum + Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)), 0),
       overdueExchanges: exchanges.length
     }
   };
@@ -116,24 +106,30 @@ function reportHtml(summary, dateFrom, dateTo) {
     <div style="display:grid;gap:12px;margin-bottom:18px;">
       <div style="padding:16px;border:1px solid #e1e6eb;border-radius:16px;background:#f8fafc;">
         <strong>Periode:</strong> ${esc(dateFrom)} t/m ${esc(dateTo)}<br>
-        <strong>Winkels in regio:</strong> ${esc((summary.region.stores || []).join(', '))}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-        ${[
-          ['Winkels te laat', summary.totals.overdueOrderStores],
-          ['Te late orders', summary.totals.overdueOrders],
-          ['Labels', summary.totals.labelCreated],
-          ['Uitwisselingen te laat', summary.totals.overdueExchanges]
-        ].map(([label, value]) => `<div style="padding:14px;border:1px solid #e1e6eb;border-radius:14px;background:#fff;"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#3a4a5a;font-weight:700;">${esc(label)}</span><strong style="display:block;font-size:28px;color:#0a1f33;">${esc(value)}</strong></div>`).join('')}
+        <strong>Winkels in regio:</strong> ${esc((summary.region.stores || []).join(', '))}<br>
+        <span style="color:#3a4a5a;">Orders blijven meetellen zodra ze deze week als te laat zijn geregistreerd, ook als ze later verwerkt zijn.</span>
       </div>
     </div>
+    <h2 style="font-size:18px;color:#0a1f33;">Regio totaal</h2>
+    ${rowsTable([
+      { label: 'Winkels te laat', value: summary.totals.overdueOrderStores },
+      { label: 'Te laat deze week', value: summary.totals.overdueOrders },
+      { label: 'Nu nog te laat', value: summary.totals.currentOverdueOrders },
+      { label: 'Verwerkt na te laat', value: summary.totals.processedAfterOverdue },
+      { label: 'Labels', value: summary.totals.labelCreated },
+      { label: 'Klanten met e-mail', value: summary.totals.customersWithEmail },
+      { label: 'Klanten zonder e-mail', value: summary.totals.customersWithoutEmail },
+      { label: 'Uitwisselingen te laat', value: summary.totals.overdueExchanges }
+    ], [{ label: 'Metric', value: (row) => row.label }, { label: 'Aantal', value: (row) => row.value }])}
     <h2 style="font-size:18px;color:#0a1f33;">Winkels die te laat hebben geleverd</h2>
     ${overdueRows.length ? rowsTable(overdueRows, [
       { label: 'Winkel', value: (row) => row.store },
-      { label: 'Open orders', value: (row) => row.openCount },
-      { label: 'Te laat', value: (row) => row.overdueCount },
-      { label: 'Oudste', value: (row) => `${row.oldestAgeHours || 0} uur` }
-    ]) : '<p style="color:#3a4a5a;">Geen te late openstaande orders in deze regio.</p>'}
+      { label: 'Open orders nu', value: (row) => row.openCount },
+      { label: 'Te laat deze week', value: (row) => row.overdueCount },
+      { label: 'Nu nog te laat', value: (row) => row.currentOverdueCount || 0 },
+      { label: 'Verwerkt na te laat', value: (row) => Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)) },
+      { label: 'Oudste huidige', value: (row) => row.oldestAgeHours ? `${row.oldestAgeHours} uur` : '-' }
+    ]) : '<p style="color:#3a4a5a;">Geen te late orders in deze regio geregistreerd.</p>'}
     <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Labels en klantinschrijvingen</h2>
     ${rowsTable(metricRows, [
       { label: 'Winkel', value: (row) => row.store },
@@ -141,9 +137,14 @@ function reportHtml(summary, dateFrom, dateTo) {
       { label: 'Klanten met e-mail', value: (row) => row.customersWithEmail },
       { label: 'Klanten zonder e-mail', value: (row) => row.customersWithoutEmail }
     ])}
-    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat</h2>
+    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat per winkel</h2>
+    ${summary.exchangeTotals.length ? rowsTable(summary.exchangeTotals, [
+      { label: 'Winkel', value: (row) => row.store },
+      { label: 'Uitwisselingen te laat', value: (row) => row.overdueExchanges }
+    ]) : '<p style="color:#3a4a5a;">Geen te late uitwisselingen per winkel.</p>'}
+    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat details</h2>
     ${exchangeRows.length ? rowsTable(exchangeRows, [
-      { label: 'Winkel', value: (row) => row.store || row.toStore || row.destinationStore || row.targetStore || '-' },
+      { label: 'Winkel', value: exchangeStore },
       { label: 'Order', value: (row) => row.orderNr || row.orderNumber || row.id || '-' },
       { label: 'Leeftijd', value: (row) => ageLabel(row.createdAt || row.dateTime || row.updatedAt) },
       { label: 'Status', value: (row) => row.status || '-' }
@@ -179,10 +180,14 @@ export default async function handler(req, res) {
         const data = await fetchJson(`${baseUrl}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, `open-weborders ${store}`, 30000);
         const rows = flattenOpenWeborders(data);
         const overdue = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(orderCreatedAt(row), config.deadlineOperationalDays || 2));
-        overdueByStore.set(store, { store, openCount: rows.length, overdueCount: overdue.length, oldestAgeHours: Math.max(0, ...overdue.map((row) => operationalDaysBetween(orderCreatedAt(row)) * 24)) });
+        const target = ensureWeeklyStoreRow(overdueByStore, store);
+        target.openCount = rows.length;
+        target.oldestAgeHours = Math.max(0, ...overdue.map((row) => operationalDaysBetween(orderCreatedAt(row)) * 24));
+        for (const row of overdue) addCurrentOverdueOrder(overdueByStore, store, row, orderKey(row), operationalDaysBetween(orderCreatedAt(row)) * 24);
       } catch (error) { warnings.push(error.message); }
     }
   }
+  await addLoggedWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo });
 
   let exchangeRows = [];
   try {
@@ -202,20 +207,10 @@ export default async function handler(req, res) {
       continue;
     }
 
-    const html = baseMailHtml({
-      title: `Weekrapport ${region.name}`,
-      intro: 'Wekelijkse rapportage met te late orders, labels, klantinschrijvingen en te late uitwisselingen.',
-      bodyHtml: reportHtml(summary, dateFrom, dateTo)
-    });
+    const html = baseMailHtml({ title: `Weekrapport ${region.name}`, intro: 'Wekelijkse rapportage met te late orders, labels, klantinschrijvingen en te late uitwisselingen.', bodyHtml: reportHtml(summary, dateFrom, dateTo) });
 
     if (!dryRun) {
-      await sendMail({
-        to: region.email,
-        cc: region.cc,
-        subject: `GENTS weekrapport ${region.name} - ${dateFrom} t/m ${dateTo}`,
-        html,
-        text: `Weekrapport ${region.name}: ${summary.totals.overdueOrders} te late orders, ${summary.totals.labelCreated} labels, ${summary.totals.customerRegistrations} klantinschrijvingen.`
-      });
+      await sendMail({ to: region.email, cc: region.cc, subject: `GENTS weekrapport ${region.name} - ${dateFrom} t/m ${dateTo}`, html, text: `Weekrapport ${region.name}: ${summary.totals.overdueOrders} te late orders deze week, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat.` });
       await appendMailLog({ type: 'region_manager_weekly_report', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email });
     }
 
