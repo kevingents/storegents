@@ -6,6 +6,29 @@ function clean(value) {
   return String(value ?? '').trim();
 }
 
+function iso(date) {
+  return date.toISOString();
+}
+
+function daysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - Math.max(1, Number(days || 1)));
+  return d;
+}
+
+function key(row = {}) {
+  return clean(row.dragerId || row.id || row.nummer || row.dragerNummer || row.barcode || row.code || `${row.store || ''}-${row.createdAt || ''}-${row.updatedAt || ''}`);
+}
+
+function mergeRows(existing = [], incoming = []) {
+  const map = new Map();
+  [...existing, ...incoming].forEach((row) => {
+    const id = key(row);
+    if (id) map.set(id, row);
+  });
+  return Array.from(map.values());
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
@@ -18,26 +41,30 @@ export default async function handler(req, res) {
   const refresh = String(req.query.refresh || '') === '1';
   const admin = String(req.query.admin || '') === '1';
   const dragerId = clean(req.query.dragerId || req.query.id || req.query.drager);
-  const updatedFrom = clean(req.query.updatedFrom || req.query.from || '');
+  const days = Number(req.query.days || process.env.SRS_DRAGER_SYNC_DAYS || 1);
+  const updatedFrom = clean(req.query.updatedFrom || req.query.from || (refresh ? iso(daysAgo(days)) : ''));
+  const updatedTo = clean(req.query.updatedTo || req.query.to || (refresh ? iso(new Date()) : ''));
 
   try {
     let rows = await getDragerCache();
     let source = 'cache';
     let notice = '';
+    let incomingCount = 0;
 
     if (refresh) {
-      const data = await getDragerInfo({ store: dragerId ? store : '', dragerId, updatedFrom });
+      const data = await getDragerInfo({ store: dragerId ? store : '', dragerId, updatedFrom, updatedTo });
       const incoming = Array.isArray(data.rows) ? data.rows : [];
+      incomingCount = incoming.length;
 
       if (dragerId) {
         const existing = rows.filter((row) => clean(row.dragerId || row.id) !== dragerId);
         rows = await saveDragerCache([...incoming, ...existing]);
       } else {
-        rows = await saveDragerCache(incoming);
+        rows = await saveDragerCache(mergeRows(rows, incoming));
       }
 
       source = 'soap';
-      if (!incoming.length) notice = 'SRS gaf geen dragers terug voor de opgegeven UpdatedFrom-periode.';
+      if (!incoming.length) notice = `SRS gaf geen dragers terug voor ${updatedFrom} t/m ${updatedTo}.`;
     }
 
     if (admin) {
@@ -46,6 +73,9 @@ export default async function handler(req, res) {
         success: true,
         source,
         notice,
+        updatedFrom,
+        updatedTo,
+        incomingCount,
         requiresDragerIdForLiveRefresh: false,
         stores,
         totals: {
@@ -57,9 +87,9 @@ export default async function handler(req, res) {
     }
 
     const summary = summarizeDragers(rows, store);
-    return res.status(200).json({ success: true, source, notice, requiresDragerIdForLiveRefresh: false, ...summary });
+    return res.status(200).json({ success: true, source, notice, updatedFrom, updatedTo, incomingCount, requiresDragerIdForLiveRefresh: false, ...summary });
   } catch (error) {
     const message = String(error.message || 'Dragers konden niet worden geladen.');
-    return res.status(500).json({ success: false, message });
+    return res.status(500).json({ success: false, message, updatedFrom, updatedTo });
   }
 }
