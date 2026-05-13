@@ -5,6 +5,7 @@ import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-s
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
 const BRANCH_LOCATION_MAP = {
+  '97': 'GENTS Magazijn',
   '99': 'GENTS Magazijn',
   '700': 'GENTS Showroom'
 };
@@ -30,6 +31,7 @@ function resolveLocation(value) {
   const normalized = key(raw);
   if (!raw) return '';
   if (BRANCH_LOCATION_MAP[raw]) return BRANCH_LOCATION_MAP[raw];
+  if (normalized.includes('uitlevertafel') || normalized.includes('uitlever tafel')) return 'GENTS Magazijn';
   if (normalized.includes('magazijn') || normalized.includes('warehouse') || normalized.includes('webshop')) return 'GENTS Magazijn';
   if (normalized.includes('showroom')) return 'GENTS Showroom';
   return raw;
