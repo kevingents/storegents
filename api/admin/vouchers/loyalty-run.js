@@ -13,7 +13,6 @@ import {
 import { createVoucherLog } from '../../../lib/voucher-log-store.js';
 import { resolveVoucherCustomer } from '../../../lib/voucher-customer-resolver.js';
 import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
-import { createShopifyGiftCard } from '../../../lib/shopify-gift-card-client.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 const GENTS_LOYALTY_AMOUNT = '2500';
@@ -90,31 +89,14 @@ async function pollExistingTransaction({ transactionId, reference, request, runI
   return latest;
 }
 
-async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify, sendEmail }) {
+async function logAndMailVouchers({ result, employeeName, sendEmail }) {
   const mailStatus = {};
   const enrichedVouchers = [];
 
   for (const voucher of result.vouchers || []) {
     const customer = await resolveVoucherCustomer(voucher.customerId);
-    let shopifyResult = null;
-    let shopifyError = '';
     let mailResult = null;
     let mailError = '';
-
-    if (makeAvailableInShopify && customer.customerEmail) {
-      try {
-        shopifyResult = await createShopifyGiftCard({
-          code: voucher.voucherCode,
-          amount: voucher.value,
-          currencyCode: 'EUR',
-          expiresOn: voucher.validTo,
-          note: `Automatische loyalty voucher ${voucher.voucherCode} voor SRS klant ${voucher.customerId}.`,
-          customerEmail: customer.customerEmail
-        });
-      } catch (error) {
-        shopifyError = error.message || 'Shopify gift card kon niet worden aangemaakt.';
-      }
-    }
 
     if (sendEmail && customer.customerEmail) {
       try {
@@ -126,7 +108,7 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
           currency: 'EUR',
           validFrom: voucher.validFrom,
           validTo: voucher.validTo,
-          shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
+          shopifyEnabled: false,
           note: 'Deze voucher is automatisch aangemaakt op basis van je gespaarde punten.'
         });
       } catch (error) {
@@ -136,11 +118,9 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
 
     const status = !customer.customerEmail
       ? 'Automatisch aangemaakt, e-mail ontbreekt'
-      : shopifyError
-        ? 'Automatisch aangemaakt, Shopify mislukt'
-        : mailError
-          ? 'Automatisch aangemaakt, mail mislukt'
-          : 'Automatisch aangemaakt';
+      : mailError
+        ? 'Automatisch aangemaakt, mail mislukt'
+        : 'Automatisch aangemaakt en gemaild';
 
     await createVoucherLog({
       store: 'GENTS Administratie',
@@ -155,21 +135,20 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
       validFrom: voucher.validFrom,
       validTo: voucher.validTo,
       mailed: Boolean(mailResult),
-      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
-      shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
-      shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
-      shopifyCustomerId: shopifyResult?.customer?.id || '',
-      note: 'Automatisch tegen SRS loyalty points gegenereerd. GENTS-regel: 500 punten = EUR 25 voucher.',
+      shopifyEnabled: false,
+      shopifyGiftCardId: '',
+      shopifyGiftCardLastCharacters: '',
+      shopifyCustomerId: '',
+      note: 'Automatisch tegen SRS loyalty points gegenereerd. GENTS-regel: 500 punten = EUR 25 voucher. Alleen SRS voucher, geen Shopify giftcard.',
       status,
-      error: shopifyError || mailError
+      error: mailError
     });
 
     mailStatus[voucher.voucherCode] = {
       customerId: voucher.customerId,
       customerEmail: customer.customerEmail,
       mailed: Boolean(mailResult),
-      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
-      shopifyError,
+      shopifyEnabled: false,
       mailError
     };
 
@@ -178,9 +157,9 @@ async function logAndMailVouchers({ result, employeeName, makeAvailableInShopify
       customerEmail: customer.customerEmail,
       customerName: customer.customerName,
       mailed: Boolean(mailResult),
-      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
-      shopifyError,
-      mailError
+      shopifyEnabled: false,
+      mailError,
+      shopifyError: ''
     });
   }
 
@@ -222,7 +201,6 @@ export default async function handler(req, res) {
   const employeeName = field(body.employeeName).trim() || 'Automatische voucher-run';
   const reference = field(body.reference).trim() || todayReference();
   const customerIds = Array.isArray(body.customerIds) ? body.customerIds.map(String).filter(Boolean) : [];
-  const makeAvailableInShopify = Boolean(body.makeAvailableInShopify);
   const sendEmail = body.sendEmail !== false;
   const allowDuplicateReference = Boolean(body.allowDuplicateReference);
 
@@ -236,7 +214,9 @@ export default async function handler(req, res) {
     minimum: GENTS_LOYALTY_AMOUNT,
     maximum: GENTS_LOYALTY_AMOUNT,
     displayAmount: 25,
-    customerIds
+    customerIds,
+    sendEmail,
+    makeAvailableInShopify: false
   };
 
   let run = null;
@@ -290,7 +270,6 @@ export default async function handler(req, res) {
       mailData = await logAndMailVouchers({
         result,
         employeeName,
-        makeAvailableInShopify,
         sendEmail
       });
     }
