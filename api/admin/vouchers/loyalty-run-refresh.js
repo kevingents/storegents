@@ -1,0 +1,204 @@
+import { getVouchersTransactionStatus } from '../../../lib/srs-loyalty-vouchers-client-cents.js';
+import { getLoyaltyVoucherRuns, updateLoyaltyVoucherRunById } from '../../../lib/loyalty-voucher-run-store.js';
+import { createVoucherLog } from '../../../lib/voucher-log-store.js';
+import { resolveVoucherCustomer } from '../../../lib/voucher-customer-resolver.js';
+import { sendVoucherEmail } from '../../../lib/voucher-mailer.js';
+import { createShopifyGiftCard } from '../../../lib/shopify-gift-card-client.js';
+import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
+
+function isAuthorized(req) {
+  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const token = String(
+    req.headers['x-admin-token'] ||
+    req.headers.authorization ||
+    req.query.adminToken ||
+    ''
+  ).replace(/^Bearer\s+/i, '').trim();
+  return token === adminToken;
+}
+
+function shouldSendEmail(req, run) {
+  if (String(req.query.sendEmail || '').toLowerCase() === 'false') return false;
+  if (run?.mailStatus && Object.keys(run.mailStatus).length) return false;
+  return true;
+}
+
+function shouldCreateShopify(req, run) {
+  if (String(req.query.makeAvailableInShopify || '').toLowerCase() === 'false') return false;
+  if (run?.mailStatus && Object.values(run.mailStatus).some((item) => item?.shopifyEnabled)) return false;
+  return true;
+}
+
+async function logAndMailVouchers({ result, run, sendEmail, makeAvailableInShopify }) {
+  const mailStatus = {};
+  const enrichedVouchers = [];
+  const employeeName = run?.request?.employeeName || 'Automatische spaarpunten-voucher-cron';
+
+  for (const voucher of result.vouchers || []) {
+    const customer = await resolveVoucherCustomer(voucher.customerId);
+    let shopifyResult = null;
+    let shopifyError = '';
+    let mailResult = null;
+    let mailError = '';
+
+    if (makeAvailableInShopify && customer.customerEmail) {
+      try {
+        shopifyResult = await createShopifyGiftCard({
+          code: voucher.voucherCode,
+          amount: voucher.value,
+          currencyCode: 'EUR',
+          expiresOn: voucher.validTo,
+          note: `Automatische loyalty voucher ${voucher.voucherCode} voor SRS klant ${voucher.customerId}.`,
+          customerEmail: customer.customerEmail
+        });
+      } catch (error) {
+        shopifyError = error.message || 'Shopify gift card kon niet worden aangemaakt.';
+      }
+    }
+
+    if (sendEmail && customer.customerEmail) {
+      try {
+        mailResult = await sendVoucherEmail({
+          to: customer.customerEmail,
+          customerName: customer.customerName,
+          voucherCode: voucher.voucherCode,
+          amount: voucher.value,
+          currency: 'EUR',
+          validFrom: voucher.validFrom,
+          validTo: voucher.validTo,
+          shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
+          note: 'Deze voucher is automatisch aangemaakt op basis van je gespaarde punten.'
+        });
+      } catch (error) {
+        mailError = error.message || 'Voucher e-mail kon niet worden verstuurd.';
+      }
+    }
+
+    const status = !customer.customerEmail
+      ? 'Automatisch aangemaakt, e-mail ontbreekt'
+      : shopifyError
+        ? 'Automatisch aangemaakt, Shopify mislukt'
+        : mailError
+          ? 'Automatisch aangemaakt, mail mislukt'
+          : 'Automatisch aangemaakt';
+
+    await createVoucherLog({
+      store: 'GENTS Administratie',
+      employeeName,
+      customerName: customer.customerName,
+      customerEmail: customer.customerEmail,
+      srsCustomerId: voucher.customerId,
+      voucherGroupId: 'CreateFromLoyaltyPoints',
+      voucherCode: voucher.voucherCode,
+      amount: voucher.value,
+      currency: 'EUR',
+      validFrom: voucher.validFrom,
+      validTo: voucher.validTo,
+      mailed: Boolean(mailResult),
+      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
+      shopifyGiftCardId: shopifyResult?.giftCard?.id || '',
+      shopifyGiftCardLastCharacters: shopifyResult?.giftCard?.lastCharacters || '',
+      shopifyCustomerId: shopifyResult?.customer?.id || '',
+      note: 'Automatisch tegen SRS loyalty points gegenereerd. GENTS-regel: 500 punten = EUR 25 voucher.',
+      status,
+      error: shopifyError || mailError
+    });
+
+    mailStatus[voucher.voucherCode] = {
+      customerId: voucher.customerId,
+      customerEmail: customer.customerEmail,
+      mailed: Boolean(mailResult),
+      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
+      shopifyError,
+      mailError
+    };
+
+    enrichedVouchers.push({
+      ...voucher,
+      customerEmail: customer.customerEmail,
+      customerName: customer.customerName,
+      mailed: Boolean(mailResult),
+      shopifyEnabled: Boolean(shopifyResult?.giftCard?.id),
+      shopifyError,
+      mailError
+    });
+  }
+
+  return { mailStatus, enrichedVouchers };
+}
+
+export default async function handler(req, res) {
+  if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
+
+  if (!['GET', 'POST'].includes(req.method)) {
+    return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
+  }
+
+  if (!isAuthorized(req)) {
+    return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  }
+
+  const transactionId = String(req.query.transactionId || req.body?.transactionId || '').trim();
+  if (!transactionId) {
+    return res.status(400).json({ success: false, message: 'TransactionId ontbreekt.' });
+  }
+
+  try {
+    const runs = await getLoyaltyVoucherRuns();
+    const run = runs.find((item) => item.transactionId === transactionId) || null;
+    const result = await getVouchersTransactionStatus(transactionId);
+    const statusResult = {
+      ...result,
+      transactionId: result.transactionId || transactionId,
+      reference: run?.reference || '',
+      request: run?.request || {}
+    };
+
+    let updatedRun = run;
+
+    if (run?.id) {
+      let mailData = {
+        mailStatus: run.mailStatus || {},
+        enrichedVouchers: result.vouchers || []
+      };
+
+      if (statusResult.status === 'completed') {
+        mailData = await logAndMailVouchers({
+          result: statusResult,
+          run,
+          sendEmail: shouldSendEmail(req, run),
+          makeAvailableInShopify: shouldCreateShopify(req, run)
+        });
+      }
+
+      const finalRunData = {
+        ...run,
+        status: statusResult.status,
+        transactionId: statusResult.transactionId,
+        voucherCount: statusResult.vouchers?.length || 0,
+        vouchers: statusResult.status === 'completed' ? mailData.enrichedVouchers : statusResult.vouchers || [],
+        mailStatus: statusResult.status === 'completed' ? mailData.mailStatus : run.mailStatus || {},
+        updatedAt: new Date().toISOString()
+      };
+
+      updatedRun = await updateLoyaltyVoucherRunById(run.id, finalRunData) || finalRunData;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: statusResult.status === 'completed'
+        ? `Run voltooid. ${statusResult.vouchers?.length || 0} vouchers gevonden.`
+        : `Run staat op ${statusResult.status || 'onbekend'}.`,
+      status: statusResult,
+      run: updatedRun
+    });
+  } catch (error) {
+    console.error('Loyalty run refresh error:', error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'Loyalty run status kon niet worden opgehaald.',
+      details: error.fault || null
+    });
+  }
+}
