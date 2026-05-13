@@ -16,14 +16,27 @@ function isAuthorized(req) {
   return token === adminToken;
 }
 
-function shouldSendEmail(req, run) {
-  if (String(req.query.sendEmail || '').toLowerCase() === 'false') return false;
-  if (run?.mailStatus && Object.keys(run.mailStatus).length) return false;
-  return true;
+function boolQuery(req, key) {
+  return String(req.query[key] || req.body?.[key] || '').toLowerCase() === 'true';
 }
 
-async function logAndMailVouchers({ result, run, sendEmail }) {
-  const mailStatus = {};
+function shouldSendEmail(req, run) {
+  if (String(req.query.sendEmail || req.body?.sendEmail || '').toLowerCase() === 'false') return false;
+  if (boolQuery(req, 'forceEmail')) return true;
+
+  const statuses = Object.values(run?.mailStatus || {});
+  if (!statuses.length) return true;
+
+  // Retry mailing when previous status exists but nothing was actually mailed.
+  return !statuses.every((item) => item?.mailed === true);
+}
+
+function alreadyMailed(run, voucherCode) {
+  return Boolean(run?.mailStatus?.[voucherCode]?.mailed);
+}
+
+async function logAndMailVouchers({ result, run, sendEmail, forceEmail }) {
+  const mailStatus = { ...(run?.mailStatus || {}) };
   const enrichedVouchers = [];
   const employeeName = run?.request?.employeeName || 'Automatische spaarpunten-voucher-cron';
 
@@ -31,13 +44,15 @@ async function logAndMailVouchers({ result, run, sendEmail }) {
     const customer = await resolveVoucherCustomer(voucher.customerId);
     let mailResult = null;
     let mailError = '';
+    const voucherCode = voucher.voucherCode || voucher.id;
+    const wasAlreadyMailed = alreadyMailed(run, voucherCode);
 
-    if (sendEmail && customer.customerEmail) {
+    if (sendEmail && customer.customerEmail && (!wasAlreadyMailed || forceEmail)) {
       try {
         mailResult = await sendVoucherEmail({
           to: customer.customerEmail,
           customerName: customer.customerName,
-          voucherCode: voucher.voucherCode,
+          voucherCode,
           amount: voucher.value,
           currency: 'EUR',
           validFrom: voucher.validFrom,
@@ -50,11 +65,14 @@ async function logAndMailVouchers({ result, run, sendEmail }) {
       }
     }
 
+    const mailed = wasAlreadyMailed && !forceEmail ? true : Boolean(mailResult);
     const status = !customer.customerEmail
       ? 'Automatisch aangemaakt, e-mail ontbreekt'
       : mailError
         ? 'Automatisch aangemaakt, mail mislukt'
-        : 'Automatisch aangemaakt en gemaild';
+        : mailed
+          ? 'Automatisch aangemaakt en gemaild'
+          : 'Automatisch aangemaakt, mail overgeslagen';
 
     await createVoucherLog({
       store: 'GENTS Administratie',
@@ -63,12 +81,12 @@ async function logAndMailVouchers({ result, run, sendEmail }) {
       customerEmail: customer.customerEmail,
       srsCustomerId: voucher.customerId,
       voucherGroupId: 'CreateFromLoyaltyPoints',
-      voucherCode: voucher.voucherCode,
+      voucherCode,
       amount: voucher.value,
       currency: 'EUR',
       validFrom: voucher.validFrom,
       validTo: voucher.validTo,
-      mailed: Boolean(mailResult),
+      mailed,
       shopifyEnabled: false,
       shopifyGiftCardId: '',
       shopifyGiftCardLastCharacters: '',
@@ -78,10 +96,10 @@ async function logAndMailVouchers({ result, run, sendEmail }) {
       error: mailError
     });
 
-    mailStatus[voucher.voucherCode] = {
+    mailStatus[voucherCode] = {
       customerId: voucher.customerId,
       customerEmail: customer.customerEmail,
-      mailed: Boolean(mailResult),
+      mailed,
       shopifyEnabled: false,
       mailError
     };
@@ -90,7 +108,7 @@ async function logAndMailVouchers({ result, run, sendEmail }) {
       ...voucher,
       customerEmail: customer.customerEmail,
       customerName: customer.customerName,
-      mailed: Boolean(mailResult),
+      mailed,
       shopifyEnabled: false,
       mailError,
       shopifyError: ''
@@ -140,7 +158,8 @@ export default async function handler(req, res) {
         mailData = await logAndMailVouchers({
           result: statusResult,
           run,
-          sendEmail: shouldSendEmail(req, run)
+          sendEmail: shouldSendEmail(req, run),
+          forceEmail: boolQuery(req, 'forceEmail')
         });
       }
 
