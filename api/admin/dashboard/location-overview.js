@@ -1,5 +1,4 @@
 import { listAllBranches } from '../../../lib/branch-metrics.js';
-import { getDragerCache, summarizeDragersByStore } from '../../../lib/srs-dragers-store.js';
 import { getOrderCancellations } from '../../../lib/order-cancellation-store.js';
 import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-service.js';
 
@@ -147,9 +146,8 @@ export default async function handler(req, res) {
         failedUnavailable: 0
       });
     });
-    const [weborders, dragerRows, cancellations, unavailable] = await Promise.all([
+    const [weborders, cancellations, unavailable] = await Promise.all([
       getWeborderRows(),
-      getDragerCache(),
       getOrderCancellations().catch((error) => { console.error('[admin/dashboard/location-overview] cancellations failed:', error); return []; }),
       listUnavailableOrderLines({ status: 'open' }).catch((error) => { console.error('[admin/dashboard/location-overview] unavailable failed:', error); return { rows: [] }; })
     ]);
@@ -157,10 +155,6 @@ export default async function handler(req, res) {
       const store = storeFromWeborder(row);
       addMetric(locations, store, 'openOrders', 1);
       if (isLate(row, 48)) addMetric(locations, store, 'lateOrders', 1);
-    });
-    summarizeDragersByStore(dragerRows).forEach((row) => {
-      addMetric(locations, row.store, 'openDragers', row.openCount);
-      addMetric(locations, row.store, 'lateDragers', row.overdueCount);
     });
     flattenCancellations(cancellations).forEach((row) => {
       if (isClosedStatus(row.status) && !normalizeStatus(row.status).includes('niet leverbaar') && !normalizeStatus(row.status).includes('unavailable')) return;

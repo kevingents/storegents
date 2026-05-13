@@ -84,38 +84,5 @@ function reportHtml(region, summary, dateFrom, dateTo) {
 export default async function handler(req, res) {
   setHeaders(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
-  const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
-  if (!adminOk(req) && !requireCronSecret(req, res, 'REGION_DRAGER_REPORT_SECRET')) return;
-
-  const dateFrom = String(req.query.dateFrom || req.query.from || isoDate(startOfPreviousWeek())).trim();
-  const dateTo = String(req.query.dateTo || req.query.to || isoDate(endOfPreviousWeek())).trim();
-  const onlyRegion = String(req.query.region || '').trim();
-  const config = await getRegionReportConfig();
-  const cache = await getDragerCache();
-  const weeklyMap = buildWeeklyMap(cache, config);
-  await addLoggedWeeklyDragers(weeklyMap, { dateFrom, dateTo });
-
-  const results = [];
-  for (const region of config.regions || []) {
-    if (onlyRegion && region.id !== onlyRegion && region.name !== onlyRegion) continue;
-    const summary = summarizeRegion(region, weeklyMap);
-    if (!region.email) {
-      results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', totals: summary.totals });
-      continue;
-    }
-    if (!dryRun) {
-      await sendMail({
-        to: region.email,
-        cc: region.cc,
-        subject: `GENTS drager weekrapport ${region.name} - ${dateFrom} t/m ${dateTo}`,
-        html: baseMailHtml({ title: `Drager weekrapport ${region.name}`, intro: 'Wekelijkse rapportage van openstaande en te late dragers.', bodyHtml: reportHtml(region, summary, dateFrom, dateTo) }),
-        text: `Drager weekrapport ${region.name}: ${summary.totals.lateDragersThisWeek} te laat deze week, ${summary.totals.currentLateDragers} nu nog te laat.`
-      });
-      await appendMailLog({ type: 'drager_overdue_region_manager', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email, message: `${summary.totals.lateDragersThisWeek} te laat deze week` });
-    }
-    results.push({ region: region.name, recipient: region.email, dryRun, totals: summary.totals });
-  }
-
-  return res.status(200).json({ success: true, dryRun, dateFrom, dateTo, results });
+  return res.status(410).json({ success: false, message: 'Dragers functie is tijdelijk uitgeschakeld omdat SRS-koppeling nog niet stabiel is.' });
 }

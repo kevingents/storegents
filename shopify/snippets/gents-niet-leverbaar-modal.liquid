@@ -6,6 +6,7 @@
     <div class="admin-toolbar">
       <div><label>Vanaf</label><input id="unavailable-lines-from" type="date"></div>
       <div><label>T/m</label><input id="unavailable-lines-to" type="date"></div>
+      <div><label>Snelfilter</label><div class="button-group-inline"><button type="button" class="secondary-button mini-button" id="unavailable-lines-range-today">Vandaag</button><button type="button" class="secondary-button mini-button" id="unavailable-lines-range-7d">7 dagen</button><button type="button" class="secondary-button mini-button" id="unavailable-lines-range-month">Deze maand</button></div></div>
       <div><label>Winkel</label><select id="unavailable-lines-store"><option value="">Alle winkels</option>{{ stores_html }}</select></div>
       <div><label>Ordernummer</label><input id="unavailable-lines-order" type="text" placeholder="Bijv. 32125"></div>
       <div><label>Status</label><select id="unavailable-lines-status"><option value="open">Openstaand</option><option value="processed">Verwerkt</option><option value="failed">Fout</option><option value="all">Alles</option></select></div>
@@ -14,6 +15,7 @@
       <button type="button" class="secondary-button" id="unavailable-lines-sync-all">Volledige SRS sync nu</button>
     </div>
     <div id="unavailable-lines-message" class="declaration-message"></div>
+    <small id="unavailable-lines-last-updated" class="form-hint">Nog niet vernieuwd.</small>
     <div class="declaration-summary-grid" id="unavailable-lines-kpis">
       <div><span>Regels</span><strong>-</strong></div>
       <div><span>Nog mailen</span><strong>-</strong></div>
@@ -24,6 +26,8 @@
     </div>
     <div class="admin-toolbar unavailable-action-toolbar">
       <button type="button" class="secondary-button" id="unavailable-lines-process-selected">Geselecteerde regels verwerken</button>
+      <button type="button" class="secondary-button" id="unavailable-lines-refund-only">Alleen refund retry</button>
+      <button type="button" class="secondary-button" id="unavailable-lines-srs-only">Alleen SRS cancel retry</button>
       <small>Acties: Shopify terugbetaling of al-terugbetaald detectie, Shopify mail, SRS Cancel per orderregel, en lokale rapportagelog.</small>
     </div>
     <div class="declaration-table-wrap">
