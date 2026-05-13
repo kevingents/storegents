@@ -56,42 +56,5 @@ async function sendStoreMail({ store, recipient, rows, dryRun }) {
 
 export default async function handler(req, res) {
   setNoStore(res);
-  if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
-  if (!requireCronSecret(req, res, 'DRAGER_MAIL_SECRET')) return;
-
-  const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
-  const refresh = String(req.query.refresh || '1') !== '0';
-  const onlyStore = String(req.query.store || '').trim();
-  const stores = onlyStore ? [onlyStore] : getStoreNames().filter((store) => !isExcludedStore(store));
-  const logRows = await getMailLog();
-  const allRows = refresh ? await refreshDragers() : await getDragerCache();
-  const results = [];
-
-  for (const store of stores) {
-    const recipient = getStoreMail(store);
-    const summary = summarizeDragers(allRows, store);
-    const rowsToMail = summary.overdueRows.filter((row) => !wasSentRecently(logRows, {
-      type: 'drager_overdue_store',
-      store,
-      key: id(row),
-      withinHours: 20
-    }));
-
-    const mail = await sendStoreMail({ store, recipient, rows: rowsToMail, dryRun });
-    for (const row of rowsToMail) {
-      await appendMailLog({
-        type: 'drager_overdue_store',
-        store,
-        key: id(row),
-        order: id(row),
-        status: dryRun ? 'dry_run' : 'sent',
-        recipient: recipient.email,
-        message: `${row.ageHours || 0} uur open`
-      });
-    }
-
-    results.push({ store, open: summary.openCount, overdue: summary.overdueCount, mailed: mail.count, source: refresh ? 'soap' : 'cache' });
-  }
-
-  return res.status(200).json({ success: true, dryRun, stores: stores.length, results });
+  return res.status(410).json({ success: false, message: 'Dragers functie is tijdelijk uitgeschakeld omdat SRS-koppeling nog niet stabiel is.' });
 }
