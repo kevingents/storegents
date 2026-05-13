@@ -34,6 +34,92 @@ function normalizeStore(value) {
   return String(value || '').trim();
 }
 
+function clean(value) {
+  return String(value ?? '').trim();
+}
+
+function mapInternalLocation(item = {}) {
+  const id = clean(item.currentBranchId || item.huidigBranchId || item.huidigFiliaalId || item.fulfilmentBranchId || item.fulfillmentBranchId || item.branchId);
+  const raw = clean(item.currentLocationRaw || item.currentStore || item.huidigFiliaalNaam || item.huidigFiliaal || item.fulfilmentStore || item.fulfillmentStore || item.store || item.branchName);
+  const value = raw.toLowerCase();
+  if (id === '97' || id === '99' || value.includes('uitlevertafel') || value.includes('uitlever tafel') || value.includes('magazijn') || value.includes('warehouse') || value.includes('webshop')) return 'GENTS Magazijn';
+  if (id === '700' || value.includes('showroom')) return 'GENTS Showroom';
+  return item.currentStore || item.fulfilmentStore || item.fulfillmentStore || raw;
+}
+
+function normalizePortalWeborder(item = {}) {
+  const mappedStore = mapInternalLocation(item);
+  const mapped = {
+    ...item,
+    currentStore: mappedStore,
+    huidigFiliaalNaam: mappedStore,
+    fulfilmentStore: mappedStore,
+    fulfillmentStore: mappedStore
+  };
+  if (mappedStore === 'GENTS Magazijn') {
+    mapped.warehouse = true;
+    mapped.closed = false;
+    mapped.delivered = false;
+  }
+  if (mappedStore === 'GENTS Showroom') {
+    mapped.closed = false;
+    mapped.delivered = false;
+  }
+  return mapped;
+}
+
+function storeMatches(item = {}, store = '') {
+  const expected = normalizeStore(store).toLowerCase().replace(/^gents\s+/, '');
+  const actual = normalizeStore(item.currentStore || item.fulfilmentStore || item.fulfillmentStore || '').toLowerCase().replace(/^gents\s+/, '');
+  return expected && actual && expected === actual;
+}
+
+function isOpenItem(weborders, item = {}, store = '') {
+  if (!weborders.isOpenWeborderStatus(item.status)) return false;
+  if (item.closed || item.delivered) return false;
+  if (store) return storeMatches(item, store);
+  return true;
+}
+
+function orderKey(weborders, item = {}) {
+  return weborders.getOrderKey?.(item) || item.orderNr || item.orderId || item.id || item.orderLineId || '';
+}
+
+function summarizeForStore(weborders, items = [], store = '') {
+  const openLines = items.filter((item) => isOpenItem(weborders, item, store));
+  const orders = new Map();
+  openLines.forEach((item) => {
+    const key = orderKey(weborders, item) || item.id;
+    if (!orders.has(key)) orders.set(key, { orderNr: key, orderId: item.orderId || key, overdue: false, lines: [], lineCount: 0, ageHours: 0 });
+    const row = orders.get(key);
+    row.lines.push(item);
+    row.lineCount += 1;
+    row.overdue = row.overdue || Boolean(item.overdue);
+    row.ageHours = Math.max(Number(row.ageHours || 0), Number(item.ageHours || 0));
+  });
+  const orderRows = Array.from(orders.values());
+  const overdueLines = openLines.filter((item) => item.overdue);
+  const overdueOrders = orderRows.filter((item) => item.overdue);
+  return {
+    ...emptySummary(store),
+    fulfilmentOpenCount: orderRows.length,
+    fulfillmentOpenCount: orderRows.length,
+    currentOpenCount: orderRows.length,
+    currentOpenLineCount: openLines.length,
+    openOrderCount: orderRows.length,
+    openLineCount: openLines.length,
+    overdueCount: overdueOrders.length,
+    overdueLineCount: overdueLines.length,
+    totalOpenCount: orderRows.length,
+    fulfilmentOpen: openLines,
+    fulfillmentOpen: openLines,
+    currentOpen: openLines,
+    currentOpenOrders: orderRows,
+    overdue: overdueLines,
+    overdueOrders
+  };
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -52,18 +138,18 @@ export default async function handler(req, res) {
 
     const resolvedBranchId = branchId || String(branches.getBranchIdByStore?.(store) || '').trim();
     const result = await client.getSrsOpenWeborders({ store, branchId: resolvedBranchId });
-    const items = (result.items || []).map((item) => weborders.normalizeWeborder(item));
+    const items = (result.items || []).map((item) => normalizePortalWeborder(weborders.normalizeWeborder(item)));
 
     const summary = store
-      ? weborders.summarizeOpenWeborders(items, store)
+      ? summarizeForStore(weborders, items, store)
       : emptySummary(store);
 
     const requests = store
       ? items
-          .filter((item) => weborders.isOrderLineOpenForStore(item, store))
+          .filter((item) => isOpenItem(weborders, item, store))
           .slice(0, 500)
       : items
-          .filter((item) => !item.closed && !item.delivered && !item.warehouse && weborders.isOpenWeborderStatus(item.status))
+          .filter((item) => isOpenItem(weborders, item, ''))
           .slice(0, 1000);
 
     return res.status(200).json({
@@ -74,7 +160,7 @@ export default async function handler(req, res) {
       store,
       branchId: resolvedBranchId,
       ownerLogic: 'order-line-current-branch',
-      ownerLogicNote: 'Openstaande winkelactie wordt per orderregel bepaald op basis van Huidig filiaal. Herkomst filiaal is alleen context. Regels met Huidig filiaal Klant, geleverd/geannuleerd/afgerond of Magazijn tellen niet mee als winkelactie.',
+      ownerLogicNote: 'Openstaande winkelactie wordt per orderregel bepaald op basis van Huidig filiaal. Herkomst filiaal is context. Filiaal 97/99 telt als Magazijn en 700 als Showroom.',
       deadlineHours: 48,
       summary,
       open: summary.totalOpenCount || summary.openOrderCount || 0,
