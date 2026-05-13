@@ -6,10 +6,12 @@
     <div class="admin-toolbar">
       <div><label>Vanaf</label><input id="unavailable-report-from" type="date"></div>
       <div><label>T/m</label><input id="unavailable-report-to" type="date"></div>
+      <div><label>Snelfilter</label><div class="button-group-inline"><button type="button" class="secondary-button mini-button" id="unavailable-report-range-today">Vandaag</button><button type="button" class="secondary-button mini-button" id="unavailable-report-range-7d">7 dagen</button><button type="button" class="secondary-button mini-button" id="unavailable-report-range-month">Deze maand</button></div></div>
       <div><label>Winkel</label><select id="unavailable-report-store"><option value="">Alle winkels</option>{{ stores_html }}</select></div>
       <button type="button" class="secondary-button" id="unavailable-report-refresh">Rapportage vernieuwen</button>
     </div>
     <div id="unavailable-report-message" class="declaration-message"></div>
+    <small id="unavailable-report-last-updated" class="form-hint">Nog niet vernieuwd.</small>
     <div class="declaration-summary-grid" id="unavailable-report-kpis">
       <div><span>Laatste cron</span><strong>-</strong></div>
       <div><span>Nieuw laatste run</span><strong>-</strong></div>
