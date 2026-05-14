@@ -1,6 +1,10 @@
 import { listAllBranches } from '../../../lib/branch-metrics.js';
 import { getOrderCancellations } from '../../../lib/order-cancellation-store.js';
 import { listUnavailableOrderLines } from '../../../lib/unavailable-order-line-service.js';
+import { calculateImpactScore, getScoreConfig } from '../../../lib/impact-score.js';
+import { mapUpstreamError, sendError } from '../../../lib/api-error.js';
+import { getWorkflow } from '../../../lib/admin-workqueue/store.js';
+import { setRequestHeaders, withRequestLog } from '../../../lib/request-context.js';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
 const BRANCH_LOCATION_MAP = {
@@ -128,8 +132,10 @@ function summarizeTotals(rows = []) {
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
-  if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  const ctx = withRequestLog(req, 'admin/dashboard/location-overview');
+  setRequestHeaders(res, ctx.requestId);
+  if (req.method !== 'GET') return sendError(res, 405, { success: false, message: 'Alleen GET is toegestaan.', source: 'shopify_admin_api', endpoint: req.url });
+  if (!isAuthorized(req)) return sendError(res, 401, { message: 'Niet bevoegd.', source: 'shopify_admin_api', endpoint: req.url });
   try {
     const locations = new Map();
     listAllBranches().forEach((branch) => {
@@ -148,11 +154,21 @@ export default async function handler(req, res) {
         openCancellations: 0
       });
     });
-    const [weborders, cancellations, unavailable] = await Promise.all([
-      getWeborderRows(),
-      getOrderCancellations().catch((error) => { console.error('[admin/dashboard/location-overview] cancellations failed:', error); return []; }),
-      listUnavailableOrderLines({ status: 'open' }).catch((error) => { console.error('[admin/dashboard/location-overview] unavailable failed:', error); return { rows: [] }; })
-    ]);
+    let weborders = []; let cancellations = []; let unavailable = { rows: [] };
+    try {
+      [weborders, cancellations, unavailable] = await Promise.all([
+        getWeborderRows(),
+        getOrderCancellations(),
+        listUnavailableOrderLines({ status: 'open' })
+      ]);
+    } catch (error) {
+      ctx.error('upstream failure', error);
+      if (process.env.ALLOW_EMPTY_UPSTREAM === '1') {
+        weborders = []; cancellations = []; unavailable = { rows: [] };
+      } else {
+        return res.status(503).json(mapUpstreamError({ endpoint: req.url, source: 'shopify_admin_api', error }));
+      }
+    }
     weborders.forEach((row) => {
       const store = storeFromWeborder(row);
       addMetric(locations, store, 'openOrders', 1);
@@ -169,14 +185,20 @@ export default async function handler(req, res) {
       addMetric(locations, store, 'openUnavailable', 1);
       if (row.error || normalizeStatus(row.status).includes('failed')) addMetric(locations, store, 'failedUnavailable', 1);
     });
-    const rows = Array.from(locations.values()).map((row) => ({
-      ...row,
-      totalOpen: Number(row.openOrders || 0) + Number(row.openDragers || 0) + Number(row.openExchanges || 0) + Number(row.openUnavailable || 0) + Number(row.openCancellations || 0),
-      totalLate: Number(row.lateOrders || 0) + Number(row.lateDragers || 0) + Number(row.lateExchanges || 0)
-    })).sort((a, b) => b.totalLate - a.totalLate || b.totalOpen - a.totalOpen || a.store.localeCompare(b.store, 'nl'));
-    return res.status(200).json({ success: true, source: 'location_overview', generatedAt: new Date().toISOString(), totals: summarizeTotals(rows), rows });
+    const scoreConfig = getScoreConfig();
+    const rows = Array.from(locations.values()).map((row) => {
+      const totalOpen = Number(row.openOrders || 0) + Number(row.openDragers || 0) + Number(row.openExchanges || 0) + Number(row.openUnavailable || 0) + Number(row.openCancellations || 0);
+      const totalLate = Number(row.lateOrders || 0) + Number(row.lateDragers || 0) + Number(row.lateExchanges || 0);
+      const estimatedRevenueRisk = totalLate * 125;
+      const affectedCustomers = totalOpen;
+      const slaBucket = totalLate > 6 ? '>72h' : totalLate > 2 ? '48-72h' : '<48h';
+      const workflow = getWorkflow(row.branchId || row.store);
+      const score = calculateImpactScore({ lateOrders: row.lateOrders, lateDragers: row.lateDragers, lateExchanges: row.lateExchanges, openUnavailable: row.openUnavailable, openIssues: row.openCancellations, slaBucket, revenueRisk: estimatedRevenueRisk }, scoreConfig);
+      return { ...row, totalOpen, totalLate, ...score, estimatedRevenueRisk, affectedCustomers, slaBucket, workflowStatus: workflow.workflowStatus, lastHandledBy: workflow.lastHandledBy, actions: { openOrdersUrl: `/admin/orders?store=${encodeURIComponent(row.store)}`, unavailableItemsUrl: `/admin/unavailable?store=${encodeURIComponent(row.store)}`, followUpTaskUrl: `/api/admin/workqueue/${encodeURIComponent(row.branchId || row.store)}/follow-up` } };
+    }).sort((a, b) => b.totalLate - a.totalLate || b.totalOpen - a.totalOpen || a.store.localeCompare(b.store, 'nl'));
+    return res.status(200).json({ success: true, source: 'shopify_admin_api', generatedAt: new Date().toISOString(), scoreConfig, scoreExplanation: 'Impactscore combineert achterstanden, SLA-druk en omzetrisico voor prioritering.', totals: summarizeTotals(rows), rows });
   } catch (error) {
     console.error('[admin/dashboard/location-overview]', error);
-    return res.status(500).json({ success: false, message: error.message || 'Locatieoverzicht kon niet worden opgebouwd.' });
+    return sendError(res, 500, { message: error.message || 'Locatieoverzicht kon niet worden opgebouwd.', source: 'shopify_admin_api', endpoint: req.url, retryable: false });
   }
 }
