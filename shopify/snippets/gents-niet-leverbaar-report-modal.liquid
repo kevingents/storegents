@@ -1,5 +1,21 @@
 <div class="portal-modal" data-modal="admin-unavailable-report">
   <div class="modal-inner modal-wide">
+    <style>
+      [data-modal="admin-unavailable-report"] .modal-inner{max-width:1400px;padding:28px;}
+      [data-modal="admin-unavailable-report"] .admin-toolbar{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:16px;align-items:end;}
+      [data-modal="admin-unavailable-report"] .admin-toolbar > div{display:flex;flex-direction:column;gap:6px;min-width:0;}
+      [data-modal="admin-unavailable-report"] .admin-toolbar label{font-weight:600;display:block;}
+      [data-modal="admin-unavailable-report"] .declaration-table-wrap{overflow-x:auto;padding-bottom:4px;}
+      [data-modal="admin-unavailable-report"] .declaration-table{min-width:1100px;}
+      @media (max-width: 1024px){
+        [data-modal="admin-unavailable-report"] .modal-inner{padding:20px;}
+        [data-modal="admin-unavailable-report"] .admin-toolbar{grid-template-columns:repeat(2,minmax(200px,1fr));}
+      }
+      @media (max-width: 767px){
+        [data-modal="admin-unavailable-report"] .modal-inner{padding:16px;}
+        [data-modal="admin-unavailable-report"] .admin-toolbar{grid-template-columns:1fr;}
+      }
+    </style>
     <button class="modal-close" type="button" data-modal-close>x</button>
     <h2>Niet leverbaar rapportage</h2>
     <p class="form-hint">Rapportage op basis van opgeslagen niet-leverbare orderregels. Deze rapportage haalt niet live opnieuw SRS op. De cron vult de data ieder uur aan.</p>
