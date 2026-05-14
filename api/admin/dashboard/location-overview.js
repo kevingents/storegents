@@ -120,8 +120,9 @@ function summarizeTotals(rows = []) {
     acc.lateExchanges += Number(row.lateExchanges || 0);
     acc.openUnavailable += Number(row.openUnavailable || 0);
     acc.failedUnavailable += Number(row.failedUnavailable || 0);
+    acc.openCancellations += Number(row.openCancellations || 0);
     return acc;
-  }, { openOrders: 0, lateOrders: 0, openDragers: 0, lateDragers: 0, openExchanges: 0, lateExchanges: 0, openUnavailable: 0, failedUnavailable: 0 });
+  }, { openOrders: 0, lateOrders: 0, openDragers: 0, lateDragers: 0, openExchanges: 0, lateExchanges: 0, openUnavailable: 0, failedUnavailable: 0, openCancellations: 0 });
 }
 
 export default async function handler(req, res) {
@@ -143,7 +144,8 @@ export default async function handler(req, res) {
         openExchanges: 0,
         lateExchanges: 0,
         openUnavailable: 0,
-        failedUnavailable: 0
+        failedUnavailable: 0,
+        openCancellations: 0
       });
     });
     const [weborders, cancellations, unavailable] = await Promise.all([
@@ -159,6 +161,7 @@ export default async function handler(req, res) {
     flattenCancellations(cancellations).forEach((row) => {
       if (isClosedStatus(row.status) && !normalizeStatus(row.status).includes('niet leverbaar') && !normalizeStatus(row.status).includes('unavailable')) return;
       addMetric(locations, storeFromCancellation(row), 'openExchanges', 1);
+      if (normalizeStatus(row.status).includes('cancel') || normalizeStatus(row.status).includes('geannuleerd')) addMetric(locations, storeFromCancellation(row), 'openCancellations', 1);
       if (isLate(row, 48)) addMetric(locations, storeFromCancellation(row), 'lateExchanges', 1);
     });
     (unavailable.rows || []).forEach((row) => {
@@ -168,7 +171,7 @@ export default async function handler(req, res) {
     });
     const rows = Array.from(locations.values()).map((row) => ({
       ...row,
-      totalOpen: Number(row.openOrders || 0) + Number(row.openDragers || 0) + Number(row.openExchanges || 0) + Number(row.openUnavailable || 0),
+      totalOpen: Number(row.openOrders || 0) + Number(row.openDragers || 0) + Number(row.openExchanges || 0) + Number(row.openUnavailable || 0) + Number(row.openCancellations || 0),
       totalLate: Number(row.lateOrders || 0) + Number(row.lateDragers || 0) + Number(row.lateExchanges || 0)
     })).sort((a, b) => b.totalLate - a.totalLate || b.totalOpen - a.totalOpen || a.store.localeCompare(b.store, 'nl'));
     return res.status(200).json({ success: true, source: 'location_overview', generatedAt: new Date().toISOString(), totals: summarizeTotals(rows), rows });

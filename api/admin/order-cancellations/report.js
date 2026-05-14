@@ -85,6 +85,36 @@ function isFailed(row) {
   return s.includes('failed') || s.includes('mislukt');
 }
 
+
+function extractShopifyStatus(row = {}) {
+  return clean(row.shopifyStatus || row.shopifyFinancialStatus || row.shopifyFulfillmentStatus || row.originalCancellation?.shopifyStatus || row.originalCancellation?.shopifyFinancialStatus || 'onbekend');
+}
+
+function extractSrsStatus(row = {}) {
+  return clean(row.srsLineStatus || row.srsStatus || row.srsSourceStatus || row.status || row.originalCancellation?.srsStatus || 'onbekend');
+}
+
+function extractRefundStatus(row = {}) {
+  return clean(row.refundStatus || row.originalCancellation?.refundStatus || (Number(row.amount || 0) > 0 ? 'open' : 'n.v.t.'));
+}
+
+function isMismatch(row = {}) {
+  const shopify = cleanStatus(extractShopifyStatus(row));
+  const srs = cleanStatus(extractSrsStatus(row));
+  const refund = cleanStatus(extractRefundStatus(row));
+  if (shopify.includes('refunded') && !srs.includes('cancel')) return true;
+  if ((shopify.includes('cancel') || shopify.includes('geannuleerd')) && !srs.includes('cancel')) return true;
+  if (srs.includes('cancel') && refund.includes('open')) return true;
+  return false;
+}
+
+function actionNeeded(row = {}) {
+  if (isFailed(row)) return 'ja';
+  if (isMismatch(row)) return 'ja';
+  const refund = cleanStatus(extractRefundStatus(row));
+  if (refund.includes('open') || refund.includes('pending')) return 'ja';
+  return 'nee';
+}
 function storeFilter(req) {
   const value = clean(req.query.store);
   if (!value || ['all', 'alle', '*'].includes(value.toLowerCase())) return '';
@@ -126,7 +156,10 @@ function normalizeCancellationRows(row) {
       srsLineStatus,
       srsSourceStatus: clean(row.srsSourceStatus),
       amount,
-      store
+      store,
+      shopifyStatus: extractShopifyStatus({ ...row, ...item }),
+      srsStatusResolved: extractSrsStatus({ ...row, ...item }),
+      refundStatusResolved: extractRefundStatus({ ...row, ...item })
     };
 
     return {
@@ -331,7 +364,14 @@ export default async function handler(req, res) {
     }
 
     const all = await getOrderCancellations();
-    const rows = dedupeRows(filterRows(all.flatMap(normalizeCancellationRows), req));
+    const rows = dedupeRows(filterRows(all.flatMap(normalizeCancellationRows), req)).map((row) => ({
+      ...row,
+      shopifyStatus: extractShopifyStatus(row),
+      srsStatusResolved: extractSrsStatus(row),
+      refundStatusResolved: extractRefundStatus(row),
+      mismatch: isMismatch(row),
+      actionNeeded: actionNeeded(row)
+    }));
 
     return res.status(200).json({
       success: true,
