@@ -1,4 +1,15 @@
-import { filterRoutes, getDeliveryRoutes, isAuthorized, normalizeRoute, saveDeliveryRoutes, setRouteCors } from '../../lib/delivery-route-store.js';
+import {
+  deleteRoute,
+  filterRoutes,
+  getDeliveryRoutes,
+  isAuthorized,
+  normalizeRoute,
+  saveDeliveryRoutes,
+  setRouteCors,
+  setRouteStatus,
+  sortRoutes,
+  upsertRoutes
+} from '../../lib/delivery-route-store.js';
 
 export default async function handler(req, res) {
   setRouteCors(res);
@@ -8,7 +19,10 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const routes = await getDeliveryRoutes();
-      return res.status(200).json({ success: true, routes: filterRoutes(routes, { ...req.query, includeHidden: '1' }) });
+      return res.status(200).json({
+        success: true,
+        routes: filterRoutes(routes, { ...req.query, includeHidden: '1' })
+      });
     }
 
     if (req.method !== 'POST') {
@@ -16,23 +30,49 @@ export default async function handler(req, res) {
     }
 
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    const action = String(body.action || 'upsert').trim().toLowerCase();
     const existing = await getDeliveryRoutes();
-    const incoming = Array.isArray(body.routes) ? body.routes : [body];
+
+    if (action === 'delete') {
+      const routes = sortRoutes(deleteRoute(existing, body.id));
+      await saveDeliveryRoutes(routes);
+      return res.status(200).json({ success: true, deleted: body.id, routes });
+    }
+
+    if (action === 'status' || action === 'hide' || action === 'restore') {
+      const status = action === 'hide' ? 'hidden' : action === 'restore' ? 'planned' : body.status;
+      const routes = sortRoutes(setRouteStatus(existing, body.id, status));
+      await saveDeliveryRoutes(routes);
+      return res.status(200).json({ success: true, updated: body.id, routes });
+    }
+
+    const incoming = Array.isArray(body.routes) ? body.routes : [body.route || body];
     const normalized = incoming.map(normalizeRoute).filter((route) => route.toLocation);
 
     if (!normalized.length) {
       return res.status(400).json({ success: false, message: 'Geen geldige route regels ontvangen.' });
     }
 
-    const replaceWeek = body.replaceWeek !== false;
-    const weeks = new Set(normalized.map((route) => route.weekStart).filter(Boolean));
-    const retained = replaceWeek ? existing.filter((route) => !weeks.has(route.weekStart)) : existing;
-    const routes = [...normalized, ...retained].sort((a, b) => String(a.deliveryDate).localeCompare(String(b.deliveryDate)) || String(a.eta).localeCompare(String(b.eta)) || String(a.toLocation).localeCompare(String(b.toLocation), 'nl'));
+    let base = existing;
+    if (body.replaceWeek === true || action === 'replaceweek') {
+      const weeks = new Set(normalized.map((route) => route.weekStart).filter(Boolean));
+      base = existing.filter((route) => !weeks.has(route.weekStart));
+    }
 
+    const routes = sortRoutes(upsertRoutes(base, normalized));
     await saveDeliveryRoutes(routes);
-    return res.status(200).json({ success: true, saved: normalized.length, routes: normalized });
+
+    return res.status(200).json({
+      success: true,
+      saved: normalized.length,
+      routes: normalized,
+      totalRoutes: routes.length
+    });
   } catch (error) {
     console.error('[admin/delivery-routes]', error);
-    return res.status(500).json({ success: false, message: error.message || 'Routeplanning kon niet worden opgeslagen.' });
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Routeplanning kon niet worden opgeslagen.'
+    });
   }
 }
