@@ -608,15 +608,20 @@ export default async function handler(req, res) {
   const note = String(body.note || '').trim();
   const store = String(body.store || '').trim();
   const confirmed = body.confirm === true || body.confirmed === true || body.confirmation === true;
+  const reasonChecked = body.reasonChecked === true || body.reason_checked === true;
+  const crossSellMade = body.crossSellMade === true || body.cross_sell_made === true;
+  const crossSellAmount = Number(body.crossSellAmount ?? body.cross_sell_amount ?? 0) || 0;
   const selectedItems = normalizeSelectedItems(body.items || body.selectedItems || body.refundItems);
 
   if (!confirmed) return res.status(400).json({ success: false, error: 'Bevestiging ontbreekt. De medewerker moet bevestigen dat de klant terugbetaald mag worden.' });
+  if (!reasonChecked) return res.status(400).json({ success: false, error: 'Bevestig dat de retourreden klopt met de fysieke staat van het artikel.' });
   if (!store) return res.status(400).json({ success: false, error: 'Winkel ontbreekt. De retour moet geboekt worden op het filiaal dat de retour meldt.' });
   if (!orderId) return res.status(400).json({ success: false, error: 'Order ID ontbreekt' });
   if (!employeeName) return res.status(400).json({ success: false, error: 'Naam medewerker ontbreekt' });
   if (!reason) return res.status(400).json({ success: false, error: 'Retourreden ontbreekt' });
   if (isComplaintReason(reason) && !complaintText) return res.status(400).json({ success: false, error: 'Klachtomschrijving is verplicht bij retourreden Klacht / beschadigd / defect.' });
   if (!selectedItems.length) return res.status(400).json({ success: false, error: 'Selecteer minimaal een product' });
+  if (crossSellMade && !(crossSellAmount > 0)) return res.status(400).json({ success: false, error: 'Vul het cross-sell bedrag in (> 0) als de klant iets anders heeft gekocht.' });
 
   let order = null;
   let srsBranchId = '';
@@ -831,7 +836,10 @@ export default async function handler(req, res) {
         success: srsResult.success,
         srsTransactionId: srsResult.transactionId,
         items: srsItems,
-        message: srsResult.success ? 'Retour verwerkt in SRS op het meldende filiaal.' : 'SRS retour gaf geen completed status.'
+        message: srsResult.success ? 'Retour verwerkt in SRS op het meldende filiaal.' : 'SRS retour gaf geen completed status.',
+        reasonChecked,
+        crossSellMade,
+        crossSellAmount
       });
 
       await addOrderTags(order, [
@@ -851,7 +859,10 @@ export default async function handler(req, res) {
         status: 'failed',
         success: false,
         items: srsItems,
-        message: srsError.message || 'SRS retour verwerken mislukt.'
+        message: srsError.message || 'SRS retour verwerken mislukt.',
+        reasonChecked,
+        crossSellMade,
+        crossSellAmount
       });
 
       await addOrderTags(order, [
