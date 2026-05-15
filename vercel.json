@@ -5,12 +5,16 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/cron/pickup-mail-run",
+      "schedule": "0 8 * * 1-6"
+    },
+    {
       "path": "/api/cron/daily-loyalty-vouchers",
-      "schedule": "0 * * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/sync-shopify-points",
-      "schedule": "0 * * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/cron/sync-google-opening-hours",

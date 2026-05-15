@@ -64,7 +64,7 @@ async function fetchPickupOrders(req, store) {
 }
 
 async function mailNewPickup({ store, recipient, orders, dryRun }) {
-  if (!orders.length) return { sent: false, count: 0 };
+  if (!orders.length) return { sent: false, count: 0, resendId: '' };
 
   const html = baseMailHtml({
     title: `Nieuwe ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
@@ -78,21 +78,21 @@ async function mailNewPickup({ store, recipient, orders, dryRun }) {
     ])
   });
 
-  if (!dryRun) {
-    await sendMail({
-      to: recipient.email,
-      cc: recipient.cc,
-      subject: `Nieuwe ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
-      html,
-      text: `Nieuwe ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
-    });
-  }
+  if (dryRun) return { sent: false, count: orders.length, resendId: '' };
 
-  return { sent: true, count: orders.length };
+  const result = await sendMail({
+    to: recipient.email,
+    cc: recipient.cc,
+    subject: `Nieuwe ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
+    html,
+    text: `Nieuwe ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
+  });
+
+  return { sent: true, count: orders.length, resendId: result.resendId || '' };
 }
 
 async function mailPickupReminder({ store, recipient, orders, dryRun }) {
-  if (!orders.length) return { sent: false, count: 0 };
+  if (!orders.length) return { sent: false, count: 0, resendId: '' };
 
   const html = baseMailHtml({
     title: `Reminder: ophaalorder${orders.length === 1 ? '' : 's'} nog niet klaargezet - ${store}`,
@@ -106,17 +106,17 @@ async function mailPickupReminder({ store, recipient, orders, dryRun }) {
     ])
   });
 
-  if (!dryRun) {
-    await sendMail({
-      to: recipient.email,
-      cc: recipient.cc,
-      subject: `Reminder ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
-      html,
-      text: `Reminder ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
-    });
-  }
+  if (dryRun) return { sent: false, count: orders.length, resendId: '' };
 
-  return { sent: true, count: orders.length };
+  const result = await sendMail({
+    to: recipient.email,
+    cc: recipient.cc,
+    subject: `Reminder ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
+    html,
+    text: `Reminder ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
+  });
+
+  return { sent: true, count: orders.length, resendId: result.resendId || '' };
 }
 
 export default async function handler(req, res) {
@@ -166,11 +166,11 @@ export default async function handler(req, res) {
       const reminderResult = await mailPickupReminder({ store, recipient, orders: reminderOrders, dryRun });
 
       for (const order of newOrders) {
-        await appendMailLog({ type: 'pickup_new_store', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email });
+        await appendMailLog({ type: 'pickup_new_store', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: newResult.resendId || '' });
       }
 
       for (const order of reminderOrders) {
-        await appendMailLog({ type: 'pickup_not_ready_reminder', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email });
+        await appendMailLog({ type: 'pickup_not_ready_reminder', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: reminderResult.resendId || '' });
       }
 
       results.push({ store, open: orders.length, newMails: newResult.count, reminderMails: reminderResult.count });

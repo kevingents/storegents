@@ -85,7 +85,7 @@ function getOverdueRows(rows) {
 }
 
 async function sendStoreOverdueMail({ store, recipient, overdueRows, dryRun }) {
-  if (!overdueRows.length) return { sent: false, count: 0 };
+  if (!overdueRows.length) return { sent: false, count: 0, resendId: '' };
 
   const html = baseMailHtml({
     title: `Te late openstaande orders - ${store}`,
@@ -99,25 +99,25 @@ async function sendStoreOverdueMail({ store, recipient, overdueRows, dryRun }) {
     ])
   });
 
-  if (!dryRun) {
-    await sendMail({
-      to: recipient.email,
-      cc: recipient.cc,
-      subject: `Actie nodig: ${overdueRows.length} te late order${overdueRows.length === 1 ? '' : 's'} - ${store}`,
-      html,
-      text: `Te late orders voor ${store}: ${overdueRows.map(orderNumber).join(', ')}`
-    });
-  }
+  if (dryRun) return { sent: false, count: overdueRows.length, resendId: '' };
 
-  return { sent: true, count: overdueRows.length };
+  const result = await sendMail({
+    to: recipient.email,
+    cc: recipient.cc,
+    subject: `Actie nodig: ${overdueRows.length} te late order${overdueRows.length === 1 ? '' : 's'} - ${store}`,
+    html,
+    text: `Te late orders voor ${store}: ${overdueRows.map(orderNumber).join(', ')}`
+  });
+
+  return { sent: true, count: overdueRows.length, resendId: result.resendId || '' };
 }
 
 async function sendRegionManagerMail({ store, recipient, overdueRows, dryRun }) {
   const managerRecipients = recipient.regionManagerEmail || [];
-  if (!managerRecipients.length || !overdueRows.length) return { sent: false, count: 0 };
+  if (!managerRecipients.length || !overdueRows.length) return { sent: false, count: 0, resendId: '' };
 
   const escalationRows = overdueRows.filter((row) => operationalDaysBetween(orderCreatedAt(row)) >= 4);
-  if (!escalationRows.length) return { sent: false, count: 0 };
+  if (!escalationRows.length) return { sent: false, count: 0, resendId: '' };
 
   const html = baseMailHtml({
     title: `Escalatie te late orders - ${store}`,
@@ -131,16 +131,16 @@ async function sendRegionManagerMail({ store, recipient, overdueRows, dryRun }) 
     ])
   });
 
-  if (!dryRun) {
-    await sendMail({
-      to: managerRecipients,
-      subject: `Escalatie: ${escalationRows.length} order${escalationRows.length === 1 ? '' : 's'} langer dan 4 dagen open - ${store}`,
-      html,
-      text: `Escalatie ${store}: ${escalationRows.map(orderNumber).join(', ')}`
-    });
-  }
+  if (dryRun) return { sent: false, count: escalationRows.length, resendId: '' };
 
-  return { sent: true, count: escalationRows.length };
+  const result = await sendMail({
+    to: managerRecipients,
+    subject: `Escalatie: ${escalationRows.length} order${escalationRows.length === 1 ? '' : 's'} langer dan 4 dagen open - ${store}`,
+    html,
+    text: `Escalatie ${store}: ${escalationRows.map(orderNumber).join(', ')}`
+  });
+
+  return { sent: true, count: escalationRows.length, resendId: result.resendId || '' };
 }
 
 export default async function handler(req, res) {
@@ -189,11 +189,11 @@ export default async function handler(req, res) {
       const managerMail = await sendRegionManagerMail({ store, recipient, overdueRows: managerRows, dryRun });
 
       for (const row of storeMailRows) {
-        await appendMailLog({ type: 'weborder_overdue_store', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email });
+        await appendMailLog({ type: 'weborder_overdue_store', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: storeMail.resendId || '' });
       }
 
       for (const row of managerRows) {
-        await appendMailLog({ type: 'weborder_overdue_region_manager', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: (recipient.regionManagerEmail || []).join(', ') });
+        await appendMailLog({ type: 'weborder_overdue_region_manager', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: (recipient.regionManagerEmail || []).join(', '), resendId: managerMail.resendId || '' });
       }
 
       results.push({ store, open: rows.length, overdue: overdueRows.length, storeMails: storeMail.count, regionManagerMails: managerMail.count, source: data.source || 'open-weborders' });
