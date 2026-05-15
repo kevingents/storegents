@@ -5,6 +5,15 @@ function normalizePostalCode(value) {
   return String(value || '').replace(/\s+/g, '').toUpperCase();
 }
 
+function normalizePhone(value) {
+  return String(value || '').replace(/[\s\-().+]/g, '');
+}
+
+function looksLikePhone(q) {
+  const stripped = normalizePhone(q);
+  return /^(\+?31|0)[0-9]{8,10}$/.test(stripped);
+}
+
 function parseQuery(query) {
   const q = String(query || '').trim();
 
@@ -26,7 +35,11 @@ function parseQuery(query) {
     };
   }
 
-  return { email: q };
+  if (looksLikePhone(q)) {
+    return { phone: normalizePhone(q) };
+  }
+
+  return { name: q };
 }
 
 function compactCustomer(customer) {
@@ -67,12 +80,18 @@ export default async function handler(req, res) {
     const postalCode = normalizePostalCode(req.query.postalCode || '');
     const houseNumber = String(req.query.houseNumber || '').trim();
 
+    const phone = String(req.query.phone || '').trim();
+    const name = String(req.query.name || '').trim();
     let filters = {};
 
     if (customerId) {
       filters.customerId = customerId;
     } else if (email) {
       filters.email = email;
+    } else if (phone) {
+      filters.phone = normalizePhone(phone);
+    } else if (name) {
+      filters.name = name;
     } else if (postalCode || houseNumber) {
       filters.postalCode = postalCode;
       filters.houseNumber = houseNumber;
@@ -83,7 +102,7 @@ export default async function handler(req, res) {
     if (!Object.keys(filters).length) {
       return res.status(400).json({
         success: false,
-        message: 'Vul een klantnummer, e-mail of postcode + huisnummer in.'
+        message: 'Vul een klantnummer, e-mail, telefoonnummer, naam of postcode + huisnummer in.'
       });
     }
 

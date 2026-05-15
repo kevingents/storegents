@@ -1,4 +1,5 @@
 import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
+import { getCachedWeborders, setCachedWeborders } from '../../lib/srs-weborders-cache.js';
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -61,8 +62,35 @@ export default async function handler(req, res) {
 
     const resolvedBranchId = branchId || String(branches.getBranchIdByStore?.(store) || '').trim();
     const resolvedStore = canonicalStore(store, resolvedBranchId);
+
+    // Probeer cache eerst — geeft < 100ms response als de cron recent draaide
+    const noCache = String(req.query.noCache || req.query.nocache || '').toLowerCase() === 'true';
+    if (!noCache && resolvedStore) {
+      const cached = await getCachedWeborders(resolvedStore);
+      if (cached && !cached.stale) {
+        const items = (cached.items || []).map((item) => weborders.normalizeWeborder(item));
+        const summary = weborders.summarizeOpenWeborders(items, resolvedStore);
+        const requests = items.filter((item) => weborders.isOrderLineOpenForStore(item, resolvedStore)).slice(0, 500);
+        const filteredRequests = overdueOnly ? requests.filter((item) => weborders.isOrderLineOverdue(item)) : requests;
+        return res.status(200).json({
+          success: true, source: 'srs_cache', note: `Cache ${Math.round(cached.ageMs / 1000)}s oud.`,
+          degraded: false, store: resolvedStore, branchId: resolvedBranchId,
+          ownerLogic: 'order-line-current-branch', deadlineHours: 48,
+          summary, open: summary.totalOpenCount || summary.openOrderCount || 0,
+          openLines: summary.openLineCount || summary.currentOpenLineCount || 0,
+          overdue: summary.overdueCount || 0, overdueLines: summary.overdueLineCount || 0,
+          requests: filteredRequests
+        });
+      }
+    }
+
     const result = await client.getSrsOpenWeborders({ store: resolvedStore, branchId: resolvedBranchId });
     const items = (result.items || []).map((item) => weborders.normalizeWeborder(item));
+
+    // Sla verse data op in cache voor volgende requests
+    if (resolvedStore) {
+      setCachedWeborders(resolvedStore, { source: 'srs_live', store: resolvedStore, branchId: resolvedBranchId, items: result.items || [] }).catch(() => {});
+    }
 
     const summary = resolvedStore
       ? weborders.summarizeOpenWeborders(items, resolvedStore)

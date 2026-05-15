@@ -1,6 +1,6 @@
 // api/admin/weborders/overdue-report.js
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
+import { isAdmin } from '../../../lib/request-guards.js';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -8,22 +8,6 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token, authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-}
-
-function isAuthorized(req) {
-  if (String(req.query.public || '') === 'true') return true;
-
-  const token = String(
-    req.headers['x-admin-token'] ||
-    req.headers.authorization ||
-    req.query.adminToken ||
-    req.query.admin_token ||
-    ''
-  )
-    .replace(/^Bearer\s+/i, '')
-    .trim();
-
-  return token === ADMIN_TOKEN;
 }
 
 function emptyPayload(note = '') {
@@ -169,7 +153,7 @@ export default async function handler(req, res) {
     });
   }
 
-  if (!isAuthorized(req)) {
+  if (!isAdmin(req)) {
     return res.status(401).json({
       success: false,
       message: 'Niet bevoegd.'

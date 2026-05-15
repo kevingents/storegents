@@ -18,7 +18,7 @@ function apiBase(req) {
 }
 
 function adminToken(req) {
-  return String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.query.adminToken || req.query.admin_token || process.env.ADMIN_TOKEN || '12345').replace(/^Bearer\s+/i, '').trim();
+  return String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.query.adminToken || req.query.admin_token || process.env.ADMIN_TOKEN || '').replace(/^Bearer\s+/i, '').trim();
 }
 
 function appendAdminToken(url, token) {
