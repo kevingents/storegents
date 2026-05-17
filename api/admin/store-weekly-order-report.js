@@ -5,6 +5,26 @@ const DEADLINE_HOURS = 48;
 const PICK_PACK_MINUTES_PER_ORDER = 10;
 const REPORT_STATUSES = ['accepted', 'pending', 'processed'];
 
+/* In-memory cache: SRS fulfillment-fetch is duur (N winkels * 3 statussen).
+   Cache key bevat alle filter-statussen. TTL 10 min. Verdwijnt bij cold start. */
+const SRS_CACHE = new Map();
+const SRS_CACHE_TTL_MS = 10 * 60 * 1000;
+function srsCacheKey(statuses) {
+  return [...statuses].sort().join(',');
+}
+function getSrsCache(key) {
+  const entry = SRS_CACHE.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > SRS_CACHE_TTL_MS) {
+    SRS_CACHE.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+function setSrsCache(key, value) {
+  SRS_CACHE.set(key, { value, cachedAt: Date.now() });
+}
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -87,20 +107,31 @@ function isNonStoreLine(item = {}) {
 }
 
 async function readSrsReportFulfillments(req) {
+  const requestedStatuses = clean(req.query.statuses || '')
+    ? clean(req.query.statuses).split(',').map((status) => clean(status)).filter(Boolean)
+    : REPORT_STATUSES;
+
+  const forceRefresh = String(req.query.refresh || '') === '1';
+  const cacheKey = srsCacheKey(requestedStatuses);
+
+  if (!forceRefresh) {
+    const cached = getSrsCache(cacheKey);
+    if (cached) {
+      return { ...cached, cached: true, cacheAgeMs: Date.now() - (cached.cachedAt || Date.now()) };
+    }
+  }
+
   const [{ getFulfillments }, { listBranches, getStoreNameByBranchId }] = await Promise.all([
     import('../../lib/srs-weborders-message-client.js'),
     import('../../lib/branch-metrics.js')
   ]);
 
-  const requestedStatuses = clean(req.query.statuses || '')
-    ? clean(req.query.statuses).split(',').map((status) => clean(status)).filter(Boolean)
-    : REPORT_STATUSES;
-
   const items = [];
   const errors = [];
   const branches = listBranches().map((branch) => String(branch.branchId)).filter(Boolean);
 
-  for (const branchId of branches) {
+  /* Parallel per branch (statussen sequentieel binnen branch om SRS-rate-limits te respecteren) */
+  await Promise.all(branches.map(async (branchId) => {
     for (const status of requestedStatuses) {
       try {
         const result = await getFulfillments({ branchId, status });
@@ -116,16 +147,20 @@ async function readSrsReportFulfillments(req) {
         errors.push({ branchId, status, message: error.message });
       }
     }
-  }
+  }));
 
-  return {
+  const result = {
     source: 'srs_get_fulfillments_multi_status',
     statuses: requestedStatuses,
     degraded: errors.length > 0,
     note: errors.length ? `${errors.length} SRS status/filiaal calls mislukt.` : '',
     errors: errors.slice(0, 20),
-    items
+    items,
+    cachedAt: Date.now()
   };
+
+  if (!errors.length) setSrsCache(cacheKey, result);
+  return result;
 }
 
 function getNormalizer() { return normalizeFallback; }
