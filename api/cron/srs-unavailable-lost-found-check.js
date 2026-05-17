@@ -87,6 +87,30 @@ function numberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+/* GENTS lost & found flow:
+   - Winkel meldt 'niet leverbaar' → SRS verplaatst voorraad naar lost+found
+     locatie (storestock -> 0, lostFound +N). Dit is EXPECTED, geen signaal.
+   - Inventarisatie volgt (binnen ~1 week). Daarna hoort het artikel
+     definitief weg te zijn — OF er hangt een verkoop aan.
+   - Echt signaal: na de inventarisatie-week komt voorraad alsnog terug
+     in de winkel (= 'found in store'), zonder dat er een verkoop bij
+     hoorde → winkel hield mogelijk express achter of keek niet goed.
+
+   Scoring:
+   - stock_present_at_unavailable (40, medium): winkel zei niet
+     leverbaar maar SRS-voorraad stond op >0 bij melding (didn't look)
+   - store_stock_returned_early (45, medium): voorraad terug <7 dagen
+     na melding — inventarisatie nog niet gedaan, milde indicatie
+   - store_stock_returned_post_inventory (90, very_high): voorraad
+     terug ≥7 dagen na melding — sterk signaal
+   - lost_found_decreased_back (70, high): lost+found locatie kreeg
+     het terug en gaf het later weer af aan de winkel (terugboek
+     zonder verkoop)
+
+   NIET als signaal beschouwd:
+   - lost+found increase direct na niet-leverbaar (dat is exact wat
+     de flow doet)
+*/
 function suspicionFrom({ row, snapshot, current } = {}) {
   const snapshotAvailable = hasSnapshot(snapshot);
   const stockAtUnavailable = snapshotAvailable ? numberOrNull(snapshot.storeStock) : null;
@@ -96,32 +120,42 @@ function suspicionFrom({ row, snapshot, current } = {}) {
   const lostFoundDelta = lostFoundAtUnavailable === null ? null : lostFoundNow - lostFoundAtUnavailable;
   const storeDelta = stockAtUnavailable === null ? null : storeNow - stockAtUnavailable;
 
+  /* Dagen sinds 'niet leverbaar' melding (om inventarisatie-window te bepalen) */
+  const unavailableAt = row.createdAt || row.updatedAt || row.srsUpdatedAt || null;
+  const daysSinceUnavailable = unavailableAt
+    ? Math.floor((Date.now() - new Date(unavailableAt).getTime()) / (24 * 3600 * 1000))
+    : null;
+  const postInventory = daysSinceUnavailable !== null && daysSinceUnavailable >= 7;
+
   let status = snapshotAvailable ? 'no_signal' : 'no_snapshot_yet';
   let level = 'low';
   let score = 0;
 
+  /* Signaal 1: voorraad stond op >0 bij melding 'niet leverbaar' */
   if (stockAtUnavailable !== null && stockAtUnavailable > 0) {
     status = 'stock_present_at_unavailable';
     level = 'medium';
-    score = 50;
+    score = 40;
   }
 
-  if (lostFoundDelta !== null && lostFoundDelta > 0) {
-    status = stockAtUnavailable > 0 ? 'found_after_balance' : 'lost_found_increased_after_unavailable';
-    level = 'high';
-    score = Math.max(score, 80);
-  }
-
-  if (stockAtUnavailable > 0 && storeNow === 0 && lostFoundDelta > 0) {
-    status = 'strong_lost_found_signal';
-    level = 'very_high';
-    score = 95;
-  }
-
+  /* Signaal 2: voorraad terug in winkel — week-window bepaalt severity */
   if (storeDelta !== null && storeDelta > 0) {
-    status = 'store_stock_returned';
-    level = score >= 80 ? level : 'medium';
-    score = Math.max(score, 60);
+    if (postInventory) {
+      status = 'store_stock_returned_post_inventory';
+      level = 'very_high';
+      score = Math.max(score, 90);
+    } else {
+      status = 'store_stock_returned_early';
+      level = level === 'low' ? 'medium' : level;
+      score = Math.max(score, 45);
+    }
+  }
+
+  /* Signaal 3: lost+found gaf het terug aan winkel (decrease) */
+  if (lostFoundDelta !== null && lostFoundDelta < 0) {
+    status = 'lost_found_decreased_back';
+    level = level === 'very_high' ? level : 'high';
+    score = Math.max(score, 70);
   }
 
   return {
@@ -135,6 +169,8 @@ function suspicionFrom({ row, snapshot, current } = {}) {
     lostFoundStockNow: lostFoundNow,
     lostFoundDelta,
     storeDelta,
+    daysSinceUnavailable,
+    postInventory,
     amount: Number(row.amount || 0),
     quantity: Number(row.quantity || 1)
   };
