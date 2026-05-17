@@ -26,12 +26,14 @@ export default async function handler(req, res) {
   /* Shopify orders fetch */
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || 'gentsherenmode.myshopify.com';
   const shopifyToken = process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
+  const configured = Boolean(shopifyToken);
 
   let newOrders = 0;
   let revenue = 0;
   let refunds = 0;
   let yesterdayOrders = 0;
   let yesterdayRevenue = 0;
+  let shopifyError = '';
 
   if (shopifyToken) {
     try {
@@ -52,8 +54,10 @@ export default async function handler(req, res) {
           }
           if ((o.refunds || []).some(rf => new Date(rf.created_at) >= today)) refunds++;
         });
+      } else {
+        shopifyError = `Shopify API ${r.status}`;
       }
-    } catch (e) { /* skip */ }
+    } catch (e) { shopifyError = e.message || 'fetch failed'; }
   }
 
   /* New customers — uit mail-log heuristisch (welcome mails) of niet vulbaar zonder Shopify Customers API */
@@ -77,6 +81,10 @@ export default async function handler(req, res) {
   return res.status(200).json({
     success: true,
     today: today.toISOString().slice(0, 10),
+    configured,
+    message: configured
+      ? (shopifyError ? `Shopify fout: ${shopifyError}` : '')
+      : 'SHOPIFY_ADMIN_API_TOKEN ontbreekt in Vercel env-vars. Voeg token toe met read_orders scope om live data te zien.',
     metrics: {
       newOrders: { value: newOrders, prev: yesterdayOrders, trendPct: trend(newOrders, yesterdayOrders) },
       revenue:   { value: revenue,   prev: yesterdayRevenue, trendPct: trend(revenue, yesterdayRevenue) },
