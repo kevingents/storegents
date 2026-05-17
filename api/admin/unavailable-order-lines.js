@@ -151,6 +151,7 @@ export default async function handler(req, res) {
         month: clean(req.query.month || ''),
         maxRuntimeMs: Number(req.query.maxRuntimeMs || (orderNr ? 30000 : 90000)),
         maxRecords: Number(req.query.maxRecords || (orderNr ? 25 : 500)),
+        includeResolved: truthy(req.query.includeResolved),
         dryRun: truthy(req.query.dryRun)
       });
     } else if (syncSrs) {
