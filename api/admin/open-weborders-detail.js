@@ -1,12 +1,14 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { DEFAULT_STORE_NAMES, getApiBaseUrl, splitList } from '../../lib/gents-mail-config.js';
+import { DEFAULT_STORE_NAMES, splitList } from '../../lib/gents-mail-config.js';
 
 /**
  * GET /api/admin/open-weborders-detail
  *
- * Combineert open weborders van ALLE winkels in 1 lijst.
- * Voor elke winkel parallel een /api/srs/open-weborders?store=X call.
- * Resultaat genormaliseerd voor admin orders-tabel.
+ * Haalt direct SRS open weborders op (1x globaal of via parallel store-queries)
+ * en categoriseert elk item:
+ *   - 'store'    = open bij een winkel voor pick & pack
+ *   - 'pipeline' = bij magazijn / showroom / uitlevertafel
+ *   - skipped    = delivered, geannuleerd, gesloten
  *
  * Cache: 5 min in-memory.
  */
@@ -27,55 +29,90 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...MEMORY_CACHE.data, cached: true, cacheAgeMs: Date.now() - MEMORY_CACHE.ts });
   }
 
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
-  const base = getApiBaseUrl(req);
-  const stores = splitList(process.env.GENTS_STORES_LIST || '')
-    .filter(s => s && s.toLowerCase() !== 'gents administratie')
-    .length
-      ? splitList(process.env.GENTS_STORES_LIST || '').filter(s => s && s.toLowerCase() !== 'gents administratie')
-      : DEFAULT_STORE_NAMES.filter(s => s && s !== 'GENTS Brandstores');
+  const stores = (() => {
+    const env = splitList(process.env.GENTS_STORES_LIST || '').filter(s => s && s.toLowerCase() !== 'gents administratie');
+    return env.length ? env : DEFAULT_STORE_NAMES.filter(s => s && s !== 'GENTS Brandstores');
+  })();
 
   const startedAt = Date.now();
 
-  /* Parallel fetch */
-  const results = await Promise.all(stores.map(async (store) => {
+  let normalizeWeborder, isOpenWeborderStatus, isClosedWeborderStatus, getSrsOpenWeborders;
+  try {
+    const helpers = await import('../../lib/weborder-request-store.js');
+    normalizeWeborder = helpers.normalizeWeborder;
+    isOpenWeborderStatus = helpers.isOpenWeborderStatus;
+    isClosedWeborderStatus = helpers.isClosedWeborderStatus;
+    const client = await import('../../lib/srs-open-weborders-client.js');
+    getSrsOpenWeborders = client.getSrsOpenWeborders;
+  } catch (e) {
+    return res.status(200).json({ success: false, message: e.message || 'Lib import failed.', totals: {}, perStore: [], orders: [] });
+  }
+
+  /* Parallel fetch SRS per winkel — krijgt ALLE items (filter wordt hier toegepast) */
+  const fetched = await Promise.all(stores.map(async (store) => {
     try {
-      const u = new URL(`${base}/api/srs/open-weborders`);
-      u.searchParams.set('store', store);
-      u.searchParams.set('t', Date.now());
-      const r = await fetch(u.toString(), {
-        headers: { 'x-admin-token': adminToken, Accept: 'application/json' }
-      });
-      if (!r.ok) return { store, error: `HTTP ${r.status}`, items: [] };
-      const d = await r.json();
-      const items = d.requests || d.items || d.openOrders || [];
-      return { store, items, summary: d.summary || null };
+      const r = await getSrsOpenWeborders({ store });
+      return { store, items: r.items || [], error: r.degraded ? (r.note || '') : null };
     } catch (e) {
-      return { store, error: e.message || 'fetch failed', items: [] };
+      return { store, items: [], error: e.message || 'fetch failed' };
     }
   }));
 
-  const orders = [];
-  results.forEach(({ store, items }) => {
-    (items || []).forEach((it) => {
-      orders.push(normalizeOrder(it, store));
+  const ordersStore = [];
+  const ordersPipeline = [];
+  const seenKeys = new Set(); /* dedupe across stores (zelfde order kan bij multiple branches voorkomen) */
+
+  fetched.forEach(({ store, items }) => {
+    items.forEach((raw) => {
+      const item = normalizeWeborder(raw);
+      if (isClosedWeborderStatus(item.status)) return;
+      if (item.delivered) return;
+      if (!isOpenWeborderStatus(item.status)) return;
+      const key = `${item.orderNr || item.id}-${item.orderLineId || ''}-${item.currentBranchId || ''}`;
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+
+      const ord = normalizeOrder(item, store);
+      if (item.warehouse) {
+        ord.location = 'magazijn';
+        ordersPipeline.push(ord);
+      } else if (/showroom/i.test(item.currentStore || '') || /showroom/i.test(item.currentLocationRaw || '')) {
+        ord.location = 'showroom';
+        ordersPipeline.push(ord);
+      } else if (/uitlevertafel/i.test(item.currentLocationRaw || '')) {
+        ord.location = 'uitlevertafel';
+        ordersPipeline.push(ord);
+      } else {
+        ord.location = 'winkel';
+        ordersStore.push(ord);
+      }
     });
   });
 
-  /* Compute totals + per-store summary */
-  const perStore = stores.map((store) => {
-    const r = results.find(x => x.store === store) || { items: [] };
-    const its = r.items || [];
-    const open = its.length;
-    const overdue = its.filter(x => isOverdue(x)).length;
-    return { store, openCount: open, overdueCount: overdue, error: r.error || null };
+  /* Per-store summary */
+  const storeMap = new Map();
+  ordersStore.forEach(o => {
+    const cur = storeMap.get(o.store) || { store: o.store, openCount: 0, overdueCount: 0 };
+    cur.openCount++;
+    if (o.isLate) cur.overdueCount++;
+    storeMap.set(o.store, cur);
   });
+  const perStore = stores.map(s => storeMap.get(s) || { store: s, openCount: 0, overdueCount: 0 });
+
+  /* Pipeline split */
+  const pipelineSplit = {
+    magazijn: ordersPipeline.filter(o => o.location === 'magazijn').length,
+    showroom: ordersPipeline.filter(o => o.location === 'showroom').length,
+    uitlevertafel: ordersPipeline.filter(o => o.location === 'uitlevertafel').length
+  };
 
   const totals = {
-    totalOpen: orders.length,
-    totalOverdue: orders.filter(o => o.isLate).length,
-    totalWarning: orders.filter(o => o.isWarn).length,
+    totalOpen: ordersStore.length,
+    totalOverdue: ordersStore.filter(o => o.isLate).length,
+    totalWarning: ordersStore.filter(o => o.isWarn).length,
     storeCount: perStore.filter(p => p.openCount > 0).length,
+    pipelineTotal: ordersPipeline.length,
+    pipelineSplit,
     fetchedStores: stores.length,
     fetchDurationMs: Date.now() - startedAt
   };
@@ -87,7 +124,8 @@ export default async function handler(req, res) {
     generatedAt: new Date().toISOString(),
     totals,
     perStore,
-    orders
+    orders: ordersStore,
+    pipeline: ordersPipeline
   };
 
   MEMORY_CACHE = { ts: Date.now(), data: payload };
