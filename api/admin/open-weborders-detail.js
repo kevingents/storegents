@@ -158,11 +158,20 @@ export default async function handler(req, res) {
 }
 
 function normalizeOrder(item, store) {
-  const orderName = item.orderName || item.orderNumber || item.name || item.order || '';
+  const firstLine = Array.isArray(item.lines) && item.lines[0] ? item.lines[0] : (Array.isArray(item.lineItems) && item.lineItems[0] ? item.lineItems[0] : {});
+  const orderName = item.orderName || item.orderNumber || item.orderNr || item.name || item.order || firstLine.orderName || firstLine.orderNumber || '';
+  const orderId   = item.orderId || item.fulfillmentId || item.id || firstLine.orderId || '';
   const customerName = item.customerName
     || [item.customerFirstName, item.customerLastName].filter(Boolean).join(' ')
-    || item.customer || '';
-  const email = item.email || item.customerEmail || '';
+    || item.customer
+    || item.deliveryName || item.billingName
+    || firstLine.customerName
+    || '';
+  const email = item.email || item.customerEmail || item.deliveryEmail || item.billingEmail
+    || firstLine.email || firstLine.customerEmail || '';
+  const phone = item.phone || item.customerPhone || item.deliveryPhone || firstLine.phone || '';
+  const city  = item.city || item.deliveryCity || item.customerCity || '';
+  const postal = item.postalCode || item.zip || item.deliveryPostalCode || item.deliveryZip || '';
   const created = item.orderDate || item.createdAt || item.openDate || item.created || '';
   const ageHours = computeAgeHours(created);
   const total = Number(item.totalPrice || item.totalAmount || item.total || 0);
@@ -175,8 +184,12 @@ function normalizeOrder(item, store) {
 
   return {
     orderName: orderName ? (String(orderName).startsWith('#') ? orderName : `#${orderName}`) : '',
-    customerName: customerName || 'Onbekend',
+    orderId: String(orderId || ''),
+    customerName: customerName || '',
     email,
+    phone,
+    city,
+    postalCode: postal,
     store,
     channel,
     date: created,
