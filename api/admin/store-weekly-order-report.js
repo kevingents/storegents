@@ -172,15 +172,31 @@ export default async function handler(req, res) {
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
   try {
-    const { year, week } = selectedWeek(req);
-    const range = weekRange(year, week);
+    /* dateFrom + dateTo (YYYY-MM-DD) overschrijven year/week wanneer beide aanwezig zijn. */
+    const customFrom = String(req.query.dateFrom || '').slice(0,10);
+    const customTo   = String(req.query.dateTo || '').slice(0,10);
+    let year, week, range, scope;
+    if (customFrom && customTo) {
+      const startDate = new Date(`${customFrom}T00:00:00Z`);
+      const endDate   = new Date(`${customTo}T23:59:59Z`);
+      const nextDay   = new Date(endDate);
+      nextDay.setUTCDate(endDate.getUTCDate() + 1);
+      range = { dateFrom: customFrom, dateTo: customTo, start: startDate, end: nextDay };
+      ({ year, week } = isoWeek(startDate));
+      scope = 'custom-range';
+    } else {
+      const sel = selectedWeek(req);
+      year = sel.year; week = sel.week;
+      range = weekRange(year, week);
+      scope = 'iso-week';
+    }
     const srs = await readSrsReportFulfillments(req);
     const built = buildRows(Array.isArray(srs.items) ? srs.items : [], getNormalizer(), range);
     const rows = built.rows;
     const totals = rows.reduce((sum, row) => { sum.orderCount += Number(row.orderCount || 0); sum.lateCount += Number(row.lateCount || 0); sum.lineItemCount += Number(row.lineItemCount || 0); sum.estimatedPickPackMinutes += Number(row.estimatedPickPackMinutes || 0); return sum; }, { orderCount: 0, lateCount: 0, lineItemCount: 0, estimatedPickPackMinutes: 0, storeCount: rows.length });
     totals.storeCount = rows.length;
 
-    const payload = { success: true, year, week, weekLabel: `${year}-W${pad(week)}`, dateFrom: range.dateFrom, dateTo: range.dateTo, source: 'srs_get_fulfillments_multi_status', sourceDetail: srs.source || '', statuses: srs.statuses, degraded: Boolean(srs.degraded), note: srs.note || 'Telling op SRS Huidig filiaal per orderregel inclusief open en verwerkte fulfillments.', ownerLogic: 'order-line-current-branch', deadlineHours: DEADLINE_HOURS, pickPackMinutesPerOrder: PICK_PACK_MINUTES_PER_ORDER, totals, rows, updatedAt: new Date().toISOString() };
+    const payload = { success: true, year, week, weekLabel: `${year}-W${pad(week)}`, dateFrom: range.dateFrom, dateTo: range.dateTo, scope, source: 'srs_get_fulfillments_multi_status', sourceDetail: srs.source || '', statuses: srs.statuses, degraded: Boolean(srs.degraded), note: srs.note || 'Telling op SRS Huidig filiaal per orderregel inclusief open en verwerkte fulfillments.', ownerLogic: 'order-line-current-branch', deadlineHours: DEADLINE_HOURS, pickPackMinutesPerOrder: PICK_PACK_MINUTES_PER_ORDER, totals, rows, updatedAt: new Date().toISOString() };
     if (String(req.query.debug || '') === '1') payload.debug = { ...built.debug, srsErrors: srs.errors || [] };
     return res.status(200).json(payload);
   } catch (error) {
