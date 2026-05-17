@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   const range = computeRange(period);
 
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || 'gentsherenmode.myshopify.com';
-  const shopifyToken = process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
+  const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
 
   if (!shopifyToken) {
     return res.status(200).json({
@@ -32,7 +32,7 @@ export default async function handler(req, res) {
       period,
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       configured: false,
-      message: 'SHOPIFY_ADMIN_API_TOKEN ontbreekt in Vercel env-vars. Configureer Shopify Admin API token met read_orders scope.',
+      message: 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars. Configureer Shopify Admin API token met read_orders scope.',
       totals: { totalRevenue: 0, orderCount: 0, avgOrderValue: 0, refundedRevenue: 0, netRevenue: 0 },
       previous: { totalRevenue: 0, orderCount: 0, trendPct: null },
       perStore: [],

@@ -25,7 +25,7 @@ export default async function handler(req, res) {
 
   /* Shopify orders fetch */
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || 'gentsherenmode.myshopify.com';
-  const shopifyToken = process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
+  const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
   const configured = Boolean(shopifyToken);
 
   let newOrders = 0;
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
     configured,
     message: configured
       ? (shopifyError ? `Shopify fout: ${shopifyError}` : '')
-      : 'SHOPIFY_ADMIN_API_TOKEN ontbreekt in Vercel env-vars. Voeg token toe met read_orders scope om live data te zien.',
+      : 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars. Voeg token toe met read_orders scope om live data te zien.',
     metrics: {
       newOrders: { value: newOrders, prev: yesterdayOrders, trendPct: trend(newOrders, yesterdayOrders) },
       revenue:   { value: revenue,   prev: yesterdayRevenue, trendPct: trend(revenue, yesterdayRevenue) },
