@@ -48,42 +48,65 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: false, message: e.message || 'Lib import failed.', totals: {}, perStore: [], orders: [] });
   }
 
-  /* Parallel fetch SRS per winkel — krijgt ALLE items (filter wordt hier toegepast) */
-  const fetched = await Promise.all(stores.map(async (store) => {
-    try {
-      const r = await getSrsOpenWeborders({ store });
-      return { store, items: r.items || [], error: r.degraded ? (r.note || '') : null };
-    } catch (e) {
-      return { store, items: [], error: e.message || 'fetch failed' };
-    }
-  }));
+  /* 1x globale fetch — getSrsOpenWeborders zonder filter loopt intern alle branches af */
+  let allItems = [];
+  let fetchError = null;
+  try {
+    const r = await getSrsOpenWeborders({});
+    allItems = r.items || [];
+    fetchError = r.degraded ? (r.note || null) : null;
+  } catch (e) {
+    fetchError = e.message || 'fetch failed';
+  }
 
   const ordersStore = [];
   const ordersPipeline = [];
-  const seenKeys = new Set(); /* dedupe across stores (zelfde order kan bij multiple branches voorkomen) */
+  const seenKeys = new Set();
 
-  fetched.forEach(({ store, items }) => {
+  allItems.forEach((raw) => {
+    /* Wrap in array-iterate loop body voor minimal diff */
+    const items = [raw];
     items.forEach((raw) => {
       const item = normalizeWeborder(raw);
+
+      /* Skip alleen écht afgesloten orders — niet uitsluiten op locatie 'uitlevertafel' */
       if (isClosedWeborderStatus(item.status)) return;
-      if (item.delivered) return;
       if (!isOpenWeborderStatus(item.status)) return;
+
+      /* Echt geleverd aan klant = 'klant' locatie (NIET centraal uitlevertafel) */
+      const rawLoc = String(item.currentLocationRaw || '').toLowerCase();
+      const status = String(item.status || '').toLowerCase();
+      const trulyDeliveredToCustomer = /\bklant\b/.test(rawLoc) || /uitgeleverd/.test(rawLoc) || /geleverd aan klant/.test(status);
+      if (trulyDeliveredToCustomer) return;
+
       const key = `${item.orderNr || item.id}-${item.orderLineId || ''}-${item.currentBranchId || ''}`;
       if (seenKeys.has(key)) return;
       seenKeys.add(key);
 
-      const ord = normalizeOrder(item, store);
-      if (item.warehouse) {
+      /* Categoriseer op werkelijke locatie */
+      const branchId = String(item.currentBranchId || '').trim();
+      const storeNm = item.currentStore || item.fulfilmentStore || 'Onbekend';
+      const ord = normalizeOrder(item, storeNm);
+
+      const isMagazijn = item.warehouse || branchId === '99' || /\bmagazijn\b/.test(rawLoc) || /\bwarehouse\b/.test(rawLoc) || /webshop/.test(rawLoc);
+      const isUitlevertafel = branchId === '97' || /uitlevertafel/.test(rawLoc) || /uitleverpunt/.test(rawLoc);
+      const isShowroom = branchId === '700' || /showroom/.test(rawLoc);
+
+      if (isMagazijn) {
         ord.location = 'magazijn';
+        ord.locationLabel = item.currentStore || 'GENTS Magazijn';
         ordersPipeline.push(ord);
-      } else if (/showroom/i.test(item.currentStore || '') || /showroom/i.test(item.currentLocationRaw || '')) {
-        ord.location = 'showroom';
-        ordersPipeline.push(ord);
-      } else if (/uitlevertafel/i.test(item.currentLocationRaw || '')) {
+      } else if (isUitlevertafel) {
         ord.location = 'uitlevertafel';
+        ord.locationLabel = '97 - Uitlevertafel (centraal)';
+        ordersPipeline.push(ord);
+      } else if (isShowroom) {
+        ord.location = 'showroom';
+        ord.locationLabel = item.currentStore || 'GENTS Showroom';
         ordersPipeline.push(ord);
       } else {
         ord.location = 'winkel';
+        ord.locationLabel = item.currentStore || storeNm;
         ordersStore.push(ord);
       }
     });
@@ -114,7 +137,9 @@ export default async function handler(req, res) {
     pipelineTotal: ordersPipeline.length,
     pipelineSplit,
     fetchedStores: stores.length,
-    fetchDurationMs: Date.now() - startedAt
+    fetchDurationMs: Date.now() - startedAt,
+    rawItemCount: allItems.length,
+    fetchError
   };
 
   const payload = {
