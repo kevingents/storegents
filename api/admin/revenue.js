@@ -23,27 +23,33 @@ export default async function handler(req, res) {
 
   const range = computeRange(period);
 
-  const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || 'gentsherenmode.myshopify.com';
+  const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '';
   const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2025-01';
+  const configured = Boolean(shopifyToken && shopifyDomain);
 
-  if (!shopifyToken) {
-    return res.status(200).json({
-      success: true,
-      period,
-      range: { from: range.from.toISOString(), to: range.to.toISOString() },
-      configured: false,
-      message: 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars. Configureer Shopify Admin API token met read_orders scope.',
-      totals: { totalRevenue: 0, orderCount: 0, avgOrderValue: 0, refundedRevenue: 0, netRevenue: 0 },
-      previous: { totalRevenue: 0, orderCount: 0, trendPct: null },
-      perStore: [],
-      topProducts: [],
-      byDay: []
-    });
+  const emptyResponse = (msg) => ({
+    success: true,
+    period,
+    range: { from: range.from.toISOString(), to: range.to.toISOString() },
+    configured: false,
+    shopifyDomain, apiVersion,
+    message: msg,
+    totals: { totalRevenue: 0, orderCount: 0, avgOrderValue: 0, refundedRevenue: 0, netRevenue: 0, perStore: [], topProducts: [], byDay: [] },
+    previous: { totalRevenue: 0, orderCount: 0, trendPct: null },
+    perStore: [], topProducts: [], byDay: []
+  });
+
+  if (!configured) {
+    const msg = !shopifyToken
+      ? 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars.'
+      : 'SHOPIFY_STORE_DOMAIN ontbreekt in Vercel env-vars.';
+    return res.status(200).json(emptyResponse(msg));
   }
 
   try {
-    const current  = await fetchShopifyOrders(shopifyDomain, shopifyToken, range.from, range.to);
-    const previous = await fetchShopifyOrders(shopifyDomain, shopifyToken, range.prevFrom, range.prevTo);
+    const current  = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.from, range.to);
+    const previous = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.prevFrom, range.prevTo);
 
     const cur = aggregate(current, storeFilter, range);
     const prev = aggregate(previous, storeFilter, range);
@@ -54,6 +60,7 @@ export default async function handler(req, res) {
       period,
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       configured: true,
+      shopifyDomain, apiVersion,
       totals: cur,
       previous: { totalRevenue: prev.totalRevenue, orderCount: prev.orderCount, trendPct },
       perStore: cur.perStore,
@@ -61,7 +68,8 @@ export default async function handler(req, res) {
       byDay: cur.byDay
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message || 'Shopify orders fetch faalde.' });
+    /* Geen 500 — return 200 met message zodat UI graceful kan degraderen */
+    return res.status(200).json({ ...emptyResponse(`Shopify fout: ${error.message || 'unknown'}`), configured: true });
   }
 }
 
@@ -85,10 +93,13 @@ function computeRange(period) {
   return { from, to, prevFrom, prevTo };
 }
 
-async function fetchShopifyOrders(domain, token, from, to) {
-  const url = `https://${domain}/admin/api/2024-01/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,subtotal_price,total_discounts,refunds,line_items,source_name,tags,customer`;
+async function fetchShopifyOrders(domain, token, apiVersion, from, to) {
+  const url = `https://${domain}/admin/api/${apiVersion}/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,subtotal_price,total_discounts,refunds,line_items,source_name,tags,customer`;
   const r = await fetch(url, { headers: { 'X-Shopify-Access-Token': token, Accept: 'application/json' } });
-  if (!r.ok) throw new Error(`Shopify API ${r.status}`);
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`Shopify API ${r.status} (${apiVersion}) — ${text.slice(0, 100)}`);
+  }
   const d = await r.json();
   return d.orders || [];
 }

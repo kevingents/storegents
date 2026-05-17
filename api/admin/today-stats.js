@@ -23,10 +23,11 @@ export default async function handler(req, res) {
   const yesterday = startOfDay(new Date(Date.now() - 86400000));
   const tomorrow = new Date(today.getTime() + 86400000);
 
-  /* Shopify orders fetch */
-  const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || 'gentsherenmode.myshopify.com';
+  /* Shopify orders fetch — match standaard codebase env-vars */
+  const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '';
   const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
-  const configured = Boolean(shopifyToken);
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2025-01';
+  const configured = Boolean(shopifyToken && shopifyDomain);
 
   let newOrders = 0;
   let revenue = 0;
@@ -35,9 +36,9 @@ export default async function handler(req, res) {
   let yesterdayRevenue = 0;
   let shopifyError = '';
 
-  if (shopifyToken) {
+  if (configured) {
     try {
-      const url = `https://${shopifyDomain}/admin/api/2024-01/orders.json?status=any&created_at_min=${yesterday.toISOString()}&created_at_max=${tomorrow.toISOString()}&limit=250`;
+      const url = `https://${shopifyDomain}/admin/api/${apiVersion}/orders.json?status=any&created_at_min=${yesterday.toISOString()}&created_at_max=${tomorrow.toISOString()}&limit=250`;
       const r = await fetch(url, { headers: { 'X-Shopify-Access-Token': shopifyToken, Accept: 'application/json' } });
       if (r.ok) {
         const d = await r.json();
@@ -82,9 +83,13 @@ export default async function handler(req, res) {
     success: true,
     today: today.toISOString().slice(0, 10),
     configured,
+    shopifyDomain,
+    apiVersion,
     message: configured
       ? (shopifyError ? `Shopify fout: ${shopifyError}` : '')
-      : 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars. Voeg token toe met read_orders scope om live data te zien.',
+      : (!shopifyToken
+          ? 'SHOPIFY_ADMIN_ACCESS_TOKEN ontbreekt in Vercel env-vars.'
+          : 'SHOPIFY_STORE_DOMAIN ontbreekt in Vercel env-vars.'),
     metrics: {
       newOrders: { value: newOrders, prev: yesterdayOrders, trendPct: trend(newOrders, yesterdayOrders) },
       revenue:   { value: revenue,   prev: yesterdayRevenue, trendPct: trend(revenue, yesterdayRevenue) },
