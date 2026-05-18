@@ -18,6 +18,7 @@
 
 import { createNotification } from '../../lib/store-notifications-store.js';
 import { getSubscriptionsForStores, removeSubscriptionByEndpoint } from '../../lib/push-subscriptions-store.js';
+import { sendPushToStores, pushowlConfigured } from '../../lib/pushowl-client.js';
 import { getSeenIds, markSeen } from '../../lib/notifications-watermark-store.js';
 import { listBranches } from '../../lib/branch-metrics.js';
 
@@ -86,16 +87,24 @@ async function checkStorePickups(req, store) {
         title: `${newOrders.length} nieuwe afhaalorder${newOrders.length > 1 ? 's' : ''}`,
         body: `${sample}${more} · Klanten wachten om hun bestelling op te halen.`,
         severity: 'info',
-        link: '/admin#afhaalorders',
+        link: '/pages/winkel-portaal',
         createdBy: 'cron:new-order-watcher'
       });
-      /* Push */
+      /* Web Push (eigen SW) — werkt niet in Shopify maar best-effort */
       try {
         const subs = await getSubscriptionsForStores([store]);
         await Promise.all(subs.map(s => sendPushBestEffort(s, {
           id: notif.id, title: notif.title, body: notif.body, severity: notif.severity, link: notif.link
         })));
       } catch (e) { console.error('[push pickup]', e.message); }
+      /* PushOwl push — werkt wel in Shopify */
+      if (pushowlConfigured()) {
+        try {
+          await sendPushToStores([store], {
+            title: notif.title, body: notif.body, url: 'https://gents.nl/pages/winkel-portaal'
+          });
+        } catch (e) { console.error('[pushowl pickup]', e.message); }
+      }
       await markSeen(seenKey, result.newIds);
     }
   } catch (error) {
@@ -126,7 +135,7 @@ async function checkStoreWeborders(req, store) {
         title: `${newOrders.length} nieuwe weborder${newOrders.length > 1 ? 's' : ''}`,
         body: `${sample}${more} · Klaarmaken voor pick & pack.`,
         severity: 'info',
-        link: '/admin#open-orders',
+        link: '/pages/winkel-portaal',
         createdBy: 'cron:new-order-watcher'
       });
       try {
@@ -135,6 +144,13 @@ async function checkStoreWeborders(req, store) {
           id: notif.id, title: notif.title, body: notif.body, severity: notif.severity, link: notif.link
         })));
       } catch (e) { console.error('[push weborder]', e.message); }
+      if (pushowlConfigured()) {
+        try {
+          await sendPushToStores([store], {
+            title: notif.title, body: notif.body, url: 'https://gents.nl/pages/winkel-portaal'
+          });
+        } catch (e) { console.error('[pushowl weborder]', e.message); }
+      }
       await markSeen(seenKey, result.newIds);
     }
   } catch (error) {
