@@ -113,6 +113,38 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, leaderboard });
     }
 
+    /* Mode: trend per store (laatste N maanden score-verloop) */
+    if (String(req.query.trend || '') === 'true') {
+      const storeFilter = String(req.query.store || '').trim();
+      if (!storeFilter) {
+        return res.status(400).json({ success: false, message: '?store= is verplicht voor trend.' });
+      }
+      const monthsLimit = Math.max(1, Math.min(24, Number(req.query.months || 6) || 6));
+      const recent = await readRecentWinners(monthsLimit);
+      const series = recent
+        .slice()
+        .reverse() /* oudste eerst voor chart */
+        .map((row) => {
+          const storeRow = (row.allRows || []).find((r) => r.store === storeFilter);
+          return {
+            month: row.month,
+            monthName: row.monthName || monthLabel(row.month),
+            score: storeRow ? storeRow.score : null,
+            eligible: storeRow ? storeRow.eligible : false,
+            transactions: storeRow ? storeRow.transactions : 0,
+            pillars: storeRow ? storeRow.pillars : null,
+            isWinner: row.winner?.store === storeFilter,
+            isSubWinner: ['customers', 'loyalty', 'crossChannel', 'data'].filter((k) => row.subWinners?.[k]?.store === storeFilter)
+          };
+        });
+      return res.status(200).json({
+        success: true,
+        store: storeFilter,
+        months: monthsLimit,
+        series
+      });
+    }
+
     /* Default: laatste N maanden */
     const limit = Math.max(1, Math.min(60, Number(req.query.limit || 12) || 12));
     const recent = await readRecentWinners(limit);
