@@ -2,6 +2,7 @@ import { createSrsReturn } from '../lib/srs-client.js';
 import { getSrsBranchId } from '../lib/srs-branches.js';
 import { createSrsReturnLog } from '../lib/srs-return-log-store.js';
 import { getFulfillments, isSrsReturnableStatus } from '../lib/srs-weborders-message-client.js';
+import { peekIdempotency, markIdempotencyDone } from '../lib/idempotency-store.js';
 
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
@@ -601,6 +602,29 @@ export default async function handler(req, res) {
   }
 
   const body = normalizeBody(req);
+
+  /* Idempotency: voorkomt dubbele refund bij dubbel-klik / hapering / retry.
+     Client genereert een UUID; backend cached de eerste success-response. */
+  const idempotencyKey = String(
+    body.idempotencyKey ||
+    req.headers['x-idempotency-key'] ||
+    req.headers['idempotency-key'] ||
+    ''
+  ).trim();
+
+  if (idempotencyKey) {
+    try {
+      const cached = await peekIdempotency('refund', idempotencyKey);
+      if (cached) {
+        console.log('[refund] idempotency replay', idempotencyKey.slice(0, 12));
+        return res.status(cached.status).json({ ...cached.body, replayed: true });
+      }
+    } catch (error) {
+      console.warn('[refund] idempotency peek fail:', error.message);
+      /* Bij peek-fout: gewoon doorgaan met normale flow. */
+    }
+  }
+
   const orderId = String(body.orderId || body.id || '').trim();
   const employeeName = String(body.employeeName || body.medewerker || '').trim();
   const reason = String(body.reason || body.reden || '').trim();
@@ -863,7 +887,12 @@ export default async function handler(req, res) {
         message: 'SRS retour-boeking overgeslagen — artikel niet terug in voorraad (bv. klacht/defect).',
         reasonChecked,
         crossSellMade,
-        crossSellAmount
+        crossSellAmount,
+        customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
+        customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
+        customerId: String(order.customer?.id || ''),
+        reason,
+        refundAmount: srsItems.reduce((sum, it) => sum + Number(it.price || 0) * Number(it.pieces || 1), 0)
       });
 
       await addOrderTags(order, [
@@ -873,7 +902,7 @@ export default async function handler(req, res) {
         'srs_retour_overgeslagen_onverkoopbaar'
       ]);
 
-      return res.status(200).json({
+      const responseBody = {
         success: true,
         message: 'Retour verwerkt. Shopify-refund aangemaakt; SRS-voorraad NIET teruggeboekt (artikel onverkoopbaar).',
         shopifyRefund: created.refund || created,
@@ -882,7 +911,9 @@ export default async function handler(req, res) {
         srsReturn: { skipped: true, reason: 'srsRestock=false', status: 'skipped' },
         srsLog,
         shippingRefunded: includeShipping
-      });
+      };
+      if (idempotencyKey) await markIdempotencyDone('refund', idempotencyKey, 200, responseBody);
+      return res.status(200).json(responseBody);
     }
 
     try {
@@ -906,7 +937,12 @@ export default async function handler(req, res) {
         message: srsResult.success ? 'Retour verwerkt in SRS op het meldende filiaal.' : 'SRS retour gaf geen completed status.',
         reasonChecked,
         crossSellMade,
-        crossSellAmount
+        crossSellAmount,
+        customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
+        customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
+        customerId: String(order.customer?.id || ''),
+        reason,
+        refundAmount: srsItems.reduce((sum, it) => sum + Number(it.price || 0) * Number(it.pieces || 1), 0)
       });
 
       await addOrderTags(order, [
@@ -929,7 +965,12 @@ export default async function handler(req, res) {
         message: srsError.message || 'SRS retour verwerken mislukt.',
         reasonChecked,
         crossSellMade,
-        crossSellAmount
+        crossSellAmount,
+        customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
+        customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
+        customerId: String(order.customer?.id || ''),
+        reason,
+        refundAmount: srsItems.reduce((sum, it) => sum + Number(it.price || 0) * Number(it.pieces || 1), 0)
       });
 
       await addOrderTags(order, [
@@ -939,7 +980,7 @@ export default async function handler(req, res) {
         'srs_retour_mislukt'
       ]);
 
-      return res.status(200).json({
+      const partialBody = {
         success: true,
         partial: true,
         warning: 'Shopify refund is uitgevoerd, maar SRS retour is mislukt. Controleer SRS handmatig.',
@@ -949,10 +990,15 @@ export default async function handler(req, res) {
         srsReturn: null,
         srsLog,
         srsError: srsError.message || String(srsError)
-      });
+      };
+      /* Partial wordt wel idempotent gemaakt: dubbele aanroep mag niet alsnog
+         een 2e Shopify-refund triggeren. SRS opnieuw proberen doet de
+         medewerker handmatig in SRS, niet via dit endpoint. */
+      if (idempotencyKey) await markIdempotencyDone('refund', idempotencyKey, 200, partialBody);
+      return res.status(200).json(partialBody);
     }
 
-    return res.status(200).json({
+    const successBody = {
       success: true,
       message: 'Retour en terugbetaling verwerkt.',
       shopifyRefund: created.refund || created,
@@ -960,7 +1006,9 @@ export default async function handler(req, res) {
       shopifyReturnClose: shopifyReturnCloseResult,
       srsReturn: srsResult,
       srsLog
-    });
+    };
+    if (idempotencyKey) await markIdempotencyDone('refund', idempotencyKey, 200, successBody);
+    return res.status(200).json(successBody);
   } catch (error) {
     console.error('Retour/terugbetaling verwerken mislukt:', error);
     return res.status(error.status || 500).json({

@@ -43,11 +43,14 @@ export default async function handler(req, res) {
 
   const orderIds = normalizeIds(req.query.orderIds);
   const orderNrs = normalizeIds(req.query.orderNrs);
+  const customerEmail = String(req.query.customerEmail || req.query.email || '').trim().toLowerCase();
+  const customerId = String(req.query.customerId || '').trim();
+  const daysWindow = Math.max(0, Math.min(3650, Number(req.query.days || 0) || 0));
 
-  if (!orderIds.length && !orderNrs.length) {
+  if (!orderIds.length && !orderNrs.length && !customerEmail && !customerId) {
     return res.status(400).json({
       success: false,
-      message: 'Geef orderIds of orderNrs op om te tellen.'
+      message: 'Geef orderIds, orderNrs, customerEmail of customerId op om te tellen.'
     });
   }
 
@@ -55,22 +58,40 @@ export default async function handler(req, res) {
     const logs = await getSrsReturnLogs();
     const idSet = new Set(orderIds.map(String));
     const nrSet = new Set(orderNrs.map((nr) => String(nr).replace(/^#/, '')));
+    const cutoff = daysWindow > 0 ? Date.now() - daysWindow * 24 * 60 * 60 * 1000 : 0;
 
     const matches = (Array.isArray(logs) ? logs : []).filter((log) => {
+      /* Datum-filter */
+      if (cutoff && log.createdAt && new Date(log.createdAt).getTime() < cutoff) return false;
+
       const shopId = String(log.shopifyOrderId || '');
       const orderNr = String(log.orderNr || '').replace(/^#/, '');
-      return (shopId && idSet.has(shopId)) || (orderNr && nrSet.has(orderNr));
+      const logEmail = String(log.customerEmail || '').toLowerCase();
+      const logCustomerId = String(log.customerId || '');
+
+      if (idSet.size && shopId && idSet.has(shopId)) return true;
+      if (nrSet.size && orderNr && nrSet.has(orderNr)) return true;
+      if (customerEmail && logEmail && logEmail === customerEmail) return true;
+      if (customerId && logCustomerId && logCustomerId === customerId) return true;
+      return false;
     });
+
+    /* Sorteer nieuwste eerst voor frontend rendering */
+    matches.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
     const items = matches.map((log) => ({
       id: log.id,
       orderNr: log.orderNr || '',
+      shopifyOrderId: log.shopifyOrderId || '',
       store: log.store || '',
       status: log.status || '',
       success: Boolean(log.success),
       createdAt: log.createdAt || '',
       crossSellMade: Boolean(log.crossSellMade),
-      crossSellAmount: Number(log.crossSellAmount || 0) || 0
+      crossSellAmount: Number(log.crossSellAmount || 0) || 0,
+      reason: log.reason || '',
+      refundAmount: Number(log.refundAmount || 0) || 0,
+      itemCount: Array.isArray(log.items) ? log.items.length : 0
     }));
 
     return res.status(200).json({
@@ -79,6 +100,7 @@ export default async function handler(req, res) {
       successCount: items.filter((item) => item.success).length,
       crossSellCount: items.filter((item) => item.crossSellMade).length,
       crossSellTotal: items.reduce((sum, item) => sum + item.crossSellAmount, 0),
+      refundTotal: items.reduce((sum, item) => sum + item.refundAmount, 0),
       items
     });
   } catch (error) {
