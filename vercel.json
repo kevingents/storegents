@@ -63,6 +63,10 @@
     {
       "path": "/api/cron/new-order-watcher",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/store-insights-builder",
+      "schedule": "0 3 * * *"
     }
   ]
 }
