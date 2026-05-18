@@ -1,5 +1,7 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getLocationsMap } from '../../lib/shopify-locations.js';
+import { getCustomers } from '../../lib/srs-customers-client.js';
+import { listBranches, getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 
 /**
  * GET /api/admin/store-customer-overview?period=month
@@ -105,21 +107,85 @@ async function fetchOrders({ from, to, maxOrders }) {
   return orders.slice(0, maxOrders);
 }
 
-/* SRS weekly-report binnen-API call (internal fetch) — we hergebruiken bestaande logica */
-async function fetchSrsCustomerReport(dateFrom, dateTo, originalReq) {
-  /* Bouw absolute URL — Vercel runtime variabele of fallback naar local */
-  const host = originalReq.headers['host'] || 'storegents.vercel.app';
-  const protocol = host.startsWith('localhost') ? 'http' : 'https';
-  const url = `${protocol}://${host}/api/admin/customers/monthly-store-report?dateFrom=${dateFrom}&dateTo=${dateTo}&t=${Date.now()}`;
-  const adminToken = originalReq.headers['x-admin-token'] || originalReq.query.adminToken || process.env.ADMIN_TOKEN || '';
+/**
+ * Direct SRS-fetch (vervangt de internal HTTP roundtrip).
+ * Per branch aggregeert nieuwe klanten + zonder-email count.
+ *
+ * Returnt:
+ *   {
+ *     byBranchId: Map<branchId, { newCustomers, withEmail, withoutEmail, emailRate, mailingOptIn }>,
+ *     byStoreName: Map<storeName, ...> (zelfde data, key op naam),
+ *     totals: { newCustomers, withEmail, withoutEmail, emailRate }
+ *   }
+ */
+async function fetchSrsInschrijvingen(dateFrom, dateTo) {
+  const empty = {
+    byBranchId: new Map(),
+    byStoreName: new Map(),
+    totals: { newCustomers: 0, withEmail: 0, withoutEmail: 0, emailRate: 0, mailingOptIn: 0 }
+  };
+
   try {
-    const resp = await fetch(url, {
-      headers: { 'x-admin-token': String(adminToken), Accept: 'application/json' }
+    const result = await getCustomers({
+      createdFrom: `${dateFrom}T00:00:00`,
+      createdUntil: `${dateTo}T23:59:59`
     });
-    if (!resp.ok) return { rows: [] };
-    return await resp.json();
-  } catch (_) {
-    return { rows: [] };
+    const customers = Array.isArray(result?.customers) ? result.customers : [];
+
+    const byBranchId = new Map();
+    let allWithEmail = 0;
+    let allWithoutEmail = 0;
+    let allMailingOptIn = 0;
+
+    customers.forEach((c) => {
+      const branchId = String(
+        c.registeredInBranchId || c.RegisteredInBranchId ||
+        c.branchId || c.BranchId ||
+        c.storeBranchId || c.StoreBranchId || ''
+      ).trim();
+      const email = String(c.email || c.Email || c.emailAddress || '').trim();
+      const allowMail = ['true', '1', 'yes', 'ja'].includes(
+        String(c.allowMailings ?? c.AllowMailings ?? '').toLowerCase()
+      );
+
+      if (email) allWithEmail++; else allWithoutEmail++;
+      if (allowMail) allMailingOptIn++;
+
+      if (!branchId) return;
+      const cur = byBranchId.get(branchId) || { newCustomers: 0, withEmail: 0, withoutEmail: 0, mailingOptIn: 0 };
+      cur.newCustomers++;
+      if (email) cur.withEmail++; else cur.withoutEmail++;
+      if (allowMail) cur.mailingOptIn++;
+      byBranchId.set(branchId, cur);
+    });
+
+    /* Bereken emailRate per branch + voor totalen */
+    for (const [bid, val] of byBranchId) {
+      val.emailRate = val.newCustomers ? Math.round((val.withEmail / val.newCustomers) * 100) : 0;
+    }
+
+    /* Build byStoreName index voor fuzzy matching */
+    const byStoreName = new Map();
+    for (const [bid, val] of byBranchId) {
+      const name = getStoreNameByBranchId(bid);
+      if (name) byStoreName.set(name, { ...val, branchId: bid, store: name });
+    }
+
+    const totalNew = allWithEmail + allWithoutEmail;
+    return {
+      byBranchId,
+      byStoreName,
+      totals: {
+        newCustomers: totalNew,
+        withEmail: allWithEmail,
+        withoutEmail: allWithoutEmail,
+        mailingOptIn: allMailingOptIn,
+        emailRate: totalNew ? Math.round((allWithEmail / totalNew) * 100) : 0
+      }
+    };
+  } catch (error) {
+    console.error('[store-customer-overview] SRS getCustomers fout:', error.message);
+    return empty;
   }
 }
 
@@ -136,10 +202,10 @@ export default async function handler(req, res) {
   const { from, to, lookbackFrom } = computeRange(period);
 
   try {
-    /* Parallel: Shopify orders (huidige + lookback) + SRS customer report + Shopify Locations */
-    const [orders, srsReport, locationsMap] = await Promise.all([
+    /* Parallel: Shopify orders (huidige + lookback) + SRS inschrijvingen + Shopify Locations */
+    const [orders, srsData, locationsMap] = await Promise.all([
       fetchOrders({ from: lookbackFrom, to, maxOrders }),
-      fetchSrsCustomerReport(from.toISOString().slice(0, 10), to.toISOString().slice(0, 10), req),
+      fetchSrsInschrijvingen(from.toISOString().slice(0, 10), to.toISOString().slice(0, 10)),
       getLocationsMap().catch(() => new Map())
     ]);
 
@@ -181,17 +247,8 @@ export default async function handler(req, res) {
       } catch (_) { channelTrend = null; }
     }
 
-    /* SRS rows (per branch) → naam-lookup voor mail-stats */
-    const srsByStore = new Map();
-    (srsReport.rows || []).forEach((row) => {
-      srsByStore.set(row.store || row.branchName, {
-        newCustomers: row.newCustomers || row.total || 0,
-        withEmail: row.withEmail || 0,
-        withoutEmail: row.withoutEmail || 0,
-        emailRate: row.emailRate || 0,
-        mailingOptIn: row.mailingOptIn || 0
-      });
-    });
+    /* SRS data — al per store-naam geïndexeerd */
+    const srsByStore = srsData.byStoreName;
 
     /* Per-store customer aggregatie */
     const byStore = new Map();
@@ -233,14 +290,14 @@ export default async function handler(req, res) {
       custMap.set(key, cur);
     }
 
-    /* Voor elke winkel: bereken stats */
-    const stores = [...byStore.entries()].map(([store, custMap]) => {
+    /* Helper: compute Shopify-side stats per winkel (return same shape voor 0-orders winkels) */
+    function computeShopifyStats(custMap) {
+      if (!custMap || !custMap.size) {
+        return { uniqueCustomers: 0, totalOrders: 0, totalSpend: 0, returningCount: 0, returningRate: 0, top: [] };
+      }
       const list = [...custMap.values()];
       const inPeriod = list.filter((c) => c.ordersInPeriod > 0);
 
-      /* Returning customer logic:
-         - Klant heeft 1+ order in periode (from..to)
-         - EN heeft een eerdere order binnen RETURNING_WINDOW_DAYS daarvoor */
       let returningCount = 0;
       inPeriod.forEach((c) => {
         const sortedDates = [...c.dates].sort((a, b) => a - b);
@@ -252,7 +309,6 @@ export default async function handler(req, res) {
           }
         }
       });
-
       const returningRate = inPeriod.length ? Math.round((returningCount / inPeriod.length) * 100) : 0;
 
       const top = list
@@ -266,25 +322,67 @@ export default async function handler(req, res) {
         .sort((a, b) => b.spend - a.spend)
         .slice(0, 5);
 
-      /* Match met SRS report op store-naam (fuzzy) */
-      const srsMatch = srsByStore.get(store) ||
-        [...srsByStore.entries()].find(([k]) => k.toLowerCase().includes(store.toLowerCase().replace(/^gents\s+/, '')))?.[1] ||
-        null;
-
       return {
-        store,
         uniqueCustomers: inPeriod.length,
         totalOrders: inPeriod.reduce((s, c) => s + c.ordersInPeriod, 0),
         totalSpend: moneyNumber(inPeriod.reduce((s, c) => s + c.spend, 0)),
-        returningCount,
-        returningRate,
-        newRegistrations: srsMatch?.newCustomers || 0,
-        newWithoutEmail: srsMatch?.withoutEmail || 0,
-        newEmailRate: srsMatch?.emailRate ?? null,
-        newMailingOptIn: srsMatch?.mailingOptIn || 0,
-        top
+        returningCount, returningRate, top
       };
-    }).sort((a, b) => b.totalSpend - a.totalSpend);
+    }
+
+    /* Master-lijst van winkels: combineer ALLE SRS-branches (uit branch-metrics)
+       + alle Shopify-aggregaties die niet matchen (bv 'Webshop'). */
+    const allBranches = listBranches();
+    const stores = [];
+    const usedStoreKeys = new Set();
+
+    /* Step 1: voor elke SRS-branch → maak een entry, voeg Shopify-data toe als available */
+    allBranches.forEach((branch) => {
+      const branchName = branch.store;
+      const srsEntry = srsByStore.get(branchName) || null;
+      const custMap = byStore.get(branchName);
+      const shopifyStats = computeShopifyStats(custMap);
+      usedStoreKeys.add(branchName);
+
+      stores.push({
+        store: branchName,
+        branchId: branch.branchId,
+        source: 'srs_branch',
+        ...shopifyStats,
+        newRegistrations: srsEntry?.newCustomers || 0,
+        newWithoutEmail: srsEntry?.withoutEmail || 0,
+        newWithEmail: srsEntry?.withEmail || 0,
+        newEmailRate: srsEntry?.emailRate ?? null,
+        newMailingOptIn: srsEntry?.mailingOptIn || 0
+      });
+    });
+
+    /* Step 2: Shopify-stores die GEEN match hebben (bv 'Webshop', 'Locatie xxx') */
+    for (const [storeName, custMap] of byStore) {
+      if (usedStoreKeys.has(storeName)) continue;
+      const shopifyStats = computeShopifyStats(custMap);
+      stores.push({
+        store: storeName,
+        branchId: null,
+        source: 'shopify_only',
+        ...shopifyStats,
+        newRegistrations: 0,
+        newWithoutEmail: 0,
+        newWithEmail: 0,
+        newEmailRate: null,
+        newMailingOptIn: 0
+      });
+    }
+
+    /* Sort: stores met data eerst (omzet of inschrijvingen), winkels zonder data laatst */
+    stores.sort((a, b) => {
+      const aHas = (a.totalSpend > 0 || a.newRegistrations > 0) ? 1 : 0;
+      const bHas = (b.totalSpend > 0 || b.newRegistrations > 0) ? 1 : 0;
+      if (aHas !== bHas) return bHas - aHas;
+      const aScore = (a.totalSpend || 0) + (a.newRegistrations || 0) * 100;
+      const bScore = (b.totalSpend || 0) + (b.newRegistrations || 0) * 100;
+      return bScore - aScore;
+    });
 
     /* Channel split headline */
     const totalCount = totalOnline + totalStore;
@@ -306,7 +404,8 @@ export default async function handler(req, res) {
       returningWindowDays: RETURNING_WINDOW_DAYS,
       ordersScanned: orders.length,
       locationsMatched: locationsMap.size,
-      srsReportRows: (srsReport.rows || []).length,
+      srsInschrijvingenTotals: srsData.totals,
+      srsBranchesWithData: srsData.byBranchId.size,
       channelSplit,
       channelTrend,
       stores
