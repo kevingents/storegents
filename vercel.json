@@ -75,6 +75,10 @@
     {
       "path": "/api/cron/srs-stock-delta-import?mode=full",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/monthly-omnichannel-winner",
+      "schedule": "0 8 1 * *"
     }
   ]
 }
