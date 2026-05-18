@@ -162,17 +162,45 @@ function orderMatchesPostcode(shopifyOrder, postcode) {
 }
 
 async function findOrderByOrderNumber(shop, token, orderValue) {
-  let orderNumber = String(orderValue || '').trim();
+  const raw = String(orderValue || '').trim();
+  if (!raw) return null;
 
-  if (!orderNumber) return null;
-  if (!orderNumber.startsWith('#')) orderNumber = `#${orderNumber}`;
+  /* Drie inputvormen mogelijk:
+       1. "#1234"   of  "1234"           → order.name search ("#1234")
+       2. "13190847627637" (>= 12 cijfers, geen #) → Shopify internal ID, direct fetch
+       3. "GNT-2026-..." of andere namen → name search met # prefix
+     We proberen #1 / #3 eerst (omdat 90% van inputs is); als dat niets oplevert
+     en de input ziet eruit als een Shopify-ID (puur numeriek, >= 12 cijfers)
+     fallback naar direct ID fetch. */
 
+  /* Stap 1: name search (huidige gedrag, met of zonder #) */
+  const nameQuery = raw.startsWith('#') ? raw : `#${raw}`;
   const { response, data } = await shopifyFetch(
     shop,
     token,
-    `/orders.json?status=any&name=${encodeURIComponent(orderNumber)}`
+    `/orders.json?status=any&name=${encodeURIComponent(nameQuery)}`
   );
 
+  if (response.ok && data.orders && data.orders.length) {
+    return data.orders[0];
+  }
+
+  /* Stap 2: als input puur numeriek >= 12 cijfers → mogelijk Shopify ID */
+  const stripped = raw.replace(/^#/, '');
+  if (/^\d{12,}$/.test(stripped)) {
+    try {
+      const { response: r2, data: d2 } = await shopifyFetch(
+        shop,
+        token,
+        `/orders/${encodeURIComponent(stripped)}.json?status=any`
+      );
+      if (r2.ok && d2.order) return d2.order;
+    } catch (_error) {
+      /* val terug op originele 404-handling */
+    }
+  }
+
+  /* Stap 3: als response van name-search niet ok was → echte fout doorgeven */
   if (!response.ok) {
     const error = new Error('Shopify order lookup mislukt');
     error.status = response.status;
@@ -180,7 +208,7 @@ async function findOrderByOrderNumber(shop, token, orderValue) {
     throw error;
   }
 
-  return data.orders && data.orders.length ? data.orders[0] : null;
+  return null;
 }
 
 async function findOrdersByEmailFast(shop, token, email) {
