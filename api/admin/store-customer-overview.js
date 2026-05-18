@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { getLocationsMap } from '../../lib/shopify-locations.js';
 
 /**
  * GET /api/admin/store-customer-overview?period=month
@@ -9,8 +10,12 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
  *   - Aantal nieuwe inschrijvingen (uit SRS weekly-report)
  *   - Aantal nieuwe inschrijvingen ZONDER e-mail (compliance signaal)
  *
+ * Globaal:
+ *   - Channel split (online vs winkel) + 12-maanden trend
+ *
  * Bronnen:
  *   - Shopify orders.json (per-store + per-customer aggregatie)
+ *   - Shopify locations.json (location_id → winkelnaam mapping)
  *   - /api/admin/customers/weekly-report (SRS customer inschrijvingen)
  */
 
@@ -49,7 +54,12 @@ function computeRange(period) {
   return { from, to: now, lookbackFrom };
 }
 
-function deriveStoreFromOrder(o) {
+function deriveStoreFromOrder(o, locationsMap) {
+  /* location_id → echte winkel-naam (Shopify Locations API) */
+  if (o.location_id && locationsMap?.has(String(o.location_id))) {
+    const loc = locationsMap.get(String(o.location_id));
+    if (loc?.name) return loc.name;
+  }
   const src = String(o.source_name || '').toLowerCase();
   if (src === 'pos') {
     const tags = String(o.tags || '').split(',').map((t) => t.trim());
@@ -60,6 +70,14 @@ function deriveStoreFromOrder(o) {
   }
   if (src && src !== 'web' && src !== 'shopify_draft_order') return src.charAt(0).toUpperCase() + src.slice(1);
   return 'Webshop';
+}
+
+function deriveChannel(o) {
+  /* Online = web checkout; Winkel = POS / fysieke winkel */
+  const src = String(o.source_name || '').toLowerCase();
+  if (src === 'pos') return 'store';
+  if (o.location_id) return 'store'; /* heeft location → fysiek */
+  return 'online';
 }
 
 async function fetchOrders({ from, to, maxOrders }) {
@@ -118,11 +136,50 @@ export default async function handler(req, res) {
   const { from, to, lookbackFrom } = computeRange(period);
 
   try {
-    /* Parallel: Shopify orders (huidige + lookback) + SRS customer report */
-    const [orders, srsReport] = await Promise.all([
+    /* Parallel: Shopify orders (huidige + lookback) + SRS customer report + Shopify Locations */
+    const [orders, srsReport, locationsMap] = await Promise.all([
       fetchOrders({ from: lookbackFrom, to, maxOrders }),
-      fetchSrsCustomerReport(from.toISOString().slice(0, 10), to.toISOString().slice(0, 10), req)
+      fetchSrsCustomerReport(from.toISOString().slice(0, 10), to.toISOString().slice(0, 10), req),
+      getLocationsMap().catch(() => new Map())
     ]);
+
+    /* Channel-split trend: laatste 12 maanden online vs winkel.
+       Voor de trend halen we orders 12mnd terug op met aparte fetch
+       om de current/lookback fetch lichter te houden. */
+    let channelTrend = null;
+    if (clean(req.query.includeTrend || '1') === '1') {
+      try {
+        const trendFrom = new Date();
+        trendFrom.setMonth(trendFrom.getMonth() - 12);
+        trendFrom.setDate(1);
+        trendFrom.setHours(0, 0, 0, 0);
+        const trendOrders = await fetchOrders({ from: trendFrom, to, maxOrders: 5000 });
+        const byMonth = new Map();
+        for (const o of trendOrders) {
+          const d = new Date(o.created_at);
+          if (isNaN(d)) continue;
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const ch = deriveChannel(o);
+          const cur = byMonth.get(key) || { month: key, online: 0, store: 0, onlineSpend: 0, storeSpend: 0 };
+          cur[ch] += 1;
+          cur[ch + 'Spend'] += Number(o.total_price || 0);
+          byMonth.set(key, cur);
+        }
+        const months = [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month));
+        channelTrend = months.map((m) => {
+          const total = m.online + m.store;
+          return {
+            ...m,
+            total,
+            onlinePct: total ? Math.round((m.online / total) * 100) : 0,
+            storePct: total ? Math.round((m.store / total) * 100) : 0,
+            onlineSpend: moneyNumber(m.onlineSpend),
+            storeSpend: moneyNumber(m.storeSpend),
+            totalSpend: moneyNumber(m.onlineSpend + m.storeSpend)
+          };
+        });
+      } catch (_) { channelTrend = null; }
+    }
 
     /* SRS rows (per branch) → naam-lookup voor mail-stats */
     const srsByStore = new Map();
@@ -138,13 +195,24 @@ export default async function handler(req, res) {
 
     /* Per-store customer aggregatie */
     const byStore = new Map();
+    /* Globale channel-counts in periode (for headline %) */
+    let totalOnline = 0;
+    let totalStore = 0;
+    let totalOnlineSpend = 0;
+    let totalStoreSpend = 0;
     for (const o of orders) {
       const cust = o.customer || {};
       const email = clean(cust.email).toLowerCase();
       const customerId = clean(cust.id);
       const key = email || customerId;
       if (!key) continue;
-      const store = deriveStoreFromOrder(o);
+      const store = deriveStoreFromOrder(o, locationsMap);
+      const orderDateRaw = new Date(o.created_at);
+      if (orderDateRaw >= from) {
+        const ch = deriveChannel(o);
+        if (ch === 'online') { totalOnline++; totalOnlineSpend += Number(o.total_price || 0); }
+        else { totalStore++; totalStoreSpend += Number(o.total_price || 0); }
+      }
       if (!byStore.has(store)) byStore.set(store, new Map());
       const custMap = byStore.get(store);
       const name = clean([cust.first_name, cust.last_name].filter(Boolean).join(' ')) || email;
@@ -218,13 +286,29 @@ export default async function handler(req, res) {
       };
     }).sort((a, b) => b.totalSpend - a.totalSpend);
 
+    /* Channel split headline */
+    const totalCount = totalOnline + totalStore;
+    const channelSplit = {
+      online: totalOnline,
+      store: totalStore,
+      total: totalCount,
+      onlinePct: totalCount ? Math.round((totalOnline / totalCount) * 100) : 0,
+      storePct: totalCount ? Math.round((totalStore / totalCount) * 100) : 0,
+      onlineSpend: moneyNumber(totalOnlineSpend),
+      storeSpend: moneyNumber(totalStoreSpend),
+      totalSpend: moneyNumber(totalOnlineSpend + totalStoreSpend)
+    };
+
     return res.status(200).json({
       success: true,
       period,
       range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
       returningWindowDays: RETURNING_WINDOW_DAYS,
       ordersScanned: orders.length,
+      locationsMatched: locationsMap.size,
       srsReportRows: (srsReport.rows || []).length,
+      channelSplit,
+      channelTrend,
       stores
     });
   } catch (error) {
