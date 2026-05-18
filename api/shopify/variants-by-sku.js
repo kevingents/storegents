@@ -64,11 +64,15 @@ const VARIANT_QUERY = `
         barcode
         title
         price
+        selectedOptions { name value }
         image { url altText }
         product {
           id
           title
           handle
+          vendor
+          productType
+          tags
           featuredImage { url altText }
         }
       }
@@ -122,6 +126,12 @@ export default async function handler(req, res) {
       for (const node of nodes) {
         const sku = String(node.sku || '').trim();
         if (!sku) continue;
+        const opts = Array.isArray(node.selectedOptions) ? node.selectedOptions : [];
+        const findOpt = (names) => {
+          const lower = names.map((n) => n.toLowerCase());
+          const m = opts.find((o) => lower.includes(String(o.name || '').toLowerCase()));
+          return m ? String(m.value || '') : '';
+        };
         const value = {
           sku,
           barcode: node.barcode || '',
@@ -129,7 +139,14 @@ export default async function handler(req, res) {
           productTitle: node.product?.title || '',
           productHandle: node.product?.handle || '',
           image: node.image?.url || node.product?.featuredImage?.url || '',
-          price: node.price || ''
+          price: node.price || '',
+          /* Nieuw: rijke voorkeur-data voor klantprofiel */
+          size: findOpt(['Size', 'Maat']),
+          color: findOpt(['Color', 'Colour', 'Kleur']),
+          options: opts.map((o) => ({ name: o.name, value: o.value })),
+          vendor: node.product?.vendor || '',
+          productType: node.product?.productType || '',
+          tags: Array.isArray(node.product?.tags) ? node.product.tags : []
         };
         cacheSet(sku, value);
         if (!byKey[sku]) byKey[sku] = value;

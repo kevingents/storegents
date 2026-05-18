@@ -47,7 +47,8 @@ async function fetchOrders({ from, to, maxOrders }) {
   }
   const shop = SHOPIFY_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const orders = [];
-  let url = `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,customer,refunds`;
+  /* source_name + location_id + tags toegevoegd voor per-winkel attributie */
+  let url = `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,customer,refunds,source_name,location_id,tags`;
 
   while (url && orders.length < maxOrders) {
     const resp = await fetch(url, {
@@ -78,13 +79,81 @@ export default async function handler(req, res) {
   const metric = clean(req.query.metric || 'spend').toLowerCase();
   const limit = Math.max(1, Math.min(50, Number(req.query.limit || 10)));
   const maxOrders = Math.max(100, Math.min(2000, Number(req.query.maxOrders || 1000)));
+  const groupBy = clean(req.query.groupBy || '').toLowerCase(); /* 'store' = per-winkel breakdown */
+  const storeFilter = clean(req.query.store).toLowerCase();
   const { from, to } = computeRange(period);
+
+  /* Helper: detecteer winkel-naam uit order */
+  function deriveStoreFromOrder(o) {
+    const src = String(o.source_name || '').toLowerCase();
+    if (src && src !== 'web' && src !== 'shopify_draft_order' && src !== 'unknown') {
+      /* POS orders hebben source_name = 'pos' meestal */
+      if (src === 'pos') {
+        /* Probeer tag-based winkel-naam: tags zoals 'store:GENTS Amsterdam' */
+        const tags = String(o.tags || '').split(',').map((t) => t.trim());
+        const storeTag = tags.find((t) => /^store:|^winkel:/i.test(t));
+        if (storeTag) return storeTag.replace(/^(store|winkel):/i, '').trim();
+        if (o.location_id) return `Locatie ${o.location_id}`;
+        return 'GENTS Winkel (POS)';
+      }
+      return src.charAt(0).toUpperCase() + src.slice(1);
+    }
+    return 'Webshop';
+  }
 
   try {
     const orders = await fetchOrders({ from, to, maxOrders });
 
+    /* Optionele store-filter pre-pass */
+    const filteredOrders = storeFilter
+      ? orders.filter((o) => deriveStoreFromOrder(o).toLowerCase().includes(storeFilter))
+      : orders;
+
+    /* Per-store breakdown */
+    if (groupBy === 'store') {
+      const byStore = new Map();
+      for (const o of filteredOrders) {
+        const cust = o.customer || {};
+        const email = clean(cust.email).toLowerCase();
+        const customerId = clean(cust.id);
+        const key = email || customerId;
+        if (!key) continue;
+        const store = deriveStoreFromOrder(o);
+        if (!byStore.has(store)) byStore.set(store, new Map());
+        const custMap = byStore.get(store);
+        const name = clean([cust.first_name, cust.last_name].filter(Boolean).join(' ')) || email;
+        const cur = custMap.get(key) || { key, name, email, customerId, orders: 0, spend: 0, lastOrderAt: null };
+        cur.orders += 1;
+        cur.spend += Number(o.total_price || 0);
+        const d = o.created_at;
+        if (d && (!cur.lastOrderAt || d > cur.lastOrderAt)) cur.lastOrderAt = d;
+        custMap.set(key, cur);
+      }
+      const storesResult = [...byStore.entries()]
+        .map(([store, custMap]) => {
+          const list = [...custMap.values()].map((c) => ({ ...c, spend: moneyNumber(c.spend), avgOrder: c.orders ? moneyNumber(c.spend / c.orders) : 0 }));
+          return {
+            store,
+            uniqueCustomers: list.length,
+            totalOrders: list.reduce((s, c) => s + c.orders, 0),
+            totalSpend: moneyNumber(list.reduce((s, c) => s + c.spend, 0)),
+            top: list.sort((a, b) => metric === 'count' ? b.orders - a.orders : b.spend - a.spend).slice(0, limit)
+          };
+        })
+        .sort((a, b) => b.totalSpend - a.totalSpend);
+      return res.status(200).json({
+        success: true,
+        mode: 'group_by_store',
+        period,
+        metric,
+        range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
+        ordersScanned: orders.length,
+        stores: storesResult
+      });
+    }
+
     const byCustomer = new Map();
-    for (const o of orders) {
+    for (const o of filteredOrders) {
       const cust = o.customer || {};
       const email = clean(cust.email).toLowerCase();
       const customerId = clean(cust.id);
