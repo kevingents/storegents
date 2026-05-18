@@ -14,6 +14,7 @@ import {
   bulkUpsert
 } from '../../lib/user-permissions-store.js';
 import { ROLES, DEPARTMENTS, PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, resolvePermissions, isValidPermission } from '../../lib/user-roles.js';
+import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 function isAuthorized(req) {
@@ -107,8 +108,27 @@ export default async function handler(req, res) {
       const errors = validatePatch(body);
       if (errors.length) return res.status(400).json({ success: false, message: 'Ongeldige invoer.', errors });
 
+      const before = await getUserPermissions(personnelId);
       const entry = await upsertUserPermissions(personnelId, body, updatedBy);
       const role = entry.role;
+
+      /* Audit-log: alleen interessante velden vergelijken */
+      const snapshotName = body.snapshot?.name || entry.snapshot?.name || '';
+      await appendAuditEntry({
+        actor: updatedBy,
+        action: before ? 'update-permissions' : 'create-permissions',
+        targetUserId: String(personnelId),
+        targetName: snapshotName,
+        before: before ? {
+          role: before.role, department: before.department, region: before.region,
+          extraPermissions: before.extraPermissions, revokedPermissions: before.revokedPermissions
+        } : null,
+        after: {
+          role: entry.role, department: entry.department, region: entry.region,
+          extraPermissions: entry.extraPermissions, revokedPermissions: entry.revokedPermissions
+        }
+      }).catch((e) => console.error('[audit-log]', e));
+
       return res.status(200).json({
         success: true,
         entry,
@@ -119,7 +139,22 @@ export default async function handler(req, res) {
     if (req.method === 'DELETE') {
       const personnelId = String(req.query.personnelId || '').trim();
       if (!personnelId) return res.status(400).json({ success: false, message: 'personnelId is verplicht.' });
+      const actor = String(req.headers['x-actor'] || 'admin').trim() || 'admin';
+      const before = await getUserPermissions(personnelId);
       const removed = await deleteUserPermissions(personnelId);
+      if (removed) {
+        await appendAuditEntry({
+          actor,
+          action: 'reset-permissions',
+          targetUserId: String(personnelId),
+          targetName: before?.snapshot?.name || '',
+          before: before ? {
+            role: before.role, department: before.department, region: before.region,
+            extraPermissions: before.extraPermissions, revokedPermissions: before.revokedPermissions
+          } : null,
+          note: 'Reset naar role-default'
+        }).catch((e) => console.error('[audit-log]', e));
+      }
       return res.status(200).json({ success: true, removed });
     }
 

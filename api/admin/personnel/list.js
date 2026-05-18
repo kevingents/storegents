@@ -12,6 +12,7 @@
 
 import { getPersonnel } from '../../../lib/srs-personnel-client.js';
 import { getAllUserPermissions } from '../../../lib/user-permissions-store.js';
+import { getAllOfficeUsers } from '../../../lib/office-users-store.js';
 import { resolvePermissions, ROLES, DEPARTMENTS } from '../../../lib/user-roles.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
@@ -65,41 +66,77 @@ export default async function handler(req, res) {
   const includeInactive = String(req.query.includeInactive || '') === '1';
 
   try {
-    const [persons, permsMap] = await Promise.all([
-      getPersonnel(),
-      getAllUserPermissions()
+    /* Widen SRS personnel range tijdelijk via env-vars wanneer kantoor-IDs
+       buiten standaardrange vallen. SRS_PERSONNEL_ID_FROM/TO bepalen scope. */
+    const srsFrom = String(process.env.SRS_PERSONNEL_ID_FROM || '1').trim();
+    const srsTo = String(process.env.SRS_PERSONNEL_ID_TO || '9999').trim();
+
+    const [persons, permsMap, officeUsers] = await Promise.all([
+      getPersonnel({ from: srsFrom, to: srsTo }).catch((e) => {
+        console.error('[personnel/list] SRS fail:', e.message);
+        return [];
+      }),
+      getAllUserPermissions(),
+      getAllOfficeUsers()
     ]);
 
-    let rows = (persons || [])
+    const buildPermBlock = (id, snapshot) => {
+      const perm = permsMap[String(id)] || null;
+      const role = perm?.role || 'medewerker';
+      const resolved = resolvePermissions(role, perm?.extraPermissions || [], perm?.revokedPermissions || []);
+      return {
+        role,
+        department: perm?.department || snapshot?.department || '',
+        region: perm?.region || '',
+        extraPermissions: perm?.extraPermissions || [],
+        revokedPermissions: perm?.revokedPermissions || [],
+        resolved,
+        permissionCount: resolved.length,
+        notes: perm?.notes || '',
+        hasOverride: Boolean(perm),
+        updatedAt: perm?.updatedAt || null,
+        updatedBy: perm?.updatedBy || null
+      };
+    };
+
+    /* SRS personnel rows (winkel-medewerkers met kassa-login) */
+    const srsRows = (persons || [])
       .filter((p) => includeInactive || p.active)
-      .map((person) => {
-        const perm = permsMap[String(person.personnelId)] || null;
-        const role = perm?.role || 'medewerker';
-        const resolved = resolvePermissions(role, perm?.extraPermissions || [], perm?.revokedPermissions || []);
-        return {
-          personnelId: person.personnelId,
-          name: person.name,
-          internalName: person.internalName,
-          externalName: person.externalName,
-          personnelGroupId: person.personnelGroupId,
-          active: person.active,
-          branches: person.branches,
-          stores: person.stores,
-          permissions: {
-            role,
-            department: perm?.department || '',
-            region: perm?.region || '',
-            extraPermissions: perm?.extraPermissions || [],
-            revokedPermissions: perm?.revokedPermissions || [],
-            resolved,
-            permissionCount: resolved.length,
-            notes: perm?.notes || '',
-            hasOverride: Boolean(perm),
-            updatedAt: perm?.updatedAt || null,
-            updatedBy: perm?.updatedBy || null
-          }
-        };
-      });
+      .map((person) => ({
+        personnelId: person.personnelId,
+        name: person.name,
+        internalName: person.internalName,
+        externalName: person.externalName,
+        email: '',
+        phone: '',
+        personnelGroupId: person.personnelGroupId,
+        active: person.active,
+        source: 'srs',
+        branches: person.branches,
+        stores: person.stores,
+        permissions: buildPermBlock(person.personnelId)
+      }));
+
+    /* Office users (kantoor zonder kassa-login) */
+    const officeRows = Object.values(officeUsers || {})
+      .filter((u) => includeInactive || u.active !== false)
+      .map((u) => ({
+        personnelId: u.userId,
+        name: u.name,
+        internalName: u.name,
+        externalName: u.name,
+        email: u.email,
+        phone: u.phone || '',
+        personnelGroupId: '',
+        active: u.active !== false,
+        source: 'office',
+        branches: [],
+        stores: [],
+        department: u.department || '',
+        permissions: buildPermBlock(u.userId, u)
+      }));
+
+    let rows = [...srsRows, ...officeRows];
 
     /* Filters */
     if (search) rows = rows.filter((r) => matchesSearch(r, search));
@@ -119,6 +156,8 @@ export default async function handler(req, res) {
       active: rows.filter((r) => r.active).length,
       inactive: rows.filter((r) => !r.active).length,
       configured: rows.filter((r) => r.permissions.hasOverride).length,
+      srsCount: rows.filter((r) => r.source === 'srs').length,
+      officeCount: rows.filter((r) => r.source === 'office').length,
       adminCount: rows.filter((r) => r.permissions.role === 'admin').length,
       regioMgrCount: rows.filter((r) => r.permissions.role === 'regio_manager').length,
       shopMgrCount: rows.filter((r) => r.permissions.role === 'shop_manager').length,
