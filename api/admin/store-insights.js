@@ -49,10 +49,10 @@ function isoDateTime(date) { return date.toISOString().slice(0, 19); }
 function computeRange(period) {
   const now = new Date();
   const from = new Date(now);
-  if (period === 'month')   from.setDate(from.getDate() - 30);
+  if (period === 'year')       from.setFullYear(from.getFullYear() - 1);
   else if (period === 'quarter') from.setMonth(from.getMonth() - 3);
   else if (period === 'lifetime') from.setFullYear(from.getFullYear() - 5);
-  else from.setFullYear(from.getFullYear() - 1); /* year default */
+  else from.setDate(from.getDate() - 30); /* month default = 30 dagen */
   from.setHours(0, 0, 0, 0);
   return { from: isoDateTime(from), until: isoDateTime(now) };
 }
@@ -111,7 +111,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET.' });
 
   const store = String(req.query.store || '').trim();
-  const period = String(req.query.period || 'year').toLowerCase();
+  const period = String(req.query.period || 'month').toLowerCase();
   if (!store) return res.status(400).json({ success: false, message: 'store query-param is verplicht.' });
 
   const branchId = getBranchIdByStore(store);
