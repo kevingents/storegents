@@ -1,32 +1,10 @@
 import { updateDeclaration } from '../../../lib/declarations-store.js';
+import { requirePermission } from '../../../lib/permission-guards.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
-
-function isAuthorized(req) {
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
-  const token = String(
-    req.headers['x-admin-token'] ||
-    req.headers['x-admin-pin'] ||
-    req.headers.authorization ||
-    req.query?.adminToken ||
-    req.query?.admin_token ||
-    req.query?.token ||
-    req.body?.adminToken ||
-    req.body?.admin_token ||
-    ''
-  ).replace(/^Bearer\s+/i, '').trim();
-  return Boolean(adminToken && token && token === adminToken);
-}
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['PATCH', 'OPTIONS'])) return;
   setCorsHeaders(res, ['PATCH', 'OPTIONS']);
-
-  if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Niet bevoegd.'
-    });
-  }
 
   if (req.method !== 'PATCH') {
     return res.status(405).json({
@@ -34,6 +12,11 @@ export default async function handler(req, res) {
       message: 'Alleen PATCH is toegestaan.'
     });
   }
+
+  /* Permission check: pay-declaration voor 'Betaald', anders approve-declaration */
+  const targetStatus = String(req.body?.status || '').toLowerCase();
+  const requiredPerm = targetStatus === 'betaald' ? 'action.pay-declaration' : 'action.approve-declaration';
+  if (await requirePermission(req, res, requiredPerm)) return;
 
   try {
     const id = req.query.id;
