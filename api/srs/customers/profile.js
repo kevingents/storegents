@@ -2,6 +2,132 @@ import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 import { getCustomers, getTransactions, getBills } from '../../../lib/srs-customers-client.js';
 import { getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import { gradeCustomer } from '../../../lib/customer-grade.js';
+import { getFulfillments } from '../../../lib/srs-weborders-message-client.js';
+
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
+
+function cleanShopUrl(url) {
+  return String(url || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+async function shopifyGraphqlEmail(email) {
+  const shop = cleanShopUrl(process.env.SHOPIFY_STORE_URL);
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!shop || !token || !email) return [];
+
+  const query = `
+    query FindOrdersByEmail($q: String!) {
+      orders(first: 25, query: $q, sortKey: CREATED_AT, reverse: true) {
+        edges {
+          node {
+            id
+            name
+            createdAt
+            email
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet { shopMoney { amount currencyCode } }
+            fulfillments(first: 5) {
+              status
+              trackingInfo { number url }
+              location { name }
+              createdAt
+            }
+            lineItems(first: 10) {
+              edges {
+                node {
+                  name
+                  quantity
+                  sku
+                  variantTitle
+                  image { url }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  try {
+    const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query, variables: { q: `email:${email}` } })
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data?.data?.orders?.edges || []).map((edge) => edge.node);
+  } catch (_error) {
+    return [];
+  }
+}
+
+function shopifyOrderToWebOrder(node) {
+  const fulfillmentStatusRaw = String(node.displayFulfillmentStatus || '').toUpperCase();
+  const fulfillment = (node.fulfillments || [])[0] || null;
+  const tracking = fulfillment?.trackingInfo?.[0] || null;
+  return {
+    id: String(node.id || '').split('/').pop(),
+    orderName: node.name || '',
+    orderNumber: String(node.name || '').replace('#', ''),
+    createdAt: node.createdAt || '',
+    fulfillmentStatus: fulfillmentStatusRaw,
+    financialStatus: String(node.displayFinancialStatus || '').toUpperCase(),
+    totalPrice: Number(node.totalPriceSet?.shopMoney?.amount || 0),
+    currency: node.totalPriceSet?.shopMoney?.currencyCode || 'EUR',
+    fulfilmentLocation: fulfillment?.location?.name || '',
+    trackingNumber: tracking?.number || '',
+    trackingUrl: tracking?.url || '',
+    fulfilledAt: fulfillment?.createdAt || '',
+    items: (node.lineItems?.edges || []).map((e) => ({
+      name: e.node.name,
+      quantity: Number(e.node.quantity || 1),
+      sku: e.node.sku || '',
+      variant: e.node.variantTitle || '',
+      image: e.node.image?.url || ''
+    }))
+  };
+}
+
+function isOpenStatus(status) {
+  const s = String(status || '').toUpperCase();
+  return !s || s === 'UNFULFILLED' || s === 'PARTIALLY_FULFILLED' || s === 'IN_PROGRESS' || s === 'ON_HOLD' || s === 'SCHEDULED';
+}
+
+function isOverdueByHours(createdAt, hours = 48) {
+  if (!createdAt) return false;
+  const ms = Date.now() - new Date(createdAt).getTime();
+  return Number.isFinite(ms) && ms > hours * 60 * 60 * 1000;
+}
+
+async function enrichWithSrsFulfillment(order) {
+  const orderName = String(order.orderName || '').replace(/^#/, '');
+  if (!orderName) return order;
+  try {
+    const srs = await getFulfillments({ orderNr: orderName });
+    const fulfillments = (srs?.fulfillments || []);
+    /* Bepaal "huidige" pickstore = de eerste fulfillment die nog NIET processed is */
+    const pending = fulfillments.find((f) => {
+      const status = String(f.status || '').toLowerCase();
+      return status && status !== 'processed' && status !== 'completed' && status !== 'cancelled';
+    });
+    const branchId = pending?.branchId || fulfillments[0]?.branchId || '';
+    const srsStatus = pending?.status || fulfillments[0]?.status || '';
+    return {
+      ...order,
+      srsBranchId: String(branchId || ''),
+      srsPickStore: getStoreNameByBranchId(String(branchId || '')) || '',
+      srsStatus,
+      srsFulfillmentCount: fulfillments.length
+    };
+  } catch (_error) {
+    return { ...order, srsLookupFailed: true };
+  }
+}
 
 function clean(value) {
   return String(value || '').trim();
@@ -251,14 +377,31 @@ export default async function handler(req, res) {
 
     const includeTransactions = String(req.query.includeTransactions || 'true') !== 'false';
     const includeBills = String(req.query.includeBills || 'true') !== 'false';
+    const includeWebOrders = String(req.query.includeWebOrders || 'true') !== 'false';
 
-    const [transactionResult, billsResult] = await Promise.allSettled([
+    const customerEmail = String(customer.email || customer.emailAddress || '').trim();
+
+    const [transactionResult, billsResult, webOrdersResult] = await Promise.allSettled([
       includeTransactions ? getTransactions({ customerId: customer.customerId, from, until }) : Promise.resolve({ transactions: [] }),
-      includeBills ? getBills({ customerId: customer.customerId, includePaid: true }) : Promise.resolve({ bills: [] })
+      includeBills ? getBills({ customerId: customer.customerId, includePaid: true }) : Promise.resolve({ bills: [] }),
+      (includeWebOrders && customerEmail) ? shopifyGraphqlEmail(customerEmail) : Promise.resolve([])
     ]);
 
     const transactions = transactionResult.status === 'fulfilled' ? (transactionResult.value.transactions || []) : [];
     const bills = billsResult.status === 'fulfilled' ? (billsResult.value.bills || []) : [];
+    const rawShopifyOrders = webOrdersResult.status === 'fulfilled' ? (webOrdersResult.value || []) : [];
+
+    /* Verrijk de OPEN Shopify orders met SRS-pickstore (parallel, max 5 — kosten beperken) */
+    const allWebOrders = rawShopifyOrders.map(shopifyOrderToWebOrder);
+    const openWebOrders = allWebOrders.filter((o) => isOpenStatus(o.fulfillmentStatus));
+    const ordersToEnrich = openWebOrders.slice(0, 5);
+    const enrichedOpenOrders = await Promise.all(ordersToEnrich.map(enrichWithSrsFulfillment));
+    /* Markeer de te-late orders */
+    const finalOpenOrders = enrichedOpenOrders.map((o) => ({
+      ...o,
+      overdue: isOverdueByHours(o.createdAt, 48)
+    }));
+
     const metrics = sumTransactions(transactions);
     const grade = gradeCustomer(metrics);
 
@@ -291,10 +434,15 @@ export default async function handler(req, res) {
       },
       transactions: enrichedTransactions,
       bills,
+      openWebOrders: finalOpenOrders,
+      allWebOrders,
+      openWebOrderCount: finalOpenOrders.length,
+      overdueWebOrderCount: finalOpenOrders.filter((o) => o.overdue).length,
       errors: [
         ...(search.errors || []).map((item) => item.message).filter(Boolean),
         transactionResult.status === 'rejected' ? transactionResult.reason?.message : '',
-        billsResult.status === 'rejected' ? billsResult.reason?.message : ''
+        billsResult.status === 'rejected' ? billsResult.reason?.message : '',
+        webOrdersResult.status === 'rejected' ? webOrdersResult.reason?.message : ''
       ].filter(Boolean)
     });
   } catch (error) {
