@@ -50,11 +50,69 @@ export default async function handler(req, res) {
   const store = String(req.query.store || 'GENTS Utrecht').trim();
   const token = adminToken(req);
 
+  /* Helpers voor directe service-checks (geen interne HTTP roundtrip) */
+  async function pingShopify() {
+    const domain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN;
+    const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN;
+    const version = process.env.SHOPIFY_API_VERSION || '2025-01';
+    if (!domain || !shopifyToken) throw new Error('Shopify env-vars ontbreken.');
+    const url = `https://${domain.replace(/^https?:\/\//, '').replace(/\/$/, '')}/admin/api/${version}/shop.json`;
+    const resp = await fetch(url, { headers: { 'X-Shopify-Access-Token': shopifyToken, Accept: 'application/json' } });
+    if (!resp.ok) throw new Error(`Shopify ${resp.status}`);
+    const data = await resp.json();
+    return { message: `Verbonden: ${data.shop?.name || domain}`, meta: { shop: data.shop?.name, plan: data.shop?.plan_name, country: data.shop?.country_name } };
+  }
+
+  async function pingReturnista() {
+    const rt = process.env.RETURNISTA_API_TOKEN;
+    const acc = process.env.RETURNISTA_ACCOUNT_ID;
+    if (!rt || !acc) return { degraded: true, message: 'Env-vars niet ingesteld.', meta: {} };
+    const url = `https://core.returnista.com/api/v0/account/${acc}/return-requests?limit=1`;
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${rt}`, Accept: 'application/json' } });
+    if (!resp.ok) throw new Error(`Returnista ${resp.status}`);
+    return { message: 'Returnista API bereikbaar.' };
+  }
+
+  async function pingSendcloud() {
+    const pk = process.env.SENDCLOUD_PUBLIC_KEY;
+    const sk = process.env.SENDCLOUD_SECRET_KEY;
+    if (!pk || !sk) return { degraded: true, message: 'Env-vars niet ingesteld.', meta: {} };
+    const auth = Buffer.from(`${pk}:${sk}`).toString('base64');
+    const resp = await fetch('https://panel.sendcloud.sc/api/v2/user', { headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' } });
+    if (!resp.ok) throw new Error(`Sendcloud ${resp.status}`);
+    const data = await resp.json();
+    return { message: `Account ${data.user?.username || ''}`.trim(), meta: { username: data.user?.username } };
+  }
+
+  async function pingBlobStorage() {
+    try {
+      const { list } = await import('@vercel/blob');
+      const result = await list({ limit: 1 });
+      return { message: 'Vercel Blob bereikbaar.', meta: { blobsListed: result.blobs?.length || 0 } };
+    } catch (error) {
+      throw new Error(`Blob: ${error.message || 'onbereikbaar'}`);
+    }
+  }
+
+  async function pingResend() {
+    const key = process.env.RESEND_API_KEY;
+    if (!key) throw new Error('RESEND_API_KEY ontbreekt');
+    const resp = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } });
+    if (!resp.ok) throw new Error(`Resend ${resp.status}`);
+    const data = await resp.json();
+    return { message: 'Resend bereikbaar.', meta: { domains: data.data?.length || 0 } };
+  }
+
   const services = await Promise.all([
+    timed('Shopify Admin API', 'shopify_admin', pingShopify),
     timed('SRS openstaande weborders', 'srs_open_weborders', async () => {
       const data = await getJson(`${base}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, token);
       return { degraded: data.degraded, note: data.note, meta: { total: data.open, overdue: data.overdue } };
     }),
+    timed('Returnista API', 'returnista_api', pingReturnista),
+    timed('Sendcloud API', 'sendcloud_api', pingSendcloud),
+    timed('Vercel Blob storage', 'blob_storage', pingBlobStorage),
+    timed('Resend (mail)', 'resend_mail', pingResend),
     timed('Google reviews', 'google_reviews', async () => {
       const data = await getJson(`${base}/api/google-reviews/summary?store=${encodeURIComponent(store)}&t=${Date.now()}`, token);
       return { degraded: !data.rating, message: data.message, meta: { rating: data.rating, count: data.count } };
@@ -64,7 +122,7 @@ export default async function handler(req, res) {
       const disabled = (data.automations || data.services || []).filter((a) => a.enabled === false || a.status === 'disabled').length;
       return { degraded: disabled > 0, message: disabled ? `${disabled} automatisering(en) niet actief.` : 'Mail automatisering actief.', meta: { total: (data.automations || data.services || []).length, disabled } };
     }),
-    timed('Mail logs', 'mail_logs', async () => {
+    timed('Mail logs store', 'mail_logs', async () => {
       const data = await getJson(`${base}/api/admin/mail-logs?limit=10&t=${Date.now()}`, token);
       return { message: 'Mail logs opgehaald.', meta: { total: data.count || (data.rows || data.logs || []).length } };
     })
