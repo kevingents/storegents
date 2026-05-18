@@ -1,5 +1,6 @@
 import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 import { getCachedWeborders, setCachedWeborders } from '../../lib/srs-weborders-cache.js';
+import { enrichOpenWebOrders } from '../../lib/shopify-order-enrich.js';
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -65,6 +66,9 @@ export default async function handler(req, res) {
 
     // Probeer cache eerst — geeft < 100ms response als de cron recent draaide
     const noCache = String(req.query.noCache || req.query.nocache || '').toLowerCase() === 'true';
+    /* Verrijk default voor de UI-modal (alleen voor zichtbare requests, niet voor summary). */
+    const enrich = String(req.query.enrich || 'true').toLowerCase() !== 'false';
+
     if (!noCache && resolvedStore) {
       const cached = await getCachedWeborders(resolvedStore);
       if (cached && !cached.stale) {
@@ -72,6 +76,10 @@ export default async function handler(req, res) {
         const summary = weborders.summarizeOpenWeborders(items, resolvedStore);
         const requests = items.filter((item) => weborders.isOrderLineOpenForStore(item, resolvedStore)).slice(0, 500);
         const filteredRequests = overdueOnly ? requests.filter((item) => weborders.isOrderLineOverdue(item)) : requests;
+        /* Shopify-enrich: voor de zichtbare rijen (max ~100) productnaam, klant, maat, foto. */
+        const enrichedRequests = enrich
+          ? await enrichOpenWebOrders(filteredRequests.slice(0, 100)).then((res) => res.concat(filteredRequests.slice(100)))
+          : filteredRequests;
         return res.status(200).json({
           success: true, source: 'srs_cache', note: `Cache ${Math.round(cached.ageMs / 1000)}s oud.`,
           degraded: false, store: resolvedStore, branchId: resolvedBranchId,
@@ -79,7 +87,8 @@ export default async function handler(req, res) {
           summary, open: summary.totalOpenCount || summary.openOrderCount || 0,
           openLines: summary.openLineCount || summary.currentOpenLineCount || 0,
           overdue: summary.overdueCount || 0, overdueLines: summary.overdueLineCount || 0,
-          requests: filteredRequests
+          requests: enrichedRequests,
+          enriched: enrich
         });
       }
     }
@@ -108,9 +117,15 @@ export default async function handler(req, res) {
       ? requests.filter((item) => weborders.isOrderLineOverdue(item))
       : requests;
 
+    /* Shopify-enrich voor de zichtbare lijst (max 100). Rest blijft raw SRS-data. */
+    const enrichedRequests = enrich
+      ? await enrichOpenWebOrders(filteredRequests.slice(0, 100)).then((res) => res.concat(filteredRequests.slice(100)))
+      : filteredRequests;
+
     return res.status(200).json({
       success: true,
       source: result.source || 'srs_open_weborders',
+      enriched: enrich,
       note: result.note || '',
       degraded: Boolean(result.degraded),
       store: resolvedStore,
@@ -123,7 +138,7 @@ export default async function handler(req, res) {
       openLines: summary.openLineCount || summary.currentOpenLineCount || 0,
       overdue: summary.overdueCount || 0,
       overdueLines: summary.overdueLineCount || 0,
-      requests: filteredRequests
+      requests: enrichedRequests
     });
   } catch (error) {
     console.error('SRS open weborders safe fallback:', error);
