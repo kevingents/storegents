@@ -125,11 +125,20 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('[admin/returnista-returns]', error);
+    /* Belangrijk: success: TRUE met configured-flag zodat frontend niet error-throwt
+       maar duidelijk de status kan tonen in een banner */
+    const msg = String(error.message || 'Returnista API call mislukt.');
+    const isConfigError = msg.includes('ontbreekt in Vercel');
     return res.status(200).json({
-      success: false,
-      configured: !String(error.message || '').includes('ontbreekt in Vercel'),
-      message: error.message || 'Returnista API call mislukt.',
-      rows: []
+      success: true,
+      configured: !isConfigError,
+      mode: 'returnista_return_requests',
+      error: msg,
+      message: isConfigError
+        ? msg + ' Zet RETURNISTA_API_TOKEN en RETURNISTA_ACCOUNT_ID in Vercel env vars.'
+        : `Returnista API fout: ${msg}`,
+      rows: [],
+      totals: { total: 0, amount: 0 }
     });
   }
 }
