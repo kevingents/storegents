@@ -613,6 +613,15 @@ export default async function handler(req, res) {
   const crossSellAmount = Number(body.crossSellAmount ?? body.cross_sell_amount ?? 0) || 0;
   const selectedItems = normalizeSelectedItems(body.items || body.selectedItems || body.refundItems);
 
+  /* SRS-restock: of het artikel teruggeboekt mag worden op het meldende filiaal.
+     LET OP: Shopify-voorraad wordt NOOIT aangepast — er loopt een stock-sync
+     vanuit SRS naar Shopify, dus dubbele bevoorrading wordt voorkomen door
+     hardcoded `restock_type: 'no_restock'` op het Shopify refund. */
+  const srsRestock = body.srsRestock === undefined ? true : Boolean(body.srsRestock);
+  /* Verzendkosten meecrediteren ja/nee */
+  const includeShipping = Boolean(body.includeShipping || body.refundShipping);
+  const shippingAmount = Number(body.shippingAmount || 0);
+
   if (!confirmed) return res.status(400).json({ success: false, error: 'Bevestiging ontbreekt. De medewerker moet bevestigen dat de klant terugbetaald mag worden.' });
   if (!reasonChecked) return res.status(400).json({ success: false, error: 'Bevestig dat de retourreden klopt met de fysieke staat van het artikel.' });
   if (!store) return res.status(400).json({ success: false, error: 'Winkel ontbreekt. De retour moet geboekt worden op het filiaal dat de retour meldt.' });
@@ -755,9 +764,22 @@ export default async function handler(req, res) {
       }
     }
 
+    /* Bouw refund body — refund_line_items + optionele shipping refund.
+       restock_type blijft hardcoded 'no_restock' want SRS → Shopify stock-sync
+       doet de webshop-bevoorrading. NIET dubbel bevoorraden. */
+    const refundBodyForCalc = {
+      currency: order.currency,
+      refund_line_items: refundLineItems
+    };
+    if (includeShipping && shippingAmount > 0) {
+      refundBodyForCalc.shipping = { amount: shippingAmount.toFixed(2) };
+    } else if (includeShipping) {
+      refundBodyForCalc.shipping = { full_refund: true };
+    }
+
     const calculated = await shopifyRequest(`/orders/${orderId}/refunds/calculate.json`, {
       method: 'POST',
-      body: JSON.stringify({ refund: { currency: order.currency, refund_line_items: refundLineItems } })
+      body: JSON.stringify({ refund: refundBodyForCalc })
     });
 
     const calculatedRefund = calculated.refund || {};
@@ -790,17 +812,22 @@ export default async function handler(req, res) {
       'Shopify voorraad niet herbevoorraad; SRS Return boekt voorraad op het meldende filiaal.'
     ].filter(Boolean);
 
+    const refundBodyForCreate = {
+      currency: order.currency,
+      notify: true,
+      note: noteParts.join('\n'),
+      refund_line_items: refundLineItems,
+      transactions
+    };
+    if (includeShipping && shippingAmount > 0) {
+      refundBodyForCreate.shipping = { amount: shippingAmount.toFixed(2) };
+    } else if (includeShipping) {
+      refundBodyForCreate.shipping = { full_refund: true };
+    }
+
     const created = await shopifyRequest(`/orders/${orderId}/refunds.json`, {
       method: 'POST',
-      body: JSON.stringify({
-        refund: {
-          currency: order.currency,
-          notify: true,
-          note: noteParts.join('\n'),
-          refund_line_items: refundLineItems,
-          transactions
-        }
-      })
+      body: JSON.stringify({ refund: refundBodyForCreate })
     });
 
     if (shopifyReturnResult?.success && shopifyReturnResult.return?.id) {
@@ -818,6 +845,46 @@ export default async function handler(req, res) {
 
     let srsResult = null;
     let srsLog = null;
+
+    /* Als srsRestock=false (artikel onverkoopbaar / klacht-vernietiging),
+       skippen we de SRS retour-call. Voorraad wordt dan NIET teruggeboekt op
+       het filiaal. Wordt apart gelogd voor zichtbaarheid in admin. */
+    if (!srsRestock) {
+      srsLog = await safeCreateSrsReturnLog({
+        store,
+        employeeName,
+        orderNr: srsOrderNr,
+        shopifyOrderId: String(order.id),
+        branchId: srsBranchId,
+        status: 'skipped',
+        success: true,
+        srsTransactionId: '',
+        items: srsItems,
+        message: 'SRS retour-boeking overgeslagen — artikel niet terug in voorraad (bv. klacht/defect).',
+        reasonChecked,
+        crossSellMade,
+        crossSellAmount
+      });
+
+      await addOrderTags(order, [
+        'winkelportaal_retour',
+        'retour_veilig_gecontroleerd',
+        shopifyReturnResult?.success ? 'shopify_return_aangemaakt' : 'shopify_return_controleren',
+        'srs_retour_overgeslagen_onverkoopbaar'
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Retour verwerkt. Shopify-refund aangemaakt; SRS-voorraad NIET teruggeboekt (artikel onverkoopbaar).',
+        shopifyRefund: created.refund || created,
+        shopifyReturn: shopifyReturnResult,
+        shopifyReturnClose: shopifyReturnCloseResult,
+        srsReturn: { skipped: true, reason: 'srsRestock=false', status: 'skipped' },
+        srsLog,
+        shippingRefunded: includeShipping
+      });
+    }
+
     try {
       srsResult = await createSrsReturn({
         orderNr: srsOrderNr,

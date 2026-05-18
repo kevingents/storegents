@@ -319,6 +319,7 @@ function buildRefundMaps(foundOrder) {
   const lastRefundByLineItem = new Map();
   let totalRefunded = 0;
   let lastRefundAt = '';
+  let shippingRefunded = 0;
 
   for (const refund of foundOrder.refunds || []) {
     if (refund.created_at && (!lastRefundAt || new Date(refund.created_at) > new Date(lastRefundAt))) {
@@ -350,14 +351,28 @@ function buildRefundMaps(foundOrder) {
         note: refund.note || ''
       });
     }
+
+    /* Shipping refunds zitten in order_adjustments met kind='shipping_refund' */
+    for (const adjustment of refund.order_adjustments || []) {
+      const kind = String(adjustment.kind || '').toLowerCase();
+      if (kind === 'shipping_refund') {
+        shippingRefunded += Math.abs(Number(adjustment.amount || 0));
+      }
+    }
   }
 
   return {
     refundedByLineItem,
     lastRefundByLineItem,
     totalRefunded,
-    lastRefundAt
+    lastRefundAt,
+    shippingRefunded
   };
+}
+
+function calcShippingTotal(order) {
+  const lines = order?.shipping_lines || [];
+  return lines.reduce((sum, line) => sum + Number(line.price || 0), 0);
 }
 
 function fulfilledQuantityForLineItem(item, fulfillments) {
@@ -554,6 +569,9 @@ async function formatRestOrderForFrontend(shop, token, foundOrder) {
     refundedTotal: refundInfo.totalRefunded,
     lastRefundAt: refundInfo.lastRefundAt,
     isRefunded: refundInfo.totalRefunded > 0,
+    shippingTotal: calcShippingTotal(foundOrder),
+    shippingRefunded: refundInfo.shippingRefunded || 0,
+    shippingRefundable: Math.max(0, calcShippingTotal(foundOrder) - (refundInfo.shippingRefunded || 0)),
     shippingAddress: formatAddress(foundOrder.shipping_address),
     billingAddress: formatAddress(foundOrder.billing_address),
     srs: {
