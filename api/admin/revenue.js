@@ -20,8 +20,10 @@ export default async function handler(req, res) {
 
   const period = String(req.query.period || 'today').toLowerCase();
   const storeFilter = String(req.query.store || '').trim();
+  const customFrom = String(req.query.dateFrom || req.query.from || '').trim();
+  const customTo = String(req.query.dateTo || req.query.to || '').trim();
 
-  const range = computeRange(period);
+  const range = computeRange(period, customFrom, customTo);
 
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '';
   const shopifyToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
@@ -73,8 +75,21 @@ export default async function handler(req, res) {
   }
 }
 
-function computeRange(period) {
+function computeRange(period, customFrom, customTo) {
   const now = new Date();
+  /* Custom datum-override heeft voorrang */
+  if (customFrom) {
+    const from = new Date(customFrom);
+    const to = customTo ? new Date(customTo) : new Date(now);
+    if (!Number.isNaN(from.getTime())) {
+      from.setHours(0,0,0,0);
+      if (!Number.isNaN(to.getTime())) to.setHours(23,59,59,999);
+      const periodMs = to.getTime() - from.getTime();
+      const prevTo = new Date(from);
+      const prevFrom = new Date(from.getTime() - periodMs);
+      return { from, to, prevFrom, prevTo };
+    }
+  }
   const to = new Date(now);
   const from = new Date(now);
   if (period === 'week') {
