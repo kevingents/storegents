@@ -35,10 +35,11 @@ export default async function handler(req, res) {
        Voor 'verlopen': klant kwam niet → voorraad terug + admin/winkel kan
        het artikel opnieuw aanbieden. */
     const newStatus = String(body.status || '').toLowerCase();
+    const skipCancel = Boolean(body.skipCancel);
     const CANCEL_TRIGGERS = new Set(['opgehaald', 'opgeheven', 'verlopen']);
     let cancel = null;
     let cancelError = null;
-    if (CANCEL_TRIGGERS.has(newStatus) && next.srsTransactionId && next.srsSyncStatus === 'weborder_created') {
+    if (!skipCancel && CANCEL_TRIGGERS.has(newStatus) && next.srsTransactionId && next.srsSyncStatus === 'weborder_created') {
       const item = next.item || {};
       try {
         cancel = await cancelFulfillment({
