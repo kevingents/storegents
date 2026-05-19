@@ -3,10 +3,10 @@
  *
  * Vier-pijler Omnichannel Score (0-100) — winkelvriendelijke variant.
  *
- *   1. KLANTBEKENDHEID   (30 pt)  % transacties met gekoppelde klant
- *   2. LOYALTY-ACTIVATIE (25 pt)  voucher-verzilveringsratio
- *   3. CROSS-CHANNEL     (25 pt)  afhaalorders op tijd + retour-labels
- *   4. DATA-KWALITEIT    (20 pt)  -3/-2/-1 voor niet-leverbaar/geannuleerd/min-voorraad
+ *   1. KLANTBEKENDHEID    (30 pt)  % transacties met gekoppelde klant
+ *   2. VOORRAADVERTROUWEN (25 pt)  hoe vaak konden we NIET leveren (lager = beter)
+ *   3. CROSS-CHANNEL      (25 pt)  afhaalorders op tijd opgehaald (binnen 24u)
+ *   4. DATA-KWALITEIT     (20 pt)  -1/-2 per geannuleerd / negatieve voorraad SKU
  *
  * Eindscore = som van de 4 pijlerscores.
  *
@@ -123,53 +123,62 @@ function scoreCustomers({ transactions = 0, transactionsWithCustomer = 0 }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   PIJLER 2: LOYALTY-ACTIVATIE
+   PIJLER 2: VOORRAADVERTROUWEN
+   Hoe vaak konden we NIET leveren wat de klant bestelde?
+   Som van 'niet leverbaar' + 'geannuleerd wegens voorraad' incidenten.
+   Lager incidenten = hogere score. Geen transacties = neutraal.
    ───────────────────────────────────────────────────────────────────────── */
-function scoreLoyalty({ vouchersIssued = 0, vouchersUsed = 0 }) {
-  const rate = vouchersIssued > 0 ? (vouchersUsed / vouchersIssued) * 100 : 0;
-  let score = 0;
+function scoreStockReliability({ unavailableLines = 0, cancelledLines = 0, transactions = 0 }) {
+  const incidents = unavailableLines + cancelledLines;
 
-  /* Geen uitgereikte vouchers in periode = neutraal (geen bonus, geen straf). */
-  if (vouchersIssued === 0) {
+  /* Geen transacties in periode = neutraal (geen straf, geen bonus). */
+  if (transactions === 0) {
     return {
       score: 0,
       max: 25,
       rate: 0,
-      vouchersIssued,
-      vouchersUsed,
-      label: 'Loyalty-activatie',
-      suggestion: 'Geen voucher-activiteit in deze periode. Wijs klanten op spaarpunten.'
+      incidents,
+      unavailableLines,
+      cancelledLines,
+      label: 'Voorraadvertrouwen',
+      suggestion: 'Geen transacties in deze periode.'
     };
   }
 
-  if (rate >= 70) score = 25;
-  else if (rate >= 50) score = 15;
-  else if (rate >= 30) score = 5;
+  let score = 0;
+  if (incidents === 0) score = 25;
+  else if (incidents <= 2) score = 20;
+  else if (incidents <= 5) score = 12;
+  else if (incidents <= 10) score = 5;
   else score = 0;
+
+  /* Rate = incidenten per 100 transacties — laag = goed. */
+  const rate = Math.round((incidents / Math.max(transactions, 1)) * 1000) / 10;
 
   return {
     score,
     max: 25,
-    rate: Math.round(rate * 10) / 10,
-    vouchersIssued,
-    vouchersUsed,
-    label: 'Loyalty-activatie',
-    suggestion: rate >= 70
-      ? 'Top — klanten verzilveren actief.'
-      : rate >= 50
-        ? 'Goed. Doel: 70% verzilveringsratio.'
-        : 'Herinner klanten met openstaande vouchers per mail.'
+    rate,
+    incidents,
+    unavailableLines,
+    cancelledLines,
+    label: 'Voorraadvertrouwen',
+    suggestion: incidents === 0
+      ? 'Top — geen voorraad-incidenten in deze periode.'
+      : unavailableLines >= cancelledLines
+        ? 'Verlaag "niet leverbaar" door betere voorraad-check vóór accepteren weborder.'
+        : 'Voorkom annulaties door tijdige uitwisseling bij voorraad-tekort.'
   };
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
    PIJLER 3: CROSS-CHANNEL FLOW
+   Afhaalorders op tijd opgehaald (binnen 24u na "ready for pickup").
+   Volledige 25 pt gaat naar pickup-on-time-rate.
    ───────────────────────────────────────────────────────────────────────── */
-function scoreCrossChannel({ pickupOrders = 0, pickupOnTime = 0, labelsCreated = 0 }) {
+function scoreCrossChannel({ pickupOrders = 0, pickupOnTime = 0 }) {
   const pickupRate = pickupOrders > 0 ? (pickupOnTime / pickupOrders) * 100 : 100;
-  const pickupScore = Math.min(15, Math.round((pickupRate / 100) * 15));
-  const labelScore = Math.min(10, labelsCreated * 2);
-  const score = pickupScore + labelScore;
+  const score = Math.min(25, Math.round((pickupRate / 100) * 25));
 
   return {
     score,
@@ -177,40 +186,38 @@ function scoreCrossChannel({ pickupOrders = 0, pickupOnTime = 0, labelsCreated =
     pickupRate: Math.round(pickupRate * 10) / 10,
     pickupOnTime,
     pickupOrders,
-    pickupScore,
-    labelsCreated,
-    labelScore,
     label: 'Cross-channel',
-    suggestion: pickupScore < 12
-      ? 'Pak afhaalorders sneller op binnen 24u.'
-      : labelsCreated < 5
-        ? 'Maak retour-labels rechtstreeks vanuit de winkel.'
-        : 'Top — flow tussen webshop en winkel zit goed.'
+    suggestion: pickupOrders === 0
+      ? 'Nog geen afhaalorders in deze periode.'
+      : pickupRate >= 90
+        ? 'Top — afhaalorders worden snel verwerkt.'
+        : pickupRate >= 70
+          ? 'Goed. Pak afhaalorders nog sneller op binnen 24u.'
+          : 'Afhaal-flow loopt achter — bel klanten actief om af te halen.'
   };
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
    PIJLER 4: DATA-KWALITEIT
+   Administratieve schoonheid (geannuleerd / negatieve voorraad SKUs).
+   "Niet leverbaar" is verschoven naar Voorraadvertrouwen (geen dubbeltelling).
    ───────────────────────────────────────────────────────────────────────── */
-function scoreData({ unavailableLines = 0, cancelledLines = 0, negativeStockSkus = 0 }) {
-  const penalty = unavailableLines * 3 + cancelledLines * 2 + negativeStockSkus * 1;
+function scoreData({ cancelledLines = 0, negativeStockSkus = 0 }) {
+  const penalty = cancelledLines * 1 + negativeStockSkus * 2;
   const score = Math.max(0, 20 - penalty);
 
   return {
     score,
     max: 20,
-    unavailableLines,
     cancelledLines,
     negativeStockSkus,
     penalty,
     label: 'Data-kwaliteit',
-    suggestion: unavailableLines > 2
-      ? 'Loop niet-leverbare orders na — vaak zit voorraad er nog wel.'
-      : cancelledLines > 2
-        ? 'Bekijk geannuleerde fulfillments en voorkom annulaties.'
-        : negativeStockSkus > 0
-          ? 'Loop SKUs met negatieve voorraad na in SRS.'
-          : 'Top — administratie klopt.'
+    suggestion: negativeStockSkus > 0
+      ? 'Loop SKUs met negatieve voorraad na in SRS — vaak SFTP-sync issue.'
+      : cancelledLines > 5
+        ? 'Veel annulaties — check oorzaken in cancellations report.'
+        : 'Top — administratie klopt.'
   };
 }
 
@@ -228,24 +235,6 @@ function customersMapFromReport(data) {
       transactionsWithCustomer: Number(row.transactionsWithCustomer ?? row.bonnenMetKlant ?? row.bonnenWithCustomer ?? row.withCustomer ?? 0),
       customerRegistrations: Number(row.totalCustomers ?? row.customerCount ?? row.total ?? row.newCustomers ?? row.customers ?? 0)
     });
-  }
-  return map;
-}
-
-function vouchersMapFromReport(rows, from, to) {
-  const map = new Map();
-  for (const voucher of rows || []) {
-    const dateForFilter = voucher.createdAt || voucher.usedAt || voucher.validFrom || voucher.validTo;
-    if (dateForFilter && !matchesPeriod(dateForFilter, from, to)) continue;
-    const store = normalizeStore(voucher.usedStore || voucher.store || voucher.createdStore);
-    if (!store) continue;
-    const row = map.get(store) || { vouchersIssued: 0, vouchersUsed: 0 };
-    row.vouchersIssued += 1;
-    const status = cleanStatus(voucher.status);
-    if (status.includes('gebruikt') || status.includes('used') || status.includes('afgeboekt')) {
-      row.vouchersUsed += 1;
-    }
-    map.set(store, row);
   }
   return map;
 }
@@ -273,19 +262,6 @@ function pickupMapFromOrders(rows, from, to) {
   return map;
 }
 
-function labelsMapFromReport(rows, from, to) {
-  const map = new Map();
-  for (const label of rows || []) {
-    if (!matchesPeriod(label.createdAt, from, to)) continue;
-    const store = normalizeStore(label.senderStore || label.store);
-    if (!store) continue;
-    map.set(store, (map.get(store) || 0) + 1);
-  }
-  const out = new Map();
-  for (const [store, count] of map) out.set(store, { labelsCreated: count });
-  return out;
-}
-
 function dataMapFromCancellations(rows, from, to) {
   const map = new Map();
   for (const item of rows || []) {
@@ -309,23 +285,21 @@ function dataMapFromCancellations(rows, from, to) {
    ───────────────────────────────────────────────────────────────────────── */
 function buildRow(branch, maps, minTransactions) {
   const c = maps.customers.get(branch.store) || { transactions: 0, transactionsWithCustomer: 0 };
-  const v = maps.vouchers.get(branch.store) || { vouchersIssued: 0, vouchersUsed: 0 };
   const p = maps.pickup.get(branch.store) || { pickupOrders: 0, pickupOnTime: 0 };
-  const l = maps.labels.get(branch.store) || { labelsCreated: 0 };
   const d = maps.data.get(branch.store) || { unavailableLines: 0, cancelledLines: 0, negativeStockSkus: 0 };
 
   const customers = scoreCustomers(c);
-  const loyalty = scoreLoyalty(v);
-  const crossChannel = scoreCrossChannel({ ...p, labelsCreated: l.labelsCreated });
+  const stockReliability = scoreStockReliability({ ...d, transactions: c.transactions });
+  const crossChannel = scoreCrossChannel(p);
   const data = scoreData(d);
 
-  const score = customers.score + loyalty.score + crossChannel.score + data.score;
+  const score = customers.score + stockReliability.score + crossChannel.score + data.score;
   const eligible = c.transactions >= minTransactions;
 
   /* Top 3 verbeterpunten: kies pijlers met grootste "gat" tot max */
   const gaps = [
     { key: 'customers', gap: customers.max - customers.score, suggestion: customers.suggestion, label: customers.label },
-    { key: 'loyalty', gap: loyalty.max - loyalty.score, suggestion: loyalty.suggestion, label: loyalty.label },
+    { key: 'stockReliability', gap: stockReliability.max - stockReliability.score, suggestion: stockReliability.suggestion, label: stockReliability.label },
     { key: 'crossChannel', gap: crossChannel.max - crossChannel.score, suggestion: crossChannel.suggestion, label: crossChannel.label },
     { key: 'data', gap: data.max - data.score, suggestion: data.suggestion, label: data.label }
   ].sort((a, b) => b.gap - a.gap).filter((row) => row.gap > 0).slice(0, 3);
@@ -338,7 +312,7 @@ function buildRow(branch, maps, minTransactions) {
     transactions: c.transactions,
     pillars: {
       customers,
-      loyalty,
+      stockReliability,
       crossChannel,
       data
     },
@@ -388,24 +362,16 @@ export default async function handler(req, res) {
     const token = encodeURIComponent(String(process.env.ADMIN_TOKEN || '').trim());
     const query = `dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}&adminToken=${token}`;
 
-    const [customerReport, voucherReport, labelReport, cancellationsReport, pickupReport] = await Promise.all([
+    /* 3 parallelle fetches (was 5 — vouchers + sendcloud-labels weggehaald
+       sinds Loyalty en retour-labels niet meer scoren). */
+    const [customerReport, cancellationsReport, pickupReport] = await Promise.all([
       fetchJson(`${root}/api/admin/customers/weekly-report?${query}&allBranches=true&allReceipts=true`, warnings, 'customers-report'),
-      fetchJson(`${root}/api/admin/vouchers/report?${query}`, warnings, 'voucher-report'),
-      fetchJson(`${root}/api/sendcloud/labels?${query}`, warnings, 'sendcloud-labels'),
       fetchJson(`${root}/api/admin/order-cancellations/report?${query}&includeLines=true`, warnings, 'order-cancellations'),
       fetchJson(`${root}/api/pickup-orders?status=all&days=60&adminToken=${token}`, warnings, 'pickup-orders')
     ]);
 
     const maps = {
       customers: customersMapFromReport(customerReport || {}),
-      vouchers: vouchersMapFromReport(
-        Array.isArray(voucherReport?.rows) ? voucherReport.rows : Array.isArray(voucherReport?.vouchers) ? voucherReport.vouchers : [],
-        dateFrom, dateTo
-      ),
-      labels: labelsMapFromReport(
-        Array.isArray(labelReport?.labels) ? labelReport.labels : Array.isArray(labelReport?.rows) ? labelReport.rows : [],
-        dateFrom, dateTo
-      ),
       data: dataMapFromCancellations(
         Array.isArray(cancellationsReport?.rows) ? cancellationsReport.rows : [],
         dateFrom, dateTo
@@ -442,12 +408,12 @@ export default async function handler(req, res) {
       mode: 'omnichannel-v2',
       warnings,
       formula: {
-        version: 2,
+        version: 3,
         pillars: {
-          customers: { weight: 30, label: 'Klantbekendheid', metric: '% transacties met gekoppelde klant' },
-          loyalty: { weight: 25, label: 'Loyalty-activatie', metric: 'voucher-verzilveringsratio' },
-          crossChannel: { weight: 25, label: 'Cross-channel', metric: 'afhaal binnen 24u + retour-labels' },
-          data: { weight: 20, label: 'Data-kwaliteit', metric: '-3/-2/-1 per nietLeverbaar/geannuleerd/minVoorraad' }
+          customers:        { weight: 30, label: 'Klantbekendheid',     metric: '% transacties met gekoppelde klant' },
+          stockReliability: { weight: 25, label: 'Voorraadvertrouwen',  metric: 'aantal niet-leverbaar + voorraad-annulaties (lager = beter)' },
+          crossChannel:     { weight: 25, label: 'Cross-channel',       metric: 'afhaalorders binnen 24u opgehaald (op-tijd-leveren)' },
+          data:             { weight: 20, label: 'Data-kwaliteit',      metric: '-1 per geannuleerd, -2 per negatieve voorraad SKU' }
         },
         tieBreaker: 'hoogste klantbekendheid wint',
         minTransactions,
