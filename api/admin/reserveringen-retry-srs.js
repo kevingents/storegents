@@ -73,13 +73,26 @@ export default async function handler(req, res) {
       return res.status(500).json({ success: false, configCheck, message: msg });
     }
 
+    /* Winkel-branch info voorbereiden voor stap 1.5 (herkomst forceren).
+       We doen dit één keer bovenaan zodat zowel het hergebruik-pad als het
+       nieuwe-weborder-pad het kan gebruiken. */
+    const winkelBranchInfo = await import('../../lib/branch-metrics.js').then((m) => {
+      if (typeof m.listBranches === 'function') {
+        return (m.listBranches() || []).find((b) => String(b.store || '').trim().toLowerCase() === String(r.store).toLowerCase());
+      }
+      return null;
+    }).catch(() => null);
+    const winkelBranchId = String(winkelBranchInfo?.branchId || '').trim();
+
     /* CRUCIAL FIX: als reservering al een srsTransactionId heeft (weborder
        al in SRS geplaatst), maken we geen NIEUWE weborder maar voeren we
-       alleen Stap 2 (SetFulfillments) uit. Voorkomt duplicates in SRS. */
+       alleen Stap 1.5 + Stap 2 (SetFulfillments) uit. Voorkomt duplicates. */
     if (r.srsTransactionId && r.srsSyncStatus === 'weborder_created') {
       const existingOrderId = r.srsTransactionId;
       const attemptStartAtExisting = new Date().toISOString();
       let fulfillmentId = '';
+      let setFulfillmentFromWinkel = null;
+      let setFulfillmentFromWinkelError = null;
       let setFulfillmentResult = null;
       let setFulfillmentError = null;
       let syncStatus = 'weborder_created';
@@ -88,6 +101,19 @@ export default async function handler(req, res) {
         const lines = ff.fulfillments || ff.items || [];
         fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
         if (fulfillmentId) {
+          /* Stap 1.5 — dwing herkomst naar meldende winkel.
+             Niet fataal: bij fout door naar stap 2. */
+          if (winkelBranchId && winkelBranchId !== resBranch.branchId) {
+            try {
+              setFulfillmentFromWinkel = await setFulfillmentBranch({
+                fulfillmentId,
+                branchId: winkelBranchId
+              });
+            } catch (err) {
+              setFulfillmentFromWinkelError = { message: err.message, status: err.status, fault: err.fault };
+            }
+          }
+          /* Stap 2 — pickup-routing naar RES-branch. */
           setFulfillmentResult = await setFulfillmentBranch({
             fulfillmentId,
             branchId: resBranch.branchId
@@ -101,18 +127,23 @@ export default async function handler(req, res) {
         setFulfillmentError = { message: err.message, status: err.status, fault: err.fault };
         syncStatus = 'route_failed';
       }
+      const srsErrorTextExisting = setFulfillmentError
+        ? `SetFulfillment(RES): ${setFulfillmentError.message}`
+        : setFulfillmentFromWinkelError
+          ? `Stap 1.5 (herkomst→winkel) waarschuwing: ${setFulfillmentFromWinkelError.message}`
+          : '';
       await updateReservering(id, {
         srsSyncStatus: syncStatus,
         srsFulfillmentId: fulfillmentId,
         srsAttempts: Number(r.srsAttempts || 0) + 1,
         srsLastAttemptAt: attemptStartAtExisting,
-        srsError: setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : ''
+        srsError: srsErrorTextExisting
       });
       const updatedExisting = (await getReserveringen({ includeAll: true, limit: 5000 })).find((row) => row.id === id);
       return res.status(200).json({
         success: Boolean(setFulfillmentResult?.success),
         stage: 'set-fulfillment-only',
-        message: `Bestaande weborder ${existingOrderId} hergebruikt — alleen Stap 2 uitgevoerd.`,
+        message: `Bestaande weborder ${existingOrderId} hergebruikt — Stap 1.5 + Stap 2 uitgevoerd.`,
         configCheck,
         reservering: updatedExisting,
         weborder: {
@@ -120,7 +151,10 @@ export default async function handler(req, res) {
           success: true,
           srsReturn: 'reused',
           fulfillmentId,
+          winkelBranchId,
           routedTo: setFulfillmentResult?.success ? resBranch.branchId : '',
+          setFulfillmentFromWinkel,
+          setFulfillmentFromWinkelError,
           setFulfillmentResult,
           setFulfillmentError
         }
@@ -131,17 +165,10 @@ export default async function handler(req, res) {
     let weborder = null;
     let errInfo = null;
     try {
-      const winkelBranchInfo = await import('../../lib/branch-metrics.js').then((m) => {
-        if (typeof m.listBranches === 'function') {
-          return (m.listBranches() || []).find((b) => String(b.store || '').trim().toLowerCase() === String(r.store).toLowerCase());
-        }
-        return null;
-      }).catch(() => null);
-
       weborder = await placeReserveringAsWeborder({
         customerId: r.customer?.srsCustomerId || undefined,
         fulfilmentBranchId: resBranch.branchId,
-        sellingBranchId: winkelBranchInfo?.branchId || '',
+        sellingBranchId: winkelBranchId,
         reserveringId: r.id,
         note: r.note || `Reservering door ${r.employeeName} in ${r.store}`,
         product: {
@@ -165,11 +192,14 @@ export default async function handler(req, res) {
         phone: r.customer?.phone || ''
       });
 
-      /* Stap 2: rooting via SetFulfillments — zelfde flow als POST endpoint.
-         Plaatst leveropdracht op RES-filiaal via SOAP i.p.v. via
-         extended_attribute afhaal_filiaal (die SRS niet kent). */
+      /* Routing-flow (twee stappen) — beleid: ALTIJD voorraad uit meldende
+         winkel halen, daarna naar RES-filiaal voor afhalen.
+         Stap 1.5: SetFulfillments naar winkel-branch (forceert herkomst).
+         Stap 2:   SetFulfillments naar RES-branch (huidig filiaal = RES). */
       const success = Boolean(weborder.success);
       let fulfillmentId = '';
+      let setFulfillmentFromWinkel = null;
+      let setFulfillmentFromWinkelError = null;
       let setFulfillmentResult = null;
       let setFulfillmentError = null;
       let syncStatus = success ? 'weborder_created' : 'failed';
@@ -180,6 +210,19 @@ export default async function handler(req, res) {
           const lines = ff.fulfillments || ff.items || [];
           fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
           if (fulfillmentId) {
+            /* Stap 1.5 — dwing herkomst naar meldende winkel.
+               Niet fataal: bij fout door naar stap 2. */
+            if (winkelBranchId && winkelBranchId !== resBranch.branchId) {
+              try {
+                setFulfillmentFromWinkel = await setFulfillmentBranch({
+                  fulfillmentId,
+                  branchId: winkelBranchId
+                });
+              } catch (err) {
+                setFulfillmentFromWinkelError = { message: err.message, status: err.status, fault: err.fault };
+              }
+            }
+            /* Stap 2 — pickup-routing naar RES-branch. */
             setFulfillmentResult = await setFulfillmentBranch({
               fulfillmentId,
               branchId: resBranch.branchId
@@ -194,6 +237,14 @@ export default async function handler(req, res) {
         }
       }
 
+      const srsErrorTextNew = success
+        ? (setFulfillmentError
+            ? `SetFulfillment(RES): ${setFulfillmentError.message}`
+            : setFulfillmentFromWinkelError
+              ? `Stap 1.5 (herkomst→winkel) waarschuwing: ${setFulfillmentFromWinkelError.message}`
+              : '')
+        : `SRS gaf '${weborder.srsReturn || 'no-return'}' terug i.p.v. 'true'`;
+
       await updateReservering(id, {
         srsSyncStatus: syncStatus,
         srsTransactionId: weborder.orderId || '',
@@ -201,15 +252,16 @@ export default async function handler(req, res) {
         srsRawSnippet: String(weborder.raw || '').slice(0, 500),
         srsAttempts: Number(r.srsAttempts || 0) + 1,
         srsLastAttemptAt: attemptStartAt,
-        srsError: success
-          ? (setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : '')
-          : `SRS gaf '${weborder.srsReturn || 'no-return'}' terug i.p.v. 'true'`
+        srsError: srsErrorTextNew
       });
 
       /* Verrijk weborder-response met routing-info voor debug-dialog */
+      weborder.setFulfillmentFromWinkel = setFulfillmentFromWinkel;
+      weborder.setFulfillmentFromWinkelError = setFulfillmentFromWinkelError;
       weborder.setFulfillmentResult = setFulfillmentResult;
       weborder.setFulfillmentError = setFulfillmentError;
       weborder.fulfillmentId = fulfillmentId;
+      weborder.winkelBranchId = winkelBranchId;
       weborder.routedTo = setFulfillmentResult?.success ? resBranch.branchId : '';
     } catch (err) {
       errInfo = {

@@ -162,18 +162,37 @@ export default async function handler(req, res) {
         });
         weborder = result;
         let fulfillmentId = '';
+        let setFulfillmentFromWinkel = null;
+        let setFulfillmentFromWinkelError = null;
         let setFulfillmentResult = null;
         let setFulfillmentError = null;
         let syncStatus = result.success ? 'weborder_created' : 'failed';
 
-        /* Stap 2: als weborder geplaatst, route fulfillment naar RES-branch
-           via SetFulfillments (i.p.v. extended_attribute afhaal_filiaal). */
+        /* Routing-flow (twee stappen) — beleid: ALTIJD voorraad uit meldende
+           winkel halen, daarna naar RES-filiaal voor afhalen.
+           Stap 1.5: SetFulfillments naar winkel-branch (forceert herkomst).
+           Stap 2:   SetFulfillments naar RES-branch (huidig filiaal = RES). */
         if (result.success) {
           try {
             const ff = await getFulfillments({ orderNr: result.orderId });
             const lines = ff.fulfillments || ff.items || [];
             fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
             if (fulfillmentId) {
+              /* Stap 1.5 — dwing herkomst naar meldende winkel.
+                 Niet fataal: bij fout loggen en doorgaan naar stap 2 zodat
+                 pickup-routing toch gebeurt. */
+              const winkelBranchId = String(winkelBranchInfo?.branchId || '').trim();
+              if (winkelBranchId && winkelBranchId !== resBranch.branchId) {
+                try {
+                  setFulfillmentFromWinkel = await setFulfillmentBranch({
+                    fulfillmentId,
+                    branchId: winkelBranchId
+                  });
+                } catch (err) {
+                  setFulfillmentFromWinkelError = { message: err.message, status: err.status, fault: err.fault };
+                }
+              }
+              /* Stap 2 — route fulfillment naar RES-branch voor afhalen. */
               setFulfillmentResult = await setFulfillmentBranch({
                 fulfillmentId,
                 branchId: resBranch.branchId
@@ -188,6 +207,17 @@ export default async function handler(req, res) {
           }
         }
 
+        /* srsError-tekst kiest in prioriteit: stap-2-fout > stap-1.5-warning >
+           weborder-fout. Stap 1.5 noteren we als 'warning' want stap 2 is
+           leidend voor succes. */
+        const srsErrorText = result.success
+          ? (setFulfillmentError
+              ? `SetFulfillment(RES): ${setFulfillmentError.message}`
+              : setFulfillmentFromWinkelError
+                ? `Stap 1.5 (herkomst→winkel) waarschuwing: ${setFulfillmentFromWinkelError.message}`
+                : '')
+          : `SRS gaf '${result.srsReturn || 'no-return'}' terug i.p.v. 'true'`;
+
         await updateReservering(reservering.id, {
           srsSyncStatus: syncStatus,
           srsTransactionId: result.orderId,
@@ -195,15 +225,18 @@ export default async function handler(req, res) {
           srsRawSnippet: String(result.raw || '').slice(0, 500),
           srsAttempts: 1,
           srsLastAttemptAt: attemptStartAt,
-          srsError: result.success
-            ? (setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : '')
-            : `SRS gaf '${result.srsReturn || 'no-return'}' terug i.p.v. 'true'`
+          srsError: srsErrorText
         });
         reservering.srsSyncStatus = syncStatus;
         reservering.srsTransactionId = result.orderId;
         reservering.srsFulfillmentId = fulfillmentId;
+        weborder.setFulfillmentFromWinkel = setFulfillmentFromWinkel;
+        weborder.setFulfillmentFromWinkelError = setFulfillmentFromWinkelError;
         weborder.setFulfillmentResult = setFulfillmentResult;
         weborder.setFulfillmentError = setFulfillmentError;
+        weborder.fulfillmentId = fulfillmentId;
+        weborder.winkelBranchId = winkelBranchInfo?.branchId || '';
+        weborder.routedTo = setFulfillmentResult?.success ? resBranch.branchId : '';
       } catch (err) {
         weborderError = { message: err.message, fault: err.fault, responseText: err.responseText };
         try {
