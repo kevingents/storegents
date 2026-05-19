@@ -88,6 +88,17 @@ export default async function handler(req, res) {
       const sku = clean(body.sku);
       if (!barcode && !sku) return res.status(400).json({ success: false, message: 'Geef barcode of SKU mee.' });
 
+      /* Verplicht: klant moet bestaan in SRS. Reserveringen op anonieme
+         klanten zijn niet toegestaan — we moeten kunnen koppelen wie het
+         artikel komt ophalen. */
+      const srsCustomerId = clean(body.srsCustomerId);
+      if (!srsCustomerId) {
+        return res.status(400).json({
+          success: false,
+          message: 'srsCustomerId verplicht. Reservering moet aan een bestaande SRS-klant gekoppeld zijn.'
+        });
+      }
+
       /* Server-side voorraad-check: alleen reserveren wat winkel zelf heeft. */
       const check = await verifyStockInStore(store, barcode, sku, quantity);
       if (!check.ok && check.reason === 'onvoldoende-voorraad') {
@@ -122,7 +133,7 @@ export default async function handler(req, res) {
         }).catch(() => null);
 
         const result = await placeReserveringAsWeborder({
-          customerId: clean(body.srsCustomerId) || undefined,
+          customerId: srsCustomerId,
           fulfilmentBranchId: resBranch.branchId,
           sellingBranchId: winkelBranchInfo?.branchId || '',
           reserveringId: reservering.id,
