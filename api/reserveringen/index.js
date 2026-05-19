@@ -71,6 +71,17 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
+    /* Feature-flag: reserveringen tijdelijk uitgeschakeld i.v.m. SRS-
+       routing/voorraad-issues. Re-enablen door RESERVERINGEN_ENABLED=true
+       in Vercel env te zetten. Bestaande reserveringen blijven beheerbaar
+       (GET + status-updates blijven werken). */
+    if (process.env.RESERVERINGEN_ENABLED !== 'true') {
+      return res.status(503).json({
+        success: false,
+        disabled: true,
+        message: 'Reserveringen zijn tijdelijk uitgeschakeld. Nieuwe reserveringen kunnen op dit moment niet aangemaakt worden.'
+      });
+    }
     try {
       const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
       const store = clean(body.store);
