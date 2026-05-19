@@ -175,7 +175,14 @@ export default async function handler(req, res) {
       if (isLate(row, 48)) addMetric(locations, store, 'lateOrders', 1);
     });
     flattenCancellations(cancellations).forEach((row) => {
-      if (isClosedStatus(row.status) && !normalizeStatus(row.status).includes('niet leverbaar') && !normalizeStatus(row.status).includes('unavailable')) return;
+      /* Skip ALLE closed records — die zijn historisch en horen niet in
+         "open"/"te laat"-tellers. Voorheen werden closed records met status
+         'niet leverbaar' / 'unavailable' tóch meegeteld waardoor Magazijn
+         180 historische niet-leverbaar regels als "lateExchanges" kreeg —
+         dat veroorzaakte de "0 open / 180 te laat"-impossibility op het
+         locatieoverzicht. Niet-leverbaar wordt al apart geteld in de
+         openUnavailable-bucket via /api/admin/unavailable-order-lines. */
+      if (isClosedStatus(row.status)) return;
       addMetric(locations, storeFromCancellation(row), 'openExchanges', 1);
       if (normalizeStatus(row.status).includes('cancel') || normalizeStatus(row.status).includes('geannuleerd')) addMetric(locations, storeFromCancellation(row), 'openCancellations', 1);
       if (isLate(row, 48)) addMetric(locations, storeFromCancellation(row), 'lateExchanges', 1);
