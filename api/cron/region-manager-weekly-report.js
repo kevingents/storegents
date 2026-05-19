@@ -140,7 +140,7 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows 
   };
 }
 
-function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week') {
+function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diagnostics = {}) {
   const region = summary.region || {};
   /* Default true tenzij expliciet false — backwards compat met oude config. */
   const sections = {
@@ -154,6 +154,42 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week') {
   const metricRows = summary.metrics.sort((a, b) => a.store.localeCompare(b.store, 'nl'));
   const overdueRows = summary.overdueStores.sort((a, b) => b.overdueCount - a.overdueCount || a.store.localeCompare(b.store, 'nl'));
   const exchangeRows = summary.exchanges.slice(0, 80);
+
+  /* Diagnose-banner: toon ALLEEN als data-fetches faalden of de mail
+     verdacht leeg is (alle metrics nul én geen stores in regio of geen
+     data-rijen). Anders is dit overbodige ruis voor de regio-manager. */
+  const allZero =
+    summary.totals.overdueOrders === 0 &&
+    summary.totals.labelCreated === 0 &&
+    summary.totals.customerRegistrations === 0 &&
+    summary.totals.overdueExchanges === 0;
+  const hasWarnings = (diagnostics.scoreboardWarnings || []).length > 0 ||
+                      (diagnostics.cronWarnings || []).length > 0;
+  const dq = diagnostics.scoreboardDataQuality || {};
+  const shouldShowDiagnostics = hasWarnings || (allZero && metricRows.length === 0);
+
+  const diagnosticsBlock = shouldShowDiagnostics ? `
+    <div style="margin-bottom:14px;padding:14px;border:1px solid #fbbf24;background:#fffbeb;border-radius:12px;font-size:13px;color:#78350f">
+      <strong style="display:block;margin-bottom:6px;color:#92400e">⚠ Diagnose: dit rapport bevat mogelijk geen volledige data</strong>
+      ${allZero && !hasWarnings ? `<p style="margin:6px 0;color:#78350f">Alle metrics zijn 0 — controleer of de data-bronnen (scoreboard, SRS, exchanges) draaien. Mogelijk vakantie-periode of een stille storing.</p>` : ''}
+      ${(diagnostics.scoreboardWarnings || []).length ? `<p style="margin:8px 0 4px;color:#78350f"><strong>Scoreboard problemen:</strong></p>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#78350f">
+          ${diagnostics.scoreboardWarnings.slice(0, 8).map((w) => `<li>${esc(String(w))}</li>`).join('')}
+        </ul>` : ''}
+      ${(diagnostics.cronWarnings || []).length ? `<p style="margin:8px 0 4px;color:#78350f"><strong>Cron problemen:</strong></p>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#78350f">
+          ${diagnostics.cronWarnings.slice(0, 8).map((w) => `<li>${esc(String(w))}</li>`).join('')}
+        </ul>` : ''}
+      ${Object.keys(dq).length ? `<p style="margin:8px 0 4px;color:#78350f"><strong>Data-quality flags:</strong></p>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#78350f">
+          <li>Klantdata beschikbaar: ${dq.hasCustomerData ? 'ja' : 'NEE'}</li>
+          <li>Label-aantal opgehaald: ${number(dq.labelCount || 0)}</li>
+          <li>Bron-klanten: ${number(dq.sourceCustomerCount || 0)}</li>
+          <li>Annuleringen-regels: ${number(dq.cancellationLineCount || 0)}</li>
+        </ul>` : ''}
+      <p style="margin:8px 0 0;font-size:11.5px;color:#92400e">Admin: kijk in /api/admin/scoreboard/omnichannel met dezelfde periode om de bron te controleren.</p>
+    </div>
+  ` : '';
 
   /* Bouw totals-rijen alleen voor secties die aan staan. */
   const totalsRows = [];
@@ -171,6 +207,7 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week') {
   if (sections.overdueExchanges) totalsRows.push({ label: 'Uitwisselingen te laat', value: summary.totals.overdueExchanges });
 
   return `
+    ${diagnosticsBlock}
     <div style="display:grid;gap:12px;margin-bottom:18px;">
       <div style="padding:16px;border:1px solid #e1e6eb;border-radius:16px;background:#f8fafc;">
         <strong>Periode:</strong> ${esc(periodLabel)} (${esc(dateFrom)} t/m ${esc(dateTo)})<br>
@@ -245,11 +282,22 @@ export default async function handler(req, res) {
 
   async function loadPeriodData(periodKey, dateFrom, dateTo) {
     if (periodCache.has(periodKey)) return periodCache.get(periodKey);
+    /* refresh=1 bypassed de in-memory cache van /api/admin/scoreboard/omnichannel
+       zodat we altijd verse data krijgen — de cron mag wat langzamer zijn,
+       een gecachet-leeg-resultaat is veel erger. */
     const query = `dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}&adminToken=${token}&admin_token=${token}`;
     let scoreboardRows = [];
+    let scoreboardWarnings = [];
+    let scoreboardDataQuality = null;
     try {
-      const scoreboard = await fetchJson(`${baseUrl}/api/admin/scoreboard/omnichannel?${query}`, `omnichannel-scoreboard (${periodKey})`);
+      const scoreboard = await fetchJson(`${baseUrl}/api/admin/scoreboard/omnichannel?${query}&refresh=1`, `omnichannel-scoreboard (${periodKey})`);
       scoreboardRows = Array.isArray(scoreboard.rows) ? scoreboard.rows : [];
+      /* Scoreboard returnt ALTIJD 200 OK, ook bij interne fetch-fouten.
+         Pak zelf de degraded-vlag + warnings array zodat we die kunnen
+         doorgeven aan de mail-diagnose. */
+      if (Array.isArray(scoreboard.warnings)) scoreboardWarnings = scoreboard.warnings;
+      if (scoreboard.dataQuality) scoreboardDataQuality = scoreboard.dataQuality;
+      if (scoreboard.degraded) warnings.push(`scoreboard degraded (${periodKey}): ${scoreboardWarnings.join(' | ') || 'onbekende reden'}`);
     } catch (error) { warnings.push(error.message); }
     let exchangeRows = [];
     try {
@@ -257,7 +305,7 @@ export default async function handler(req, res) {
       const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
       exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
     } catch (error) { warnings.push(`admin-exchanges niet beschikbaar (${periodKey}): ${error.message}`); }
-    const data = { scoreboardRows, exchangeRows };
+    const data = { scoreboardRows, exchangeRows, scoreboardWarnings, scoreboardDataQuality };
     periodCache.set(periodKey, data);
     return data;
   }
@@ -269,7 +317,7 @@ export default async function handler(req, res) {
     /* Per regio: bepaal eigen periode (last-week / last-2-weeks / last-month). */
     const { from: dateFrom, to: dateTo, label: periodLabel } = periodRange(region.period, now);
     const periodKey = `${dateFrom}_${dateTo}`;
-    const { scoreboardRows, exchangeRows } = await loadPeriodData(periodKey, dateFrom, dateTo);
+    const { scoreboardRows, exchangeRows, scoreboardWarnings, scoreboardDataQuality } = await loadPeriodData(periodKey, dateFrom, dateTo);
 
     /* Overdues moeten altijd per-store gefetched worden — geen caching. */
     const overdueByStore = new Map();
@@ -295,7 +343,11 @@ export default async function handler(req, res) {
     const html = baseMailHtml({
       title: `Weekrapport ${region.name}`,
       intro: `Rapportage over ${periodLabel} — te late orders, labels, klantinschrijvingen en te late uitwisselingen.`,
-      bodyHtml: reportHtml(summary, dateFrom, dateTo, periodLabel)
+      bodyHtml: reportHtml(summary, dateFrom, dateTo, periodLabel, {
+        scoreboardWarnings,
+        scoreboardDataQuality,
+        cronWarnings: warnings.filter((w) => w.includes(periodKey) || w.includes(region.name))
+      })
     });
 
     if (!dryRun) {
