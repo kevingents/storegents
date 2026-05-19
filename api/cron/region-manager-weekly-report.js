@@ -21,8 +21,50 @@ function hasAdminAccess(req) {
 
 function isoDate(date) { return date.toISOString().slice(0, 10); }
 function addDays(date, days) { const d = new Date(date); d.setDate(d.getDate() + days); return d; }
-function startOfPreviousWeek() { const now = new Date(); const day = now.getDay() || 7; return addDays(addDays(now, 1 - day), -7); }
-function endOfPreviousWeek() { return addDays(startOfPreviousWeek(), 6); }
+function startOfPreviousWeek(now = new Date()) { const day = now.getDay() || 7; return addDays(addDays(now, 1 - day), -7); }
+function endOfPreviousWeek(now = new Date()) { return addDays(startOfPreviousWeek(now), 6); }
+
+/* Day-of-week in 1..7 (1=ma, 7=zo) zoals ISO-8601 verwacht. */
+function nlDayOfWeek(date) {
+  const d = date.getUTCDay();
+  return d === 0 ? 7 : d;
+}
+
+/* ISO-week-nummer (1..53) — gebruikt voor biweekly schedule check. */
+function isoWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+/* Bepaalt of de cron-handler vandaag een mail moet sturen. De Vercel-
+   cron fireert dagelijks; deze check filtert per config. */
+function shouldRunToday(schedule = {}, now = new Date()) {
+  const freq = schedule.frequency || 'weekly';
+  const dow = nlDayOfWeek(now);
+  if (freq === 'weekly') return dow === Number(schedule.dayOfWeek || 1);
+  if (freq === 'biweekly') return dow === Number(schedule.dayOfWeek || 1) && isoWeekNumber(now) % 2 === 0;
+  if (freq === 'monthly') return now.getUTCDate() === Number(schedule.dayOfMonth || 1);
+  return false;
+}
+
+/* Date-range per gekozen periode-modus. Default = vorige kalender-week. */
+function periodRange(period, now = new Date()) {
+  if (period === 'last-2-weeks') {
+    const end = endOfPreviousWeek(now);
+    const start = addDays(end, -13);
+    return { from: isoDate(start), to: isoDate(end), label: 'vorige 2 weken' };
+  }
+  if (period === 'last-month') {
+    const firstOfThisMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const lastOfPreviousMonth = addDays(firstOfThisMonth, -1);
+    const firstOfPreviousMonth = new Date(Date.UTC(lastOfPreviousMonth.getUTCFullYear(), lastOfPreviousMonth.getUTCMonth(), 1));
+    return { from: isoDate(firstOfPreviousMonth), to: isoDate(lastOfPreviousMonth), label: 'vorige maand' };
+  }
+  return { from: isoDate(startOfPreviousWeek(now)), to: isoDate(endOfPreviousWeek(now)), label: 'vorige week' };
+}
 function number(value) { return Number.isFinite(Number(value)) ? Number(value) : 0; }
 function esc(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 function orderKey(row = {}) { return String(row.fulfillmentId || row.id || row.orderNr || row.orderNumber || row.orderName || `${row.sku || ''}-${row.createdAt || ''}`).trim(); }
@@ -98,46 +140,65 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows 
   };
 }
 
-function reportHtml(summary, dateFrom, dateTo) {
+function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week') {
+  const region = summary.region || {};
+  /* Default true tenzij expliciet false — backwards compat met oude config. */
+  const sections = {
+    pickpack: region.sections?.pickpack !== false,
+    overdueOrders: region.sections?.overdueOrders !== false,
+    overdueExchanges: region.sections?.overdueExchanges !== false,
+    customerSignups: region.sections?.customerSignups !== false,
+    shippingLabels: region.sections?.shippingLabels !== false
+  };
+
   const metricRows = summary.metrics.sort((a, b) => a.store.localeCompare(b.store, 'nl'));
   const overdueRows = summary.overdueStores.sort((a, b) => b.overdueCount - a.overdueCount || a.store.localeCompare(b.store, 'nl'));
   const exchangeRows = summary.exchanges.slice(0, 80);
+
+  /* Bouw totals-rijen alleen voor secties die aan staan. */
+  const totalsRows = [];
+  if (sections.overdueOrders) {
+    totalsRows.push({ label: 'Winkels te laat', value: summary.totals.overdueOrderStores });
+    totalsRows.push({ label: 'Te laat in periode', value: summary.totals.overdueOrders });
+    totalsRows.push({ label: 'Nu nog te laat', value: summary.totals.currentOverdueOrders });
+    totalsRows.push({ label: 'Verwerkt na te laat', value: summary.totals.processedAfterOverdue });
+  }
+  if (sections.shippingLabels) totalsRows.push({ label: 'Labels', value: summary.totals.labelCreated });
+  if (sections.customerSignups) {
+    totalsRows.push({ label: 'Klanten met e-mail', value: summary.totals.customersWithEmail });
+    totalsRows.push({ label: 'Klanten zonder e-mail', value: summary.totals.customersWithoutEmail });
+  }
+  if (sections.overdueExchanges) totalsRows.push({ label: 'Uitwisselingen te laat', value: summary.totals.overdueExchanges });
+
   return `
     <div style="display:grid;gap:12px;margin-bottom:18px;">
       <div style="padding:16px;border:1px solid #e1e6eb;border-radius:16px;background:#f8fafc;">
-        <strong>Periode:</strong> ${esc(dateFrom)} t/m ${esc(dateTo)}<br>
-        <strong>Winkels in regio:</strong> ${esc((summary.region.stores || []).join(', '))}<br>
-        <span style="color:#3a4a5a;">Orders blijven meetellen zodra ze deze week als te laat zijn geregistreerd, ook als ze later verwerkt zijn.</span>
+        <strong>Periode:</strong> ${esc(periodLabel)} (${esc(dateFrom)} t/m ${esc(dateTo)})<br>
+        <strong>Winkels in regio:</strong> ${esc((region.stores || []).join(', '))}<br>
+        <span style="color:#3a4a5a;">Orders blijven meetellen zodra ze in deze periode als te laat zijn geregistreerd, ook als ze later verwerkt zijn.</span>
       </div>
     </div>
-    <h2 style="font-size:18px;color:#0a1f33;">Regio totaal</h2>
-    ${rowsTable([
-      { label: 'Winkels te laat', value: summary.totals.overdueOrderStores },
-      { label: 'Te laat deze week', value: summary.totals.overdueOrders },
-      { label: 'Nu nog te laat', value: summary.totals.currentOverdueOrders },
-      { label: 'Verwerkt na te laat', value: summary.totals.processedAfterOverdue },
-      { label: 'Labels', value: summary.totals.labelCreated },
-      { label: 'Klanten met e-mail', value: summary.totals.customersWithEmail },
-      { label: 'Klanten zonder e-mail', value: summary.totals.customersWithoutEmail },
-      { label: 'Uitwisselingen te laat', value: summary.totals.overdueExchanges }
-    ], [{ label: 'Metric', value: (row) => row.label }, { label: 'Aantal', value: (row) => row.value }])}
-    <h2 style="font-size:18px;color:#0a1f33;">Winkels die te laat hebben geleverd</h2>
+    ${totalsRows.length ? `<h2 style="font-size:18px;color:#0a1f33;">Regio totaal</h2>
+    ${rowsTable(totalsRows, [{ label: 'Metric', value: (row) => row.label }, { label: 'Aantal', value: (row) => row.value }])}` : ''}
+    ${sections.overdueOrders ? `<h2 style="font-size:18px;color:#0a1f33;">Winkels die te laat hebben geleverd</h2>
     ${overdueRows.length ? rowsTable(overdueRows, [
       { label: 'Winkel', value: (row) => row.store },
       { label: 'Open orders nu', value: (row) => row.openCount },
-      { label: 'Te laat deze week', value: (row) => row.overdueCount },
+      { label: 'Te laat in periode', value: (row) => row.overdueCount },
       { label: 'Nu nog te laat', value: (row) => row.currentOverdueCount || 0 },
       { label: 'Verwerkt na te laat', value: (row) => Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)) },
       { label: 'Oudste huidige', value: (row) => row.oldestAgeHours ? `${row.oldestAgeHours} uur` : '-' }
-    ]) : '<p style="color:#3a4a5a;">Geen te late orders in deze regio geregistreerd.</p>'}
-    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Labels en klantinschrijvingen</h2>
+    ]) : '<p style="color:#3a4a5a;">Geen te late orders in deze regio geregistreerd.</p>'}` : ''}
+    ${(sections.shippingLabels || sections.customerSignups) ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">${sections.shippingLabels && sections.customerSignups ? 'Labels en klantinschrijvingen' : sections.shippingLabels ? 'Verzendlabels' : 'Klantinschrijvingen'}</h2>
     ${rowsTable(metricRows, [
       { label: 'Winkel', value: (row) => row.store },
-      { label: 'Labels', value: (row) => row.labelCreated },
-      { label: 'Klanten met e-mail', value: (row) => row.customersWithEmail },
-      { label: 'Klanten zonder e-mail', value: (row) => row.customersWithoutEmail }
-    ])}
-    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat per winkel</h2>
+      ...(sections.shippingLabels ? [{ label: 'Labels', value: (row) => row.labelCreated }] : []),
+      ...(sections.customerSignups ? [
+        { label: 'Klanten met e-mail', value: (row) => row.customersWithEmail },
+        { label: 'Klanten zonder e-mail', value: (row) => row.customersWithoutEmail }
+      ] : [])
+    ])}` : ''}
+    ${sections.overdueExchanges ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat per winkel</h2>
     ${summary.exchangeTotals.length ? rowsTable(summary.exchangeTotals, [
       { label: 'Winkel', value: (row) => row.store },
       { label: 'Uitwisselingen te laat', value: (row) => row.overdueExchanges }
@@ -148,7 +209,7 @@ function reportHtml(summary, dateFrom, dateTo) {
       { label: 'Order', value: (row) => row.orderNr || row.orderNumber || row.id || '-' },
       { label: 'Leeftijd', value: (row) => ageLabel(row.createdAt || row.dateTime || row.updatedAt) },
       { label: 'Status', value: (row) => row.status || '-' }
-    ]) : '<p style="color:#3a4a5a;">Geen te late uitwisselingen gevonden.</p>'}`;
+    ]) : '<p style="color:#3a4a5a;">Geen te late uitwisselingen gevonden.</p>'}` : ''}`;
 }
 
 export default async function handler(req, res) {
@@ -156,25 +217,62 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
   const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
+  const forceRun = String(req.query.force || req.query.forceRun || '') === '1';
   if (!hasAdminAccess(req) && !requireCronSecret(req, res, 'REGION_REPORT_SECRET')) return;
 
-  const dateFrom = String(req.query.dateFrom || req.query.from || isoDate(startOfPreviousWeek())).trim();
-  const dateTo = String(req.query.dateTo || req.query.to || isoDate(endOfPreviousWeek())).trim();
+  const config = await getRegionReportConfig();
+
+  /* Schedule-gating: Vercel-cron fireert dagelijks. Sla over als vandaag
+     niet matcht met config.schedule, tenzij ?force=1 of ?dryRun=1 (preview). */
+  const now = new Date();
+  if (!forceRun && !dryRun && !shouldRunToday(config.schedule || {}, now)) {
+    return res.status(200).json({
+      success: true,
+      skipped: 'schedule-mismatch',
+      schedule: config.schedule,
+      today: { dayOfWeek: nlDayOfWeek(now), dayOfMonth: now.getUTCDate(), isoWeek: isoWeekNumber(now) }
+    });
+  }
+
   const onlyRegion = String(req.query.region || '').trim();
   const baseUrl = getApiBaseUrl(req);
-  const config = await getRegionReportConfig();
   const token = encodeURIComponent(getAdminToken());
-  const query = `dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}&adminToken=${token}&admin_token=${token}`;
   const warnings = [];
 
-  let scoreboardRows = [];
-  try {
-    const scoreboard = await fetchJson(`${baseUrl}/api/admin/scoreboard/omnichannel?${query}`, 'omnichannel-scoreboard');
-    scoreboardRows = Array.isArray(scoreboard.rows) ? scoreboard.rows : [];
-  } catch (error) { warnings.push(error.message); }
+  /* Cache per period-key zodat regio's met dezelfde periode dezelfde
+     fetch hergebruiken (scoreboard + exchanges zijn niet per-regio). */
+  const periodCache = new Map();
 
-  const overdueByStore = new Map();
+  async function loadPeriodData(periodKey, dateFrom, dateTo) {
+    if (periodCache.has(periodKey)) return periodCache.get(periodKey);
+    const query = `dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}&adminToken=${token}&admin_token=${token}`;
+    let scoreboardRows = [];
+    try {
+      const scoreboard = await fetchJson(`${baseUrl}/api/admin/scoreboard/omnichannel?${query}`, `omnichannel-scoreboard (${periodKey})`);
+      scoreboardRows = Array.isArray(scoreboard.rows) ? scoreboard.rows : [];
+    } catch (error) { warnings.push(error.message); }
+    let exchangeRows = [];
+    try {
+      const exchanges = await fetchJson(`${baseUrl}/api/admin/exchanges?${query}`, `admin-exchanges (${periodKey})`, 30000);
+      const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
+      exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
+    } catch (error) { warnings.push(`admin-exchanges niet beschikbaar (${periodKey}): ${error.message}`); }
+    const data = { scoreboardRows, exchangeRows };
+    periodCache.set(periodKey, data);
+    return data;
+  }
+
+  const results = [];
   for (const region of config.regions || []) {
+    if (onlyRegion && region.id !== onlyRegion && region.name !== onlyRegion) continue;
+
+    /* Per regio: bepaal eigen periode (last-week / last-2-weeks / last-month). */
+    const { from: dateFrom, to: dateTo, label: periodLabel } = periodRange(region.period, now);
+    const periodKey = `${dateFrom}_${dateTo}`;
+    const { scoreboardRows, exchangeRows } = await loadPeriodData(periodKey, dateFrom, dateTo);
+
+    /* Overdues moeten altijd per-store gefetched worden — geen caching. */
+    const overdueByStore = new Map();
     for (const store of region.stores || []) {
       try {
         const data = await fetchJson(`${baseUrl}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, `open-weborders ${store}`, 30000);
@@ -186,36 +284,33 @@ export default async function handler(req, res) {
         for (const row of overdue) addCurrentOverdueOrder(overdueByStore, store, row, orderKey(row), operationalDaysBetween(orderCreatedAt(row)) * 24);
       } catch (error) { warnings.push(error.message); }
     }
-  }
-  await addLoggedWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo });
+    await addLoggedWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo });
 
-  let exchangeRows = [];
-  try {
-    const exchanges = await fetchJson(`${baseUrl}/api/admin/exchanges?${query}`, 'admin-exchanges', 30000);
-    const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
-    exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
-  } catch (error) {
-    warnings.push(`admin-exchanges niet beschikbaar: ${error.message}`);
-  }
-
-  const results = [];
-  for (const region of config.regions || []) {
-    if (onlyRegion && region.id !== onlyRegion && region.name !== onlyRegion) continue;
     const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows });
     if (!region.email) {
-      results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', totals: summary.totals });
+      results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', period: periodLabel, totals: summary.totals });
       continue;
     }
 
-    const html = baseMailHtml({ title: `Weekrapport ${region.name}`, intro: 'Wekelijkse rapportage met te late orders, labels, klantinschrijvingen en te late uitwisselingen.', bodyHtml: reportHtml(summary, dateFrom, dateTo) });
+    const html = baseMailHtml({
+      title: `Weekrapport ${region.name}`,
+      intro: `Rapportage over ${periodLabel} — te late orders, labels, klantinschrijvingen en te late uitwisselingen.`,
+      bodyHtml: reportHtml(summary, dateFrom, dateTo, periodLabel)
+    });
 
     if (!dryRun) {
-      await sendMail({ to: region.email, cc: region.cc, subject: `GENTS weekrapport ${region.name} - ${dateFrom} t/m ${dateTo}`, html, text: `Weekrapport ${region.name}: ${summary.totals.overdueOrders} te late orders deze week, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat.` });
+      await sendMail({
+        to: region.email,
+        cc: region.cc,
+        subject: `GENTS ${periodLabel === 'vorige maand' ? 'maandrapport' : 'weekrapport'} ${region.name} - ${dateFrom} t/m ${dateTo}`,
+        html,
+        text: `Rapportage ${region.name} (${periodLabel}): ${summary.totals.overdueOrders} te late orders, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat.`
+      });
       await appendMailLog({ type: 'region_manager_weekly_report', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email });
     }
 
-    results.push({ region: region.name, recipient: region.email, dryRun, totals: summary.totals });
+    results.push({ region: region.name, recipient: region.email, period: periodLabel, dryRun, totals: summary.totals });
   }
 
-  return res.status(200).json({ success: true, dryRun, dateFrom, dateTo, warnings, results });
+  return res.status(200).json({ success: true, dryRun, schedule: config.schedule, warnings, results });
 }
