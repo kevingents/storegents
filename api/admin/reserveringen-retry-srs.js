@@ -49,8 +49,14 @@ export default async function handler(req, res) {
 
     const attemptStartAt = new Date().toISOString();
 
-    /* SRS-config check vooraf zodat we sneller falen bij ontbrekende env */
+    /* SRS-config check vooraf zodat we sneller falen bij ontbrekende env.
+       Geeft een platte map terug zodat de frontend per-key kan tonen wat
+       aanwezig is. */
     const configCheck = {
+      SRS_API_USER: Boolean(process.env.SRS_API_USER || process.env.SRS_API_USERNAME),
+      SRS_API_PASSWORD: Boolean(process.env.SRS_API_PASSWORD),
+      SRS_API_BASE_URL: process.env.SRS_API_BASE_URL || process.env.SRS_BASE_URL || 'https://ws.srs.nl (default)',
+      /* Behoud oude keys voor backwards compat met frontend */
       hasUser: Boolean(process.env.SRS_API_USER || process.env.SRS_API_USERNAME),
       hasPassword: Boolean(process.env.SRS_API_PASSWORD),
       baseUrl: process.env.SRS_API_BASE_URL || process.env.SRS_BASE_URL || 'https://ws.srs.nl (default)'
