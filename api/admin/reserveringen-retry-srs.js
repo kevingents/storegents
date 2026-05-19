@@ -86,8 +86,17 @@ export default async function handler(req, res) {
 
     /* CRUCIAL FIX: als reservering al een srsTransactionId heeft (weborder
        al in SRS geplaatst), maken we geen NIEUWE weborder maar voeren we
-       alleen Stap 1.5 + Stap 2 (SetFulfillments) uit. Voorkomt duplicates. */
-    if (r.srsTransactionId && r.srsSyncStatus === 'weborder_created') {
+       alleen Stap 1.5 + Stap 2 (SetFulfillments) uit. Voorkomt duplicates.
+       BREED: ook bij route_failed / fulfillment_id_missing wil je hergebruik
+       — anders maakt elke retry een nieuwe weborder en houden we duplicates
+       in SRS (RMPCKJQMIEYW, RMPCKVPBFVDT, RMPCL2SJZQZF, …). */
+    const REUSABLE_STATES = new Set([
+      'weborder_created',
+      'route_failed',
+      'fulfillment_id_missing',
+      'weborder_routed_to_res' /* idempotent re-run is veilig */
+    ]);
+    if (r.srsTransactionId && REUSABLE_STATES.has(r.srsSyncStatus)) {
       const existingOrderId = r.srsTransactionId;
       const attemptStartAtExisting = new Date().toISOString();
       let fulfillmentId = '';
