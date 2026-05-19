@@ -73,7 +73,61 @@ export default async function handler(req, res) {
       return res.status(500).json({ success: false, configCheck, message: msg });
     }
 
-    /* Probeer opnieuw */
+    /* CRUCIAL FIX: als reservering al een srsTransactionId heeft (weborder
+       al in SRS geplaatst), maken we geen NIEUWE weborder maar voeren we
+       alleen Stap 2 (SetFulfillments) uit. Voorkomt duplicates in SRS. */
+    if (r.srsTransactionId && r.srsSyncStatus === 'weborder_created') {
+      const existingOrderId = r.srsTransactionId;
+      const attemptStartAtExisting = new Date().toISOString();
+      let fulfillmentId = '';
+      let setFulfillmentResult = null;
+      let setFulfillmentError = null;
+      let syncStatus = 'weborder_created';
+      try {
+        const ff = await getFulfillments({ orderNr: existingOrderId });
+        const lines = ff.fulfillments || ff.items || [];
+        fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
+        if (fulfillmentId) {
+          setFulfillmentResult = await setFulfillmentBranch({
+            fulfillmentId,
+            branchId: resBranch.branchId
+          });
+          syncStatus = setFulfillmentResult.success ? 'weborder_routed_to_res' : 'route_failed';
+        } else {
+          syncStatus = 'fulfillment_id_missing';
+          setFulfillmentError = { message: 'Geen fulfillment gevonden voor orderNr ' + existingOrderId };
+        }
+      } catch (err) {
+        setFulfillmentError = { message: err.message, status: err.status, fault: err.fault };
+        syncStatus = 'route_failed';
+      }
+      await updateReservering(id, {
+        srsSyncStatus: syncStatus,
+        srsFulfillmentId: fulfillmentId,
+        srsAttempts: Number(r.srsAttempts || 0) + 1,
+        srsLastAttemptAt: attemptStartAtExisting,
+        srsError: setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : ''
+      });
+      const updatedExisting = (await getReserveringen({ includeAll: true, limit: 5000 })).find((row) => row.id === id);
+      return res.status(200).json({
+        success: Boolean(setFulfillmentResult?.success),
+        stage: 'set-fulfillment-only',
+        message: `Bestaande weborder ${existingOrderId} hergebruikt — alleen Stap 2 uitgevoerd.`,
+        configCheck,
+        reservering: updatedExisting,
+        weborder: {
+          orderId: existingOrderId,
+          success: true,
+          srsReturn: 'reused',
+          fulfillmentId,
+          routedTo: setFulfillmentResult?.success ? resBranch.branchId : '',
+          setFulfillmentResult,
+          setFulfillmentError
+        }
+      });
+    }
+
+    /* Probeer opnieuw (nieuwe weborder placen + routing) */
     let weborder = null;
     let errInfo = null;
     try {
