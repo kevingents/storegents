@@ -361,7 +361,23 @@ export default async function handler(req, res) {
       await appendMailLog({ type: 'region_manager_weekly_report', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email });
     }
 
-    results.push({ region: region.name, recipient: region.email, period: periodLabel, dryRun, totals: summary.totals });
+    /* Diagnostics & HTML preview meegestuurd zodat de admin in de UI direct
+       kan zien wat er in de mail zou staan + welke data-bron eventueel faalde. */
+    results.push({
+      region: region.name,
+      recipient: region.email,
+      period: periodLabel,
+      dateFrom,
+      dateTo,
+      dryRun,
+      totals: summary.totals,
+      diagnostics: {
+        scoreboardWarnings: scoreboardWarnings || [],
+        scoreboardDataQuality: scoreboardDataQuality || null,
+        cronWarnings: warnings.filter((w) => w.includes(periodKey) || w.includes(region.name))
+      },
+      ...(dryRun ? { htmlPreview: html } : {})
+    });
   }
 
   return res.status(200).json({ success: true, dryRun, schedule: config.schedule, warnings, results });
