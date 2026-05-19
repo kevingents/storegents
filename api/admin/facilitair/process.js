@@ -18,6 +18,7 @@
 
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 import { updateFacilitairOrder } from '../../../lib/facilitair-orders-store.js';
+import { getEmailForStore } from '../../../lib/store-emails-store.js';
 
 function isAuthorized(req) {
   const expected = String(process.env.ADMIN_TOKEN || '12345').trim();
@@ -44,14 +45,8 @@ function statusLabel(status) {
 async function sendStatusMailToStore(order) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return { sent: false, reason: 'no-api-key' };
-  /* Probeer per-store-mail via env var (FACILITAIR_STORE_MAIL_GENTS_TILBURG=...),
-     anders algemene STORE_MAIL fallback. */
-  const storeKey = String(order.store || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
-  const to =
-    process.env[`FACILITAIR_STORE_MAIL_${storeKey}`] ||
-    process.env.FACILITAIR_STORE_MAIL_DEFAULT ||
-    process.env.STORE_MAIL ||
-    '';
+  /* Krijg mail via Blob-config (admin-portal) of env-fallback. */
+  const to = await getEmailForStore(order.store);
   if (!to) return { sent: false, reason: 'no-store-email-configured' };
   const from = process.env.RESEND_FROM_EMAIL || 'GENTS Portaal <portal@gents.nl>';
   const subject = `Facilitair-bestelling ${order.store}: ${statusLabel(order.status)}`;

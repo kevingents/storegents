@@ -15,6 +15,7 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getReserveringen, updateReservering } from '../../lib/reserveringen-store.js';
 import { cancelFulfillment } from '../../lib/srs-weborders-cancel-client.js';
+import { getEmailForStore } from '../../lib/store-emails-store.js';
 
 function isAuthorized(req) {
   /* Vercel-cron stuurt Authorization: Bearer <CRON_SECRET> */
@@ -42,12 +43,7 @@ function tomorrow() {
 async function sendNearExpireMail(reservering) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return { sent: false, reason: 'no-api-key' };
-  const storeKey = String(reservering.store || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
-  const to =
-    process.env[`FACILITAIR_STORE_MAIL_${storeKey}`] ||
-    process.env.FACILITAIR_STORE_MAIL_DEFAULT ||
-    process.env.STORE_MAIL ||
-    '';
+  const to = await getEmailForStore(reservering.store);
   if (!to) return { sent: false, reason: 'no-store-email' };
   const from = process.env.RESEND_FROM_EMAIL || 'GENTS Portaal <portal@gents.nl>';
   const klant = reservering.customer || {};

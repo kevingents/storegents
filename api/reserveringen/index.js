@@ -124,6 +124,7 @@ export default async function handler(req, res) {
          Fail-soft: bij SRS-fout blijft Blob-record bestaan, srsError gelogd. */
       let weborder = null;
       let weborderError = null;
+      const attemptStartAt = new Date().toISOString();
       try {
         const winkelBranchInfo = await import('../../lib/branch-metrics.js').then((m) => {
           if (typeof m.listBranches === 'function') {
@@ -161,19 +162,28 @@ export default async function handler(req, res) {
         weborder = result;
         await updateReservering(reservering.id, {
           srsSyncStatus: result.success ? 'weborder_created' : 'failed',
-          srsTransactionId: result.orderId
+          srsTransactionId: result.orderId,
+          srsRawSnippet: String(result.raw || '').slice(0, 500),
+          srsAttempts: 1,
+          srsLastAttemptAt: attemptStartAt,
+          srsError: result.success ? '' : `SRS gaf '${result.srsReturn || 'no-return'}' terug i.p.v. 'true'`
         });
         reservering.srsSyncStatus = result.success ? 'weborder_created' : 'failed';
         reservering.srsTransactionId = result.orderId;
       } catch (err) {
-        weborderError = { message: err.message, fault: err.fault };
+        weborderError = { message: err.message, fault: err.fault, responseText: err.responseText };
         try {
           await updateReservering(reservering.id, {
             srsSyncStatus: 'failed',
-            srsTransactionId: ''
+            srsTransactionId: '',
+            srsError: err.message || String(err),
+            srsRawSnippet: String(err.responseText || '').slice(0, 500),
+            srsAttempts: 1,
+            srsLastAttemptAt: attemptStartAt
           });
           reservering.srsSyncStatus = 'failed';
           reservering.srsError = err.message;
+          reservering.srsRawSnippet = String(err.responseText || '').slice(0, 500);
         } catch (_) { /* swallow */ }
       }
 
