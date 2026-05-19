@@ -39,7 +39,8 @@ export default async function handler(req, res) {
     const CANCEL_TRIGGERS = new Set(['opgehaald', 'opgeheven', 'verlopen']);
     let cancel = null;
     let cancelError = null;
-    if (!skipCancel && CANCEL_TRIGGERS.has(newStatus) && next.srsTransactionId && next.srsSyncStatus === 'weborder_created') {
+    const CANCELABLE_SYNC_STATES = new Set(['weborder_created', 'weborder_routed_to_res', 'route_failed']);
+    if (!skipCancel && CANCEL_TRIGGERS.has(newStatus) && next.srsTransactionId && CANCELABLE_SYNC_STATES.has(next.srsSyncStatus)) {
       const item = next.item || {};
       try {
         cancel = await cancelFulfillment({

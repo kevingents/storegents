@@ -17,6 +17,7 @@ import {
 } from '../../lib/reserveringen-store.js';
 import { getReserveringBranch } from '../../lib/reserveringen-branch-mapping.js';
 import { placeReserveringAsWeborder } from '../../lib/srs-weborder-client.js';
+import { getFulfillments, setFulfillmentBranch } from '../../lib/srs-weborders-message-client.js';
 
 function clean(value) { return String(value || '').trim(); }
 
@@ -160,16 +161,49 @@ export default async function handler(req, res) {
           phone: reservering.customer?.phone || ''
         });
         weborder = result;
+        let fulfillmentId = '';
+        let setFulfillmentResult = null;
+        let setFulfillmentError = null;
+        let syncStatus = result.success ? 'weborder_created' : 'failed';
+
+        /* Stap 2: als weborder geplaatst, route fulfillment naar RES-branch
+           via SetFulfillments (i.p.v. extended_attribute afhaal_filiaal). */
+        if (result.success) {
+          try {
+            const ff = await getFulfillments({ orderNr: result.orderId });
+            const lines = ff.fulfillments || ff.items || [];
+            fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
+            if (fulfillmentId) {
+              setFulfillmentResult = await setFulfillmentBranch({
+                fulfillmentId,
+                branchId: resBranch.branchId
+              });
+              syncStatus = setFulfillmentResult.success ? 'weborder_routed_to_res' : 'route_failed';
+            } else {
+              syncStatus = 'fulfillment_id_missing';
+            }
+          } catch (err) {
+            setFulfillmentError = { message: err.message, status: err.status, fault: err.fault };
+            syncStatus = 'route_failed';
+          }
+        }
+
         await updateReservering(reservering.id, {
-          srsSyncStatus: result.success ? 'weborder_created' : 'failed',
+          srsSyncStatus: syncStatus,
           srsTransactionId: result.orderId,
+          srsFulfillmentId: fulfillmentId,
           srsRawSnippet: String(result.raw || '').slice(0, 500),
           srsAttempts: 1,
           srsLastAttemptAt: attemptStartAt,
-          srsError: result.success ? '' : `SRS gaf '${result.srsReturn || 'no-return'}' terug i.p.v. 'true'`
+          srsError: result.success
+            ? (setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : '')
+            : `SRS gaf '${result.srsReturn || 'no-return'}' terug i.p.v. 'true'`
         });
-        reservering.srsSyncStatus = result.success ? 'weborder_created' : 'failed';
+        reservering.srsSyncStatus = syncStatus;
         reservering.srsTransactionId = result.orderId;
+        reservering.srsFulfillmentId = fulfillmentId;
+        weborder.setFulfillmentResult = setFulfillmentResult;
+        weborder.setFulfillmentError = setFulfillmentError;
       } catch (err) {
         weborderError = { message: err.message, fault: err.fault, responseText: err.responseText };
         try {
