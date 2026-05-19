@@ -12,9 +12,11 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import {
   createReservering,
-  getReserveringen
+  getReserveringen,
+  updateReservering
 } from '../../lib/reserveringen-store.js';
 import { getReserveringBranch } from '../../lib/reserveringen-branch-mapping.js';
+import { createBill, generateReserveringBillNr } from '../../lib/srs-bills-client.js';
 
 function clean(value) { return String(value || '').trim(); }
 
@@ -105,10 +107,61 @@ export default async function handler(req, res) {
         quantity
       });
 
+      /* SRS Bill aanmaken voor financiële claim — koppel klant aan
+         reservering met openstaand bedrag op RES-branchId. Bij ophalen
+         wordt later Pay aangeroepen. Fail-soft: als SRS-call faalt blijft
+         de Blob-reservering bestaan met srsSyncStatus 'failed'. */
+      let bill = null;
+      let billError = null;
+      const itemPrice = Number(body.price || 0);
+      const billAmount = Math.round(itemPrice * quantity * 100) / 100;
+      const srsCustomerId = clean(body.srsCustomerId);
+      if (billAmount > 0) {
+        try {
+          const billNr = generateReserveringBillNr();
+          const result = await createBill({
+            customerId: srsCustomerId || undefined,
+            billNr,
+            amount: billAmount,
+            branchId: resBranch.branchId,
+            dateTime: new Date().toISOString().slice(0, 19)
+          });
+          bill = result;
+          await updateReservering(reservering.id, {
+            srsSyncStatus: result.success ? 'bill_created' : 'failed',
+            srsTransactionId: result.transactionId,
+            srsBillNr: result.billNr,
+            srsBillAmount: billAmount,
+            srsBillBranchId: resBranch.branchId
+          });
+          reservering.srsSyncStatus = result.success ? 'bill_created' : 'failed';
+          reservering.srsBillNr = result.billNr;
+          reservering.srsTransactionId = result.transactionId;
+        } catch (err) {
+          billError = { message: err.message, fault: err.fault };
+          try {
+            await updateReservering(reservering.id, {
+              srsSyncStatus: 'failed',
+              srsError: err.message
+            });
+            reservering.srsSyncStatus = 'failed';
+            reservering.srsError = err.message;
+          } catch (_) { /* swallow */ }
+        }
+      } else {
+        /* Geen prijs → geen bill mogelijk. Markeer als skipped. */
+        try {
+          await updateReservering(reservering.id, { srsSyncStatus: 'skipped_no_price' });
+          reservering.srsSyncStatus = 'skipped_no_price';
+        } catch (_) {}
+      }
+
       return res.status(201).json({
         success: true,
         reservering,
-        stockCheck: check
+        stockCheck: check,
+        bill,
+        billError
       });
     } catch (error) {
       return res.status(400).json({ success: false, message: error.message });
