@@ -1,6 +1,31 @@
 import { listUnavailableOrderLines } from '../../lib/unavailable-order-line-service.js';
 import { syncSrsCancellationsForBranch } from '../../lib/srs-cancellation-sync-service.js';
 import { syncGlobalUnavailableOrderLines } from '../../lib/srs-unavailable-global-sync-service.js';
+import { getSrsReturnLogs } from '../../lib/srs-return-log-store.js';
+
+/**
+ * Bouw een map van orderNr (canonical) -> { refundedAt, srsCancelledAt } uit
+ * de return-logs zodat we niet-leverbaar regels kunnen markeren als afgerond
+ * wanneer de winkel het al via "Retour & terugbetaling" heeft afgehandeld.
+ */
+async function buildReturnLogMatchMap() {
+  try {
+    const logs = await getSrsReturnLogs();
+    const map = new Map();
+    for (const log of Array.isArray(logs) ? logs : []) {
+      const key = String(log.orderNr || '').replace(/^#+/, '').trim().toLowerCase();
+      if (!key) continue;
+      const existing = map.get(key) || { refundedAt: '', srsCancelledAt: '' };
+      if (log.shopifyRefunded && log.refundedAt && !existing.refundedAt) existing.refundedAt = log.refundedAt;
+      if (log.srsCancelled && log.srsCancelledAt && !existing.srsCancelledAt) existing.srsCancelledAt = log.srsCancelledAt;
+      map.set(key, existing);
+    }
+    return map;
+  } catch (error) {
+    console.warn('[unavailable-order-lines] return-log lookup failed:', error.message);
+    return new Map();
+  }
+}
 
 const DEFAULT_UNAVAILABLE_STATUSES = 'unavailable,niet leverbaar,not available';
 
@@ -187,7 +212,37 @@ export default async function handler(req, res) {
     });
 
     const syncedRows = lineRowsFromRecords(sync?.records || []);
-    const rows = mergeRows(result.rows || [], syncedRows);
+    let rows = mergeRows(result.rows || [], syncedRows);
+
+    /* Cross-reference: rijen waarvan dezelfde orderNr al via "Retour &
+       terugbetaling" is afgehandeld (return-log) krijgen refundedAt/
+       srsCancelledAt + refundStatus='completed' zodat ze in de UI als
+       "Verwerkt" worden geteld i.p.v. eeuwig open te blijven staan. */
+    const returnLogMatches = await buildReturnLogMatchMap();
+    if (returnLogMatches.size) {
+      rows = rows.map((row) => {
+        const key = String(row.orderNr || '').replace(/^#+/, '').trim().toLowerCase();
+        const match = key ? returnLogMatches.get(key) : null;
+        if (!match) return row;
+        return {
+          ...row,
+          refundedAt: row.refundedAt || match.refundedAt || '',
+          shopifyRefunded: Boolean(row.shopifyRefunded || match.refundedAt),
+          srsCancelledAt: row.srsCancelledAt || match.srsCancelledAt || '',
+          srsCancelled: Boolean(row.srsCancelled || match.srsCancelledAt),
+          /* Promoot enums naar 'completed' alleen wanneer een return-log
+             daadwerkelijk een refund/cancel-timestamp heeft. */
+          refundStatus: match.refundedAt && row.refundStatus === 'pending'
+            ? 'completed' : row.refundStatus,
+          srsCancelStatus: match.srsCancelledAt && (row.srsCancelStatus === 'pending')
+            ? 'completed' : row.srsCancelStatus,
+          srsStatus: match.srsCancelledAt && (row.srsStatus === 'pending' || !row.srsStatus)
+            ? 'completed' : row.srsStatus,
+          /* Audit-spoor: laat de UI tonen dat dit via return-flow is gegaan */
+          processedViaReturnFlow: true
+        };
+      });
+    }
 
     return res.status(200).json({
       success: true,
