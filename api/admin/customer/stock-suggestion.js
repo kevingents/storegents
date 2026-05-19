@@ -39,6 +39,70 @@ function topNFromMap(map, n = 3) {
     .map(([key, count]) => ({ key, count }));
 }
 
+/**
+ * Maat-fallback logica: bepaalt of een rij-maat 1 stap af zit van de
+ * klant-voorkeur (zo dan score lager dan exacte match).
+ *
+ * Ondersteunt:
+ *   - Letter-maten: XS · S · M · L · XL · XXL · XXXL (volgorde)
+ *   - Numerieke maten: 36, 37, ..., 64 (broekmaten, schoenen)
+ *   - Lengte/breedte: W30L32, W32L34 etc. (matched op W-deel)
+ */
+const LETTER_LADDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL'];
+
+function sizeProximity(rowSize, prefSize) {
+  if (!rowSize || !prefSize) return 'none';
+  const a = String(rowSize).toUpperCase().trim();
+  const b = String(prefSize).toUpperCase().trim();
+  if (a === b) return 'exact';
+
+  /* Letter-maat ladder */
+  const ia = LETTER_LADDER.indexOf(a);
+  const ib = LETTER_LADDER.indexOf(b);
+  if (ia !== -1 && ib !== -1) {
+    const diff = Math.abs(ia - ib);
+    return diff === 1 ? 'neighbor' : 'none';
+  }
+
+  /* Pure numerieke maat (broek, schoen) */
+  const numA = Number(a.replace(/[^\d]/g, ''));
+  const numB = Number(b.replace(/[^\d]/g, ''));
+  if (Number.isFinite(numA) && Number.isFinite(numB) && numA > 0 && numB > 0) {
+    const diff = Math.abs(numA - numB);
+    /* Voor schoenmaten/broekmaten: ±1 is buurmaat. Soms ±2 voor schoen (39/40/41) */
+    if (diff === 0) return 'exact';
+    if (diff === 1) return 'neighbor';
+    if (diff === 2 && numA >= 35 && numA <= 50) return 'far-neighbor';
+    return 'none';
+  }
+
+  /* W/L jeans-maat: 'W32L34' vs 'W33L34' */
+  const wA = a.match(/^W(\d+)/);
+  const wB = b.match(/^W(\d+)/);
+  if (wA && wB) {
+    const diff = Math.abs(Number(wA[1]) - Number(wB[1]));
+    if (diff === 0) return 'exact';
+    if (diff === 1) return 'neighbor';
+  }
+
+  return 'none';
+}
+
+/**
+ * Voor een rij-maat bepaal de BESTE proximity tegen alle klant-voorkeuren.
+ * Geeft 'exact' / 'neighbor' / 'far-neighbor' / 'none' terug.
+ */
+function bestSizeMatch(rowSize, prefSizes) {
+  if (!rowSize || !prefSizes?.length) return 'none';
+  let best = 'none';
+  const rank = { exact: 3, neighbor: 2, 'far-neighbor': 1, none: 0 };
+  for (const p of prefSizes) {
+    const prox = sizeProximity(rowSize, p);
+    if (rank[prox] > rank[best]) best = prox;
+  }
+  return best;
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
@@ -127,8 +191,8 @@ export default async function handler(req, res) {
 
     const stockRows = pickBranchStockRows(snapshot, { onlyAvailable: true });
 
-    /* 5. Match: rows met size in topSizes OF color in topColors */
-    const topSizeSet = new Set(topSizes.map((s) => s.key));
+    /* 5. Match: rows met size in topSizes (of ±1 buurmaat) OF color in topColors */
+    const topSizeKeys = topSizes.map((s) => s.key);
     const topColorSet = new Set(topColors.map((c) => c.key));
     const topBrandSet = new Set(topBrands.map((b) => b.key.toLowerCase()));
 
@@ -140,10 +204,20 @@ export default async function handler(req, res) {
 
       let score = 0;
       const matchReasons = [];
-      if (rowSize && topSizeSet.has(rowSize)) {
+
+      /* Maat met buurmaat-fallback */
+      const sizeMatch = bestSizeMatch(rowSize, topSizeKeys);
+      if (sizeMatch === 'exact') {
         score += 3;
         matchReasons.push(`maat ${rowSize}`);
+      } else if (sizeMatch === 'neighbor') {
+        score += 2;
+        matchReasons.push(`maat ${rowSize} (buurmaat)`);
+      } else if (sizeMatch === 'far-neighbor') {
+        score += 1;
+        matchReasons.push(`maat ${rowSize} (±2)`);
       }
+
       if (rowColor && topColorSet.has(rowColor)) {
         score += 2;
         matchReasons.push(`kleur ${rowColor}`);
@@ -153,7 +227,7 @@ export default async function handler(req, res) {
         matchReasons.push(`merk ${rowBrand}`);
       }
       if (score > 0) {
-        scored.push({ ...row, _score: score, _matchReasons: matchReasons });
+        scored.push({ ...row, _score: score, _matchReasons: matchReasons, _sizeMatch: sizeMatch });
       }
     }
 
