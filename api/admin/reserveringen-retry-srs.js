@@ -84,19 +84,13 @@ export default async function handler(req, res) {
     }).catch(() => null);
     const winkelBranchId = String(winkelBranchInfo?.branchId || '').trim();
 
-    /* CRUCIAL FIX: als reservering al een srsTransactionId heeft (weborder
-       al in SRS geplaatst), maken we geen NIEUWE weborder maar voeren we
-       alleen Stap 1.5 + Stap 2 (SetFulfillments) uit. Voorkomt duplicates.
-       BREED: ook bij route_failed / fulfillment_id_missing wil je hergebruik
-       — anders maakt elke retry een nieuwe weborder en houden we duplicates
-       in SRS (RMPCKJQMIEYW, RMPCKVPBFVDT, RMPCL2SJZQZF, …). */
-    const REUSABLE_STATES = new Set([
-      'weborder_created',
-      'route_failed',
-      'fulfillment_id_missing',
-      'weborder_routed_to_res' /* idempotent re-run is veilig */
-    ]);
-    if (r.srsTransactionId && REUSABLE_STATES.has(r.srsSyncStatus)) {
+    /* CRUCIAL anti-duplicate: zodra een srsTransactionId bestaat is de
+       order in SRS aangemaakt. Hergebruik 'm ALTIJD - elke retry mag dan
+       alleen Stap 1.5 + Stap 2 (SetFulfillments) doen, die zijn idempotent.
+       Enige uitzondering: 'weborder_cancelled' - dan is de order uit SRS
+       verdwenen en moeten we nieuw plaatsen. */
+    const NON_REUSABLE_STATES = new Set(['weborder_cancelled']);
+    if (r.srsTransactionId && !NON_REUSABLE_STATES.has(r.srsSyncStatus)) {
       const existingOrderId = r.srsTransactionId;
       const attemptStartAtExisting = new Date().toISOString();
       let fulfillmentId = '';
