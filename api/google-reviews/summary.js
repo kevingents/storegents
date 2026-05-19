@@ -1,6 +1,8 @@
 import { listBranches, getBranchIdByStore } from '../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { getGoogleReviewsForStore, findGooglePlace } from '../../lib/google-reviews-client.js';
+import { flagNewReviews } from '../../lib/google-reviews-seen-store.js';
+import { readRecentTrend } from '../../lib/google-reviews-trend-store.js';
 
 const CACHE_TTL_MS = Math.max(
   60 * 1000,
@@ -209,6 +211,27 @@ export default async function handler(req, res) {
       includeReviews,
       allowLookup
     });
+
+    /* Verrijk: nieuwe-flag op reviews + trend uit Blob */
+    if (includeReviews && Array.isArray(payload.reviews) && payload.reviews.length && store) {
+      try {
+        payload.reviews = await flagNewReviews(store, payload.reviews);
+        payload.reviewsList = payload.reviews;
+        payload.latestReviews = payload.reviews;
+        payload.newReviewCount = payload.reviews.filter((r) => r.isNew).length;
+      } catch (e) {
+        console.warn('[google-reviews summary] flagNewReviews fail:', e.message);
+      }
+    }
+
+    /* Trend laatste 12 maanden */
+    if (store) {
+      try {
+        payload.trend = await readRecentTrend(store, 12);
+      } catch (_e) {
+        payload.trend = [];
+      }
+    }
 
     payload.cache = { hit: false, ttlMs: CACHE_TTL_MS };
     setCached(cacheKey, payload);

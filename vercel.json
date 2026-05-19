@@ -79,6 +79,10 @@
     {
       "path": "/api/cron/monthly-omnichannel-winner",
       "schedule": "0 8 1 * *"
+    },
+    {
+      "path": "/api/cron/google-reviews-snapshot",
+      "schedule": "0 4 * * *"
     }
   ]
 }
