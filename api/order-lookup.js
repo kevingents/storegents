@@ -164,29 +164,57 @@ function orderMatchesPostcode(shopifyOrder, postcode) {
 async function findOrderByOrderNumber(shop, token, orderValue) {
   const raw = String(orderValue || '').trim();
   if (!raw) return null;
+  const stripped = raw.replace(/^#+/, '');
 
-  /* Drie inputvormen mogelijk:
-       1. "#1234"   of  "1234"           → order.name search ("#1234")
-       2. "13190847627637" (>= 12 cijfers, geen #) → Shopify internal ID, direct fetch
-       3. "GNT-2026-..." of andere namen → name search met # prefix
-     We proberen #1 / #3 eerst (omdat 90% van inputs is); als dat niets oplevert
-     en de input ziet eruit als een Shopify-ID (puur numeriek, >= 12 cijfers)
-     fallback naar direct ID fetch. */
+  /* Mogelijke inputvormen:
+       1. "#1234"  / "1234"  → order.name (Shopify slaat name op met OF zonder
+          '#'-prefix afhankelijk van merchant-config; we proberen beide)
+       2. "13190847627637" ≥ 12 cijfers → Shopify internal ID, direct fetch
+       3. "GNT-2026-..." → custom-prefixed name, search met OF zonder '#'
+       4. Puur numeriek (< 12 cijfers) → order_number (legacy integer veld)
+     We proberen alle relevante varianten sequentieel tot eentje raak is. */
 
-  /* Stap 1: name search (huidige gedrag, met of zonder #) */
-  const nameQuery = raw.startsWith('#') ? raw : `#${raw}`;
-  const { response, data } = await shopifyFetch(
-    shop,
-    token,
-    `/orders.json?status=any&name=${encodeURIComponent(nameQuery)}`
-  );
+  let lastResponse = null;
+  let lastData = null;
 
-  if (response.ok && data.orders && data.orders.length) {
-    return data.orders[0];
+  /* Stap 1: name search MET '#'-prefix (meest gangbare Shopify-config). */
+  const nameWithHash = raw.startsWith('#') ? raw : `#${stripped}`;
+  {
+    const { response, data } = await shopifyFetch(
+      shop,
+      token,
+      `/orders.json?status=any&name=${encodeURIComponent(nameWithHash)}`
+    );
+    if (response.ok && data.orders && data.orders.length) return data.orders[0];
+    lastResponse = response; lastData = data;
   }
 
-  /* Stap 2: als input puur numeriek >= 12 cijfers → mogelijk Shopify ID */
-  const stripped = raw.replace(/^#/, '');
+  /* Stap 2: name search ZONDER '#'-prefix (sommige merchants config). */
+  if (raw.startsWith('#') || nameWithHash !== stripped) {
+    const { response, data } = await shopifyFetch(
+      shop,
+      token,
+      `/orders.json?status=any&name=${encodeURIComponent(stripped)}`
+    );
+    if (response.ok && data.orders && data.orders.length) return data.orders[0];
+    lastResponse = response; lastData = data;
+  }
+
+  /* Stap 3: order_number (legacy integer veld) wanneer input puur numeriek
+     is en korter dan een Shopify internal-ID. Pakt orders waar het name
+     veld een custom prefix heeft (zoals "GNT-...") maar het oude integer
+     order_number wel matched. */
+  if (/^\d+$/.test(stripped) && stripped.length < 12) {
+    const { response, data } = await shopifyFetch(
+      shop,
+      token,
+      `/orders.json?status=any&order_number=${encodeURIComponent(stripped)}`
+    );
+    if (response.ok && data.orders && data.orders.length) return data.orders[0];
+    lastResponse = response; lastData = data;
+  }
+
+  /* Stap 4: directe fetch op Shopify internal-ID (≥ 12 cijfers). */
   if (/^\d{12,}$/.test(stripped)) {
     try {
       const { response: r2, data: d2 } = await shopifyFetch(
@@ -196,15 +224,15 @@ async function findOrderByOrderNumber(shop, token, orderValue) {
       );
       if (r2.ok && d2.order) return d2.order;
     } catch (_error) {
-      /* val terug op originele 404-handling */
+      /* val terug op de 404-flow */
     }
   }
 
-  /* Stap 3: als response van name-search niet ok was → echte fout doorgeven */
-  if (!response.ok) {
+  /* Als de laatste API-call zelf faalde (5xx/network) → propageer als echte fout. */
+  if (lastResponse && !lastResponse.ok) {
     const error = new Error('Shopify order lookup mislukt');
-    error.status = response.status;
-    error.details = data;
+    error.status = lastResponse.status;
+    error.details = lastData;
     throw error;
   }
 
