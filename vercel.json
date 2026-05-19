@@ -83,6 +83,10 @@
     {
       "path": "/api/cron/google-reviews-snapshot",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/reserveringen-expire",
+      "schedule": "0 6 * * *"
     }
   ]
 }

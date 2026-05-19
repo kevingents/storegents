@@ -26,16 +26,19 @@ export default async function handler(req, res) {
     if (!id) return res.status(400).json({ success: false, message: 'Geef reservering-id mee.' });
     let next = await updateReservering(id, body, body.actor);
 
-    /* Wanneer reservering wordt afgesloten (opgehaald / opgeheven), moet de
-       open weborder in SRS gecanceld worden zodat:
+    /* Wanneer reservering wordt afgesloten (opgehaald / opgeheven / verlopen),
+       moet de open weborder in SRS gecanceld worden zodat:
        - Voorraadreservering op RES-filiaal vrijvalt
        - Voorraad valt terug op winkel waar artikel fysiek staat
        - Winkel kan via SRS POS afrekenen op normale verkoop (= echte omzet)
-       Reden: er mag GEEN omzet geboekt worden op het RES-filiaal. */
+       Reden: er mag GEEN omzet geboekt worden op het RES-filiaal.
+       Voor 'verlopen': klant kwam niet → voorraad terug + admin/winkel kan
+       het artikel opnieuw aanbieden. */
     const newStatus = String(body.status || '').toLowerCase();
+    const CANCEL_TRIGGERS = new Set(['opgehaald', 'opgeheven', 'verlopen']);
     let cancel = null;
     let cancelError = null;
-    if ((newStatus === 'opgehaald' || newStatus === 'opgeheven') && next.srsTransactionId && next.srsSyncStatus === 'weborder_created') {
+    if (CANCEL_TRIGGERS.has(newStatus) && next.srsTransactionId && next.srsSyncStatus === 'weborder_created') {
       const item = next.item || {};
       try {
         cancel = await cancelFulfillment({
