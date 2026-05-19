@@ -104,6 +104,67 @@ function isOverdueByHours(createdAt, hours = 48) {
   return Number.isFinite(ms) && ms > hours * 60 * 60 * 1000;
 }
 
+/**
+ * Zoek Shopify order op naam (#33943 of 33943) en geef terug welke klant er
+ * aan vasthangt. Gebruikt voor de "klant-zoek-op-ordernummer" use-case:
+ * een medewerker typt het ordernummer en wil de bijbehorende klant zien.
+ *
+ * @returns {Promise<null | { email, customerId, firstName, lastName }>}
+ */
+async function lookupCustomerByOrderName(query) {
+  const shop = cleanShopUrl(process.env.SHOPIFY_STORE_URL);
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!shop || !token || !query) return null;
+
+  const stripped = String(query).replace(/^#/, '').trim();
+  if (!stripped) return null;
+
+  const queries = [`#${stripped}`, stripped];
+
+  for (const q of queries) {
+    try {
+      const gql = `
+        query OrderToCustomer($q: String!) {
+          orders(first: 1, query: $q) {
+            edges {
+              node {
+                name
+                email
+                customer { id firstName lastName email }
+                shippingAddress { name zip }
+                billingAddress { name zip }
+              }
+            }
+          }
+        }
+      `;
+      const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+        method: 'POST',
+        headers: {
+          'X-Shopify-Access-Token': token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: gql, variables: { q: `name:${q}` } })
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const node = data?.data?.orders?.edges?.[0]?.node;
+      if (!node) continue;
+      const email = node.email || node.customer?.email || '';
+      if (!email) continue;
+      return {
+        email,
+        shopifyCustomerId: node.customer?.id ? String(node.customer.id).split('/').pop() : '',
+        firstName: node.customer?.firstName || '',
+        lastName: node.customer?.lastName || '',
+        orderName: node.name || '',
+        postcode: node.shippingAddress?.zip || node.billingAddress?.zip || ''
+      };
+    } catch (_error) { /* try next form */ }
+  }
+  return null;
+}
+
 async function enrichWithSrsFulfillment(order) {
   const orderName = String(order.orderName || '').replace(/^#/, '');
   if (!orderName) return order;
@@ -354,6 +415,25 @@ export default async function handler(req, res) {
         success: false,
         message: 'Vul klantnummer, e-mail, telefoon, postcode, klantenkaart of naam in.'
       });
+    }
+
+    /* ──── ORDER-FIRST LOOKUP ────
+       Bij een puur-numerieke query (4-7 cijfers, of #-prefix) is het vaak een
+       ordernummer — niet een klantnummer. Probeer dat eerst via Shopify.
+       Vinden we een order met email: gebruik die email voor de SRS-customer
+       lookup (geeft de juiste klant ipv die met klantnummer == ordernummer).
+       Faalt deze lookup: ga gewoon door met de normale SRS-customerId search. */
+    const rawQuery = clean(req.query.query || req.query.q || req.query.customerId || '');
+    const looksLikeOrderNr = /^#?\d{4,8}$/.test(rawQuery);
+    let orderHintEmail = '';
+    let orderHintInfo = null;
+    if (looksLikeOrderNr) {
+      orderHintInfo = await lookupCustomerByOrderName(rawQuery);
+      if (orderHintInfo?.email) {
+        orderHintEmail = orderHintInfo.email;
+        /* Voeg een email-plan toe vooraan zodat findCustomers het eerst probeert. */
+        normalized.plans.unshift({ type: 'email-from-order', filters: { email: orderHintEmail } });
+      }
     }
 
     const search = await findCustomers(normalized);
