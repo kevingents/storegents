@@ -38,7 +38,14 @@ function isAuthorized(req) {
 
 async function sendAdminMail(order, req) {
   const apiKey = process.env.RESEND_API_KEY;
-  const toEnv = process.env.FACILITAIR_ADMIN_MAIL || process.env.ADMIN_MAIL || process.env.RESEND_FROM_EMAIL;
+  /* Fallback-keten: specifieke admin-mail, daarna algemene admin/store-default,
+     anders het RESEND_FROM_EMAIL. Eén env (FACILITAIR_STORE_MAIL_DEFAULT)
+     dekt nu zowel admin-notificatie als winkel-status-updates. */
+  const toEnv = process.env.FACILITAIR_ADMIN_MAIL
+    || process.env.ADMIN_MAIL
+    || process.env.FACILITAIR_STORE_MAIL_DEFAULT
+    || process.env.STORE_MAIL
+    || process.env.RESEND_FROM_EMAIL;
   if (!apiKey || !toEnv) {
     return { sent: false, reason: 'mail-niet-geconfigureerd' };
   }
