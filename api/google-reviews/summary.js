@@ -33,8 +33,12 @@ function pickBranchId(req, store) {
   return String(req.query.branchId || getBranchIdByStore(store) || '').trim();
 }
 
-function cacheKeyFor({ store, branchId, all, lookup }) {
-  return `${all ? 'all' : store || branchId || 'single'}|${branchId || ''}|lookup:${lookup ? '1' : '0'}`;
+function cacheKeyFor({ store, branchId, all, lookup, includeReviews }) {
+  /* includeReviews moet in de cache-key zitten omdat loadSingle bij
+     includeReviews=false de reviews array LEEG maakt. Als deze waarde niet
+     in de key zit, hergebruikt een 2e call (met reviews) per ongeluk de
+     gecachede response van een eerdere call (zonder reviews) → lege array. */
+  return `${all ? 'all' : store || branchId || 'single'}|${branchId || ''}|lookup:${lookup ? '1' : '0'}|reviews:${includeReviews ? '1' : '0'}`;
 }
 
 function getCached(key) {
@@ -135,7 +139,7 @@ export default async function handler(req, res) {
   const branchId = pickBranchId(req, store);
   const placeId = String(req.query.placeId || req.query.place_id || '').trim();
   const query = String(req.query.query || '').trim();
-  const cacheKey = cacheKeyFor({ store, branchId, all, lookup: allowLookup });
+  const cacheKey = cacheKeyFor({ store, branchId, all, lookup: allowLookup, includeReviews });
 
   if (!refresh) {
     const cached = getCached(cacheKey);
