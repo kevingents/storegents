@@ -12,6 +12,7 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getReserveringen, updateReservering } from '../../lib/reserveringen-store.js';
 import { placeReserveringAsWeborder } from '../../lib/srs-weborder-client.js';
+import { getFulfillments, setFulfillmentBranch } from '../../lib/srs-weborders-message-client.js';
 import { getReserveringBranch } from '../../lib/reserveringen-branch-mapping.js';
 
 function isAuthorized(req) {
@@ -109,15 +110,53 @@ export default async function handler(req, res) {
         email: r.customer?.email || '',
         phone: r.customer?.phone || ''
       });
+
+      /* Stap 2: rooting via SetFulfillments — zelfde flow als POST endpoint.
+         Plaatst leveropdracht op RES-filiaal via SOAP i.p.v. via
+         extended_attribute afhaal_filiaal (die SRS niet kent). */
       const success = Boolean(weborder.success);
+      let fulfillmentId = '';
+      let setFulfillmentResult = null;
+      let setFulfillmentError = null;
+      let syncStatus = success ? 'weborder_created' : 'failed';
+
+      if (success) {
+        try {
+          const ff = await getFulfillments({ orderNr: weborder.orderId });
+          const lines = ff.fulfillments || ff.items || [];
+          fulfillmentId = String(lines[0]?.fulfillmentId || lines[0]?.FulfillmentId || '').trim();
+          if (fulfillmentId) {
+            setFulfillmentResult = await setFulfillmentBranch({
+              fulfillmentId,
+              branchId: resBranch.branchId
+            });
+            syncStatus = setFulfillmentResult.success ? 'weborder_routed_to_res' : 'route_failed';
+          } else {
+            syncStatus = 'fulfillment_id_missing';
+          }
+        } catch (err) {
+          setFulfillmentError = { message: err.message, status: err.status, fault: err.fault };
+          syncStatus = 'route_failed';
+        }
+      }
+
       await updateReservering(id, {
-        srsSyncStatus: success ? 'weborder_created' : 'failed',
+        srsSyncStatus: syncStatus,
         srsTransactionId: weborder.orderId || '',
+        srsFulfillmentId: fulfillmentId,
         srsRawSnippet: String(weborder.raw || '').slice(0, 500),
         srsAttempts: Number(r.srsAttempts || 0) + 1,
         srsLastAttemptAt: attemptStartAt,
-        srsError: success ? '' : `SRS gaf '${weborder.srsReturn || 'no-return'}' terug i.p.v. 'true'`
+        srsError: success
+          ? (setFulfillmentError ? `SetFulfillment: ${setFulfillmentError.message}` : '')
+          : `SRS gaf '${weborder.srsReturn || 'no-return'}' terug i.p.v. 'true'`
       });
+
+      /* Verrijk weborder-response met routing-info voor debug-dialog */
+      weborder.setFulfillmentResult = setFulfillmentResult;
+      weborder.setFulfillmentError = setFulfillmentError;
+      weborder.fulfillmentId = fulfillmentId;
+      weborder.routedTo = setFulfillmentResult?.success ? resBranch.branchId : '';
     } catch (err) {
       errInfo = {
         message: err.message,
