@@ -12,9 +12,11 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import {
   createReservering,
-  getReserveringen
+  getReserveringen,
+  updateReservering
 } from '../../lib/reserveringen-store.js';
 import { getReserveringBranch } from '../../lib/reserveringen-branch-mapping.js';
+import { placeReserveringAsWeborder } from '../../lib/srs-weborder-client.js';
 
 function clean(value) { return String(value || '').trim(); }
 
@@ -105,10 +107,71 @@ export default async function handler(req, res) {
         quantity
       });
 
+      /* Plaats reservering als si_weborder in SRS met afhaal_filiaal =
+         RES-branchId. Dit creëert een OPEN weborder (geen <payments>),
+         klant betaalt bij ophalen. SRS reserveert voorraad op RES-filiaal.
+         Fail-soft: bij SRS-fout blijft Blob-record bestaan, srsError gelogd. */
+      let weborder = null;
+      let weborderError = null;
+      try {
+        const winkelBranchInfo = await import('../../lib/branch-metrics.js').then((m) => {
+          if (typeof m.listBranches === 'function') {
+            return (m.listBranches() || []).find((b) => String(b.store || '').trim().toLowerCase() === store.toLowerCase());
+          }
+          return null;
+        }).catch(() => null);
+
+        const result = await placeReserveringAsWeborder({
+          customerId: clean(body.srsCustomerId) || undefined,
+          fulfilmentBranchId: resBranch.branchId,
+          sellingBranchId: winkelBranchInfo?.branchId || '',
+          reserveringId: reservering.id,
+          note: reservering.note || `Reservering door ${reservering.employeeName} in ${store}`,
+          product: {
+            sku: reservering.item.barcode || reservering.item.sku,
+            name: reservering.item.title || reservering.item.sku,
+            price: Number(reservering.item.price || 0),
+            quantity: reservering.item.quantity,
+            taxPerc: 21
+          },
+          billing: {
+            name: (reservering.customer?.name || reservering.employeeName || 'Reservering').slice(0, 25),
+            street: 'Reservering',
+            houseNumber: '0',
+            postalCode: '0000AA',
+            city: store.replace(/^GENTS\s+/i, '') || 'NL',
+            country: 'NL',
+            email: reservering.customer?.email || '',
+            phone: reservering.customer?.phone || ''
+          },
+          email: reservering.customer?.email || '',
+          phone: reservering.customer?.phone || ''
+        });
+        weborder = result;
+        await updateReservering(reservering.id, {
+          srsSyncStatus: result.success ? 'weborder_created' : 'failed',
+          srsTransactionId: result.orderId
+        });
+        reservering.srsSyncStatus = result.success ? 'weborder_created' : 'failed';
+        reservering.srsTransactionId = result.orderId;
+      } catch (err) {
+        weborderError = { message: err.message, fault: err.fault };
+        try {
+          await updateReservering(reservering.id, {
+            srsSyncStatus: 'failed',
+            srsTransactionId: ''
+          });
+          reservering.srsSyncStatus = 'failed';
+          reservering.srsError = err.message;
+        } catch (_) { /* swallow */ }
+      }
+
       return res.status(201).json({
         success: true,
         reservering,
-        stockCheck: check
+        stockCheck: check,
+        weborder,
+        weborderError
       });
     } catch (error) {
       return res.status(400).json({ success: false, message: error.message });
