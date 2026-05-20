@@ -29,6 +29,10 @@
       "schedule": "20 * * * *"
     },
     {
+      "path": "/api/cron/srs-revenue-cache",
+      "schedule": "30 */2 * * *"
+    },
+    {
       "path": "/api/cron/weborder-mail-run",
       "schedule": "0 8 * * *"
     },

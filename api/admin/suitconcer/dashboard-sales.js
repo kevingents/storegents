@@ -1,6 +1,7 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../../lib/cors.js';
 import { getTransactions } from '../../../lib/srs-customers-client.js';
 import { isFeatureEnabled } from '../../../lib/feature-flags-store.js';
+import { aggregateBranchForPeriod, readBranchRevenue } from '../../../lib/srs-revenue-cache-store.js';
 
 /**
  * GET /api/admin/suitconcer/dashboard-sales
@@ -109,12 +110,66 @@ export default async function handler(req, res) {
   }
 
   const scope = clean(req.query.scope || 'today').toLowerCase();
+  const skipCache = String(req.query.live || '') === '1';
   const range = rangeFor(scope);
   const cacheKey = `${scope}|${iso(range.from)}|${iso(range.until)}`;
 
+  /* In-memory cache (3 min) */
   const cached = cache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) {
+  if (!skipCache && cached && (Date.now() - cached.at) < CACHE_TTL_MS) {
     return res.status(200).json({ ...cached.data, cached: true });
+  }
+
+  /* Pre-aggregated Blob cache (via cron, ververst elke 2 uur).
+     Veel sneller dan live SRS — gebruik dit als primary bron. */
+  if (!skipCache) {
+    try {
+      const cacheData = await readBranchRevenue(VERKOOP);
+      const hasFreshCache = cacheData && cacheData.updatedAt && (
+        (Date.now() - new Date(cacheData.updatedAt).getTime()) < 6 * 60 * 60 * 1000 /* 6 uur */
+      );
+      if (hasFreshCache) {
+        const cur = await aggregateBranchForPeriod(VERKOOP, scope, new Date());
+        /* Voor week/month: ook previous-period voor trend */
+        let prev = { revenue: 0, transactionCount: 0, trendPct: null };
+        if (scope === 'week' || scope === 'month') {
+          /* Bereken vorige periode uit cached days */
+          const days = cacheData.days || {};
+          const prevFromStr = range.prevFrom.toISOString().slice(0, 10);
+          const prevUntilStr = range.prevUntil.toISOString().slice(0, 10);
+          let pRev = 0, pCount = 0;
+          for (const [day, info] of Object.entries(days)) {
+            if (day >= prevFromStr && day <= prevUntilStr) {
+              pRev += Number(info.revenue || 0);
+              pCount += Number(info.transactionCount || 0);
+            }
+          }
+          const trendPct = pRev ? Number((((cur.revenue - pRev) / pRev) * 100).toFixed(1)) : null;
+          prev = { revenue: Number(pRev.toFixed(2)), transactionCount: pCount, trendPct };
+        }
+        const data = {
+          success: true,
+          scope,
+          branchId: VERKOOP,
+          source: 'cache',
+          cacheAge: cur.cacheAge,
+          range: { from: range.from.toISOString(), to: range.until.toISOString() },
+          current: {
+            revenue: cur.revenue,
+            transactionCount: cur.transactionCount,
+            itemsSold: cur.itemsSold,
+            avgOrderValue: cur.avgOrderValue,
+            topProducts: cur.topProducts.slice(0, 5),
+            recentOrders: cur.recentOrders.slice(0, 10)
+          },
+          previous: prev
+        };
+        cache.set(cacheKey, { at: Date.now(), data });
+        return res.status(200).json(data);
+      }
+    } catch (error) {
+      console.warn('[dashboard-sales] cache-lookup faalde, fallback naar live SRS:', error.message);
+    }
   }
 
   /* Voor 'today' doen we 1 call (geen vergelijking). Voor 'week' en
