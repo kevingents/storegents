@@ -104,8 +104,32 @@ export default async function handler(req, res) {
       maxRecords
     });
 
-    const rows = records.map(normalizeReturnRequest);
+    const allRows = records.map(normalizeReturnRequest);
+
+    /* Filter Returnista records standaard zo dat alleen ECHT verwerkte
+       retouren in het overzicht komen. Returnista heeft o.a. deze statuses:
+         - 'unprocessed'  klant heeft aangevraagd, pakket nog niet binnen
+         - 'pending'      pakket onderweg of in queue
+         - 'open'         actief, nog te beslissen
+         - 'denied'       afgewezen — geen retour geboekt
+         - 'approved'     items goedgekeurd
+         - 'processed'    afhandeling klaar
+         - 'completed'    refund/credit verwerkt
+       Override met ?includeAll=1 voor diagnose. */
+    const includeAll = String(req.query.includeAll || '') === '1';
+    const PROCESSED_STATUSES = new Set(['processed', 'completed', 'approved', 'refunded']);
+    const rows = includeAll ? allRows : allRows.filter((r) => {
+      const status = String(r.status || '').toLowerCase();
+      /* Toon alleen records met een 'klaar' status (refund/credit verwerkt). */
+      if (PROCESSED_STATUSES.has(status)) return true;
+      /* Records met resolutionStatus 'processed' / 'completed' tellen ook mee
+         (sommige Returnista versies zetten alleen die in plaats van status). */
+      const resStatus = String(r.resolutionStatus || '').toLowerCase();
+      if (PROCESSED_STATUSES.has(resStatus)) return true;
+      return false;
+    });
     const totals = computeTotals(rows);
+    totals.filteredOut = allRows.length - rows.length;
     const meta = {
       dateFrom: dateFrom || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       dateTo: dateTo || null,
