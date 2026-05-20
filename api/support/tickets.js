@@ -1,5 +1,5 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
-import { getSupportTickets } from '../../lib/support-tickets-store.js';
+import { getSupportTickets, stripInternalNotes } from '../../lib/support-tickets-store.js';
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
@@ -15,7 +15,10 @@ export default async function handler(req, res) {
 
   try {
     const tickets = await getSupportTickets({ store, employeeName, limit });
-    return res.status(200).json({ success: true, count: tickets.length, tickets });
+    /* Veiligheidsfilter: winkel-facing API mag NOOIT interne admin-notities
+       teruggeven. Strip ze hier expliciet ipv te vertrouwen op de store. */
+    const safe = tickets.map(stripInternalNotes);
+    return res.status(200).json({ success: true, count: safe.length, tickets: safe });
   } catch (error) {
     console.error('[support/tickets]', error);
     return res.status(500).json({ success: false, message: error.message || 'Tickets konden niet worden opgehaald.' });
