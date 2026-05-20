@@ -106,35 +106,47 @@ export default async function handler(req, res) {
 
     const allRows = records.map(normalizeReturnRequest);
 
-    /* Lichte filter: sluit alleen ECHT afgewezen of geannuleerde records uit.
-       Returnista records met status 'unprocessed' tellen WEL mee — dat zijn
-       lopende retour-aanvragen die uiteindelijk een refund worden.
-       Override met ?onlyProcessed=1 voor strikte filter, of ?includeAll=1
-       voor alle records inclusief denied. */
+    /* Strikte filter (default): alleen Returnista records die ECHT verwerkt
+       zijn. Een retour is pas 'echt' als de refund/credit is uitgevoerd
+       — dus status 'processed' / 'completed' / 'refunded' (of approved
+       met afgehandelde resolution).
+
+       Returnista 'unprocessed' = klant heeft alleen retour aangevraagd +
+       label gekregen, pakket nog niet verwerkt. Shopify toont in dat
+       geval ook geen refund.
+
+       Override met ?includeAll=1 voor diagnose (alle requests incl.
+       unprocessed + denied), of ?includePending=1 voor unprocessed/open
+       maar nog steeds zonder denied. */
     const includeAll = String(req.query.includeAll || '') === '1';
-    const onlyProcessed = String(req.query.onlyProcessed || '') === '1';
+    const includePending = String(req.query.includePending || '') === '1';
+
     const DENIED_STATUSES = new Set(['denied', 'rejected', 'cancelled', 'canceled']);
     const PROCESSED_STATUSES = new Set(['processed', 'completed', 'approved', 'refunded']);
+    const PENDING_STATUSES = new Set(['unprocessed', 'pending', 'open', 'new']);
 
     let rows = allRows;
     if (!includeAll) {
-      if (onlyProcessed) {
-        rows = allRows.filter((r) => {
-          const status = String(r.status || '').toLowerCase();
-          const resStatus = String(r.resolutionStatus || '').toLowerCase();
-          return PROCESSED_STATUSES.has(status) || PROCESSED_STATUSES.has(resStatus);
-        });
-      } else {
-        rows = allRows.filter((r) => {
-          const status = String(r.status || '').toLowerCase();
-          return !DENIED_STATUSES.has(status);
-        });
-      }
+      rows = allRows.filter((r) => {
+        const status = String(r.status || '').toLowerCase();
+        const resStatus = String(r.resolutionStatus || '').toLowerCase();
+        if (DENIED_STATUSES.has(status)) return false;
+        if (PROCESSED_STATUSES.has(status) || PROCESSED_STATUSES.has(resStatus)) return true;
+        if (includePending && PENDING_STATUSES.has(status)) return true;
+        return false;
+      });
     }
     const totals = computeTotals(rows);
     totals.totalRequests = allRows.length;
-    totals.filteredOut = allRows.length - rows.length;
+    totals.shown = rows.length;
     totals.deniedCount = allRows.filter((r) => DENIED_STATUSES.has(String(r.status || '').toLowerCase())).length;
+    totals.pendingCount = allRows.filter((r) => PENDING_STATUSES.has(String(r.status || '').toLowerCase())).length;
+    totals.processedCount = allRows.filter((r) => {
+      const s = String(r.status || '').toLowerCase();
+      const rs = String(r.resolutionStatus || '').toLowerCase();
+      return PROCESSED_STATUSES.has(s) || PROCESSED_STATUSES.has(rs);
+    }).length;
+    totals.filteredOut = allRows.length - rows.length;
     const meta = {
       dateFrom: dateFrom || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       dateTo: dateTo || null,

@@ -151,24 +151,39 @@ export default async function handler(req, res) {
 
   try {
     const allLogs = await getSrsReturnLogs();
-    /* Lichte filter: alleen ECHTE orphan-records uitsluiten (geen
-       orderNr én geen shopifyOrderId én geen refund — niets te zien).
-       Alles wat MINSTENS een ordernummer of een refund-actie heeft is
-       potentieel een echte retour en blijft zichtbaar.
+    /* Strikte filter: alleen records met BEWIJS van een uitgevoerde refund.
+       Een record telt als 'echte retour' als minstens ÉÉN van:
+         - shopifyRefundId aanwezig → Shopify gaf een refund-ID terug
+         - success === true expliciet gezet
+         - srsTransactionId aanwezig → SRS GetReturn slaagde
 
-       Override met ?includeAll=1 (toont ook orphans). */
+       Records waar alleen 'orderNr' is ingevuld (zonder bewijs van refund)
+       zijn pseudo-records: een medewerker startte een retour-flow maar
+       voltooide hem nooit. Tonen ze in 't overzicht geeft misleidende
+       cijfers — Shopify zegt zelf ook 'niks terugbetaald'.
+
+       Override met ?includeAll=1 voor diagnose. */
     const includeAll = String(req.query.includeAll || req.query.includeOrphans || '') === '1';
-    const isOrphan = (l) => {
-      const hasOrder = clean(l.orderNr) || clean(l.shopifyOrderId);
-      const hasRefund = clean(l.shopifyRefundId) || Number(l.refundAmount || 0) > 0 || clean(l.srsTransactionId);
-      return !hasOrder && !hasRefund;
+
+    const hasRefundProof = (l) => {
+      if (clean(l.shopifyRefundId)) return true;
+      if (l.success === true) return true;
+      if (clean(l.srsTransactionId)) return true;
+      return false;
     };
-    const logs = includeAll ? allLogs : allLogs.filter((l) => !isOrphan(l));
-    /* Diagnostics zodat frontend kan tonen hoeveel records er totaal zijn */
+
+    const realReturns = allLogs.filter(hasRefundProof);
+    const pseudoRecords = allLogs.filter((l) => !hasRefundProof(l));
+
+    const logs = includeAll ? allLogs : realReturns;
     const filterStats = {
       totalLogs: allLogs.length,
-      orphansFiltered: allLogs.length - logs.length,
-      shown: logs.length
+      realReturns: realReturns.length,
+      pseudoRecords: pseudoRecords.length,
+      shown: logs.length,
+      note: pseudoRecords.length > 0
+        ? `${pseudoRecords.length} record(s) verborgen omdat ze geen Shopify-refund of SRS-transaction bewijs hebben.`
+        : null
     };
     let rows = (Array.isArray(logs) ? logs : []).flatMap(lineRowsFromLog);
 
