@@ -1,5 +1,6 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { getSrsReturnLogs } from '../../lib/srs-return-log-store.js';
+import { getUnavailableProcessingLogs } from '../../lib/unavailable-processing-log-store.js';
 
 /**
  * GET /api/admin/refunds-daily?date=YYYY-MM-DD
@@ -60,53 +61,101 @@ export default async function handler(req, res) {
   }
 
   try {
-    const allLogs = await getSrsReturnLogs();
-    /* Filter: in periode + heeft refund-bewijs */
-    const inPeriod = allLogs.filter((l) => {
+    /* Bron 1: srs-returns/returns.json — winkel-portal retouren */
+    const allReturnLogs = await getSrsReturnLogs();
+    const returnsInPeriod = allReturnLogs.filter((l) => {
       const dt = new Date(l.refundedAt || l.createdAt || 0);
       if (isNaN(dt.getTime())) return false;
       return dt >= from && dt <= to;
     }).filter(hasRefundProof);
 
-    /* Aggregeer per winkel + medewerker */
+    /* Bron 2: unavailable-processing-logs — niet-leverbaar refunds */
+    let unavailableInPeriod = [];
+    try {
+      const allUnavailableLogs = await getUnavailableProcessingLogs();
+      unavailableInPeriod = allUnavailableLogs.filter((l) => {
+        const dt = new Date(l.createdAt || 0);
+        if (isNaN(dt.getTime())) return false;
+        if (dt < from || dt > to) return false;
+        /* Alleen success-records met een refund-amount tellen mee */
+        if (l.success === false) return false;
+        if (!(Number(l.amount || 0) > 0)) return false;
+        /* En het type moet een refund-actie zijn — niet bv. een 'mark-srs-only' */
+        const type = String(l.type || '').toLowerCase();
+        const refundStatus = String(l.refundStatus || '').toLowerCase();
+        const validRefundTypes = ['refund', 'shopify-refund', 'process', 'process-refund', 'completed'];
+        const refundDone = validRefundTypes.includes(type) || refundStatus === 'completed' || refundStatus === 'refunded';
+        return refundDone;
+      });
+    } catch (error) {
+      console.warn('[refunds-daily] kon unavailable-logs niet laden:', error.message);
+    }
+
+    /* Aggregeer per winkel + medewerker + bron */
     const byStoreMap = new Map();
     const timeline = [];
 
-    for (const log of inPeriod) {
+    for (const log of returnsInPeriod) {
       const store = clean(log.store) || '(onbekend)';
       const employee = clean(log.employeeName) || '(onbekend)';
       const amount = calcRefundAmount(log);
       const time = log.refundedAt || log.createdAt;
       const orderNr = clean(log.orderNr).replace(/^#/, '');
 
-      /* By store */
-      const storeEntry = byStoreMap.get(store) || {
-        store,
-        refundCount: 0,
-        totalRefunded: 0,
-        employees: new Map()
-      };
+      const storeEntry = byStoreMap.get(store) || { store, refundCount: 0, totalRefunded: 0, employees: new Map(), bySource: { return: 0, unavailable: 0 } };
       storeEntry.refundCount += 1;
       storeEntry.totalRefunded += amount;
+      storeEntry.bySource.return += amount;
       const empEntry = storeEntry.employees.get(employee) || { name: employee, count: 0, amount: 0 };
       empEntry.count += 1;
       empEntry.amount += amount;
       storeEntry.employees.set(employee, empEntry);
       byStoreMap.set(store, storeEntry);
 
-      /* Timeline */
       timeline.push({
+        source: 'return',
+        sourceLabel: '↩ Retour (winkel)',
         time,
         store,
         employee,
         orderNr,
         amount: moneyNum(amount),
-        refundedAt: log.refundedAt || null,
         shopifyRefundId: log.shopifyRefundId || '',
         srsTransactionId: log.srsTransactionId || '',
         customerName: clean(log.customerName),
         customerEmail: clean(log.customerEmail),
         reason: clean(log.reason)
+      });
+    }
+
+    for (const log of unavailableInPeriod) {
+      const store = clean(log.store) || '(onbekend)';
+      const employee = clean(log.processedBy) || '(onbekend)';
+      const amount = moneyNum(log.amount);
+      const time = log.createdAt;
+      const orderNr = clean(log.orderNr).replace(/^#/, '');
+
+      const storeEntry = byStoreMap.get(store) || { store, refundCount: 0, totalRefunded: 0, employees: new Map(), bySource: { return: 0, unavailable: 0 } };
+      storeEntry.refundCount += 1;
+      storeEntry.totalRefunded += amount;
+      storeEntry.bySource.unavailable += amount;
+      const empEntry = storeEntry.employees.get(employee) || { name: employee, count: 0, amount: 0 };
+      empEntry.count += 1;
+      empEntry.amount += amount;
+      storeEntry.employees.set(employee, empEntry);
+      byStoreMap.set(store, storeEntry);
+
+      timeline.push({
+        source: 'unavailable',
+        sourceLabel: '✕ Niet leverbaar',
+        time,
+        store,
+        employee,
+        orderNr,
+        amount,
+        sku: clean(log.sku),
+        title: clean(log.title),
+        reason: clean(log.message) || 'niet leverbaar'
       });
     }
 
@@ -118,15 +167,26 @@ export default async function handler(req, res) {
       .map((s) => ({
         ...s,
         totalRefunded: moneyNum(s.totalRefunded),
+        bySource: {
+          return: moneyNum(s.bySource.return),
+          unavailable: moneyNum(s.bySource.unavailable)
+        },
         employees: Array.from(s.employees.values())
           .map((e) => ({ ...e, amount: moneyNum(e.amount) }))
           .sort((a, b) => b.amount - a.amount)
       }))
       .sort((a, b) => b.totalRefunded - a.totalRefunded);
 
+    const returnTotal = moneyNum(timeline.filter((t) => t.source === 'return').reduce((s, t) => s + t.amount, 0));
+    const unavailableTotal = moneyNum(timeline.filter((t) => t.source === 'unavailable').reduce((s, t) => s + t.amount, 0));
+
     const totals = {
       count: timeline.length,
       amount: moneyNum(timeline.reduce((s, t) => s + t.amount, 0)),
+      returnCount: returnsInPeriod.length,
+      returnAmount: returnTotal,
+      unavailableCount: unavailableInPeriod.length,
+      unavailableAmount: unavailableTotal,
       uniqueStores: byStore.length,
       uniqueEmployees: new Set(timeline.map((t) => t.employee)).size
     };
@@ -137,7 +197,7 @@ export default async function handler(req, res) {
       totals,
       byStore,
       timeline,
-      note: 'Bron: srs-returns/returns.json — winkel-portal retouren met bewijs van uitgevoerde refund (Shopify refund ID, SRS transaction ID, of success=true).'
+      note: 'Bronnen: srs-returns/returns.json (winkel-retouren) + unavailable-processing-logs (niet-leverbaar refunds).'
     });
   } catch (error) {
     console.error('[admin/refunds-daily] error:', error);
