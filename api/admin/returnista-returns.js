@@ -106,30 +106,35 @@ export default async function handler(req, res) {
 
     const allRows = records.map(normalizeReturnRequest);
 
-    /* Filter Returnista records standaard zo dat alleen ECHT verwerkte
-       retouren in het overzicht komen. Returnista heeft o.a. deze statuses:
-         - 'unprocessed'  klant heeft aangevraagd, pakket nog niet binnen
-         - 'pending'      pakket onderweg of in queue
-         - 'open'         actief, nog te beslissen
-         - 'denied'       afgewezen — geen retour geboekt
-         - 'approved'     items goedgekeurd
-         - 'processed'    afhandeling klaar
-         - 'completed'    refund/credit verwerkt
-       Override met ?includeAll=1 voor diagnose. */
+    /* Lichte filter: sluit alleen ECHT afgewezen of geannuleerde records uit.
+       Returnista records met status 'unprocessed' tellen WEL mee — dat zijn
+       lopende retour-aanvragen die uiteindelijk een refund worden.
+       Override met ?onlyProcessed=1 voor strikte filter, of ?includeAll=1
+       voor alle records inclusief denied. */
     const includeAll = String(req.query.includeAll || '') === '1';
+    const onlyProcessed = String(req.query.onlyProcessed || '') === '1';
+    const DENIED_STATUSES = new Set(['denied', 'rejected', 'cancelled', 'canceled']);
     const PROCESSED_STATUSES = new Set(['processed', 'completed', 'approved', 'refunded']);
-    const rows = includeAll ? allRows : allRows.filter((r) => {
-      const status = String(r.status || '').toLowerCase();
-      /* Toon alleen records met een 'klaar' status (refund/credit verwerkt). */
-      if (PROCESSED_STATUSES.has(status)) return true;
-      /* Records met resolutionStatus 'processed' / 'completed' tellen ook mee
-         (sommige Returnista versies zetten alleen die in plaats van status). */
-      const resStatus = String(r.resolutionStatus || '').toLowerCase();
-      if (PROCESSED_STATUSES.has(resStatus)) return true;
-      return false;
-    });
+
+    let rows = allRows;
+    if (!includeAll) {
+      if (onlyProcessed) {
+        rows = allRows.filter((r) => {
+          const status = String(r.status || '').toLowerCase();
+          const resStatus = String(r.resolutionStatus || '').toLowerCase();
+          return PROCESSED_STATUSES.has(status) || PROCESSED_STATUSES.has(resStatus);
+        });
+      } else {
+        rows = allRows.filter((r) => {
+          const status = String(r.status || '').toLowerCase();
+          return !DENIED_STATUSES.has(status);
+        });
+      }
+    }
     const totals = computeTotals(rows);
+    totals.totalRequests = allRows.length;
     totals.filteredOut = allRows.length - rows.length;
+    totals.deniedCount = allRows.filter((r) => DENIED_STATUSES.has(String(r.status || '').toLowerCase())).length;
     const meta = {
       dateFrom: dateFrom || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       dateTo: dateTo || null,

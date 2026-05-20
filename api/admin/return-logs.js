@@ -151,33 +151,25 @@ export default async function handler(req, res) {
 
   try {
     const allLogs = await getSrsReturnLogs();
-    /* Strikte filter: een record is alleen 'echt' als de portal-flow er
-       daadwerkelijk een retour van heeft gemaakt. Dat betekent ÉÉN van:
-         - success === true (Shopify-refund call slaagde)
-         - shopifyRefundId aanwezig (Shopify gaf een refund ID terug)
-         - srsTransactionId aanwezig (SRS GetReturn slaagde)
-         - refundAmount > 0 (er is een echt bedrag verwerkt)
+    /* Lichte filter: alleen ECHTE orphan-records uitsluiten (geen
+       orderNr én geen shopifyOrderId én geen refund — niets te zien).
+       Alles wat MINSTENS een ordernummer of een refund-actie heeft is
+       potentieel een echte retour en blijft zichtbaar.
 
-       Daarnaast filteren we records van GENTS Magazijn weg: dat
-       magazijn werkt niet met het portal. Records 'van magazijn' zijn
-       dus altijd test/legacy data.
-
-       Override met ?includeAll=1 voor diagnose.
-       (Alias: ?includeOrphans=1 doet hetzelfde) */
+       Override met ?includeAll=1 (toont ook orphans). */
     const includeAll = String(req.query.includeAll || req.query.includeOrphans || '') === '1';
-    const isMagazijnStore = (s) => /magazijn/i.test(String(s || ''));
-    const isRealReturn = (l) => {
-      if (l.success === true) return true;
-      if (clean(l.shopifyRefundId)) return true;
-      if (clean(l.srsTransactionId)) return true;
-      if (Number(l.refundAmount || 0) > 0) return true;
-      return false;
+    const isOrphan = (l) => {
+      const hasOrder = clean(l.orderNr) || clean(l.shopifyOrderId);
+      const hasRefund = clean(l.shopifyRefundId) || Number(l.refundAmount || 0) > 0 || clean(l.srsTransactionId);
+      return !hasOrder && !hasRefund;
     };
-    const logs = includeAll ? allLogs : allLogs.filter((l) => {
-      if (isMagazijnStore(l.store)) return false;
-      if (!isRealReturn(l)) return false;
-      return true;
-    });
+    const logs = includeAll ? allLogs : allLogs.filter((l) => !isOrphan(l));
+    /* Diagnostics zodat frontend kan tonen hoeveel records er totaal zijn */
+    const filterStats = {
+      totalLogs: allLogs.length,
+      orphansFiltered: allLogs.length - logs.length,
+      shown: logs.length
+    };
     let rows = (Array.isArray(logs) ? logs : []).flatMap(lineRowsFromLog);
 
     /* Filters */
@@ -212,6 +204,7 @@ export default async function handler(req, res) {
       mode: 'srs_return_logs',
       note: 'Bron: srs-returns/returns.json. Bevat ALLEEN winkel-verwerkte retouren (via /api/return-refund). Online retouren via Sendcloud/Shopify komen uit een aparte stream.',
       totals: computeTotals(rows),
+      filterStats,
       rows
     });
   } catch (error) {
