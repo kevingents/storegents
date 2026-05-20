@@ -18,6 +18,26 @@ function cleanDutchPostalCode(value) {
   return String(value || '').toUpperCase().replace(/\s+/g, '');
 }
 
+/**
+ * Land-bewuste postcode cleanup. Sendcloud accepteert per land verschillende
+ * formats:
+ *   NL: '1234AB' (4 cijfers + 2 letters, geen spatie)
+ *   BE: '1000'   (4 cijfers)
+ *   DE: '10115'  (5 cijfers)
+ *   FR: '75001'  (5 cijfers)
+ *   GB: 'SW1A 1AA' (letters/cijfers MET spatie behouden)
+ */
+function cleanPostalCode(value, country = 'NL') {
+  const raw = String(value || '').toUpperCase().trim();
+  const cc = String(country || 'NL').toUpperCase();
+  /* GB postcodes hebben een spatie midden in -> niet weghalen */
+  if (cc === 'GB' || cc === 'IE') {
+    return raw.replace(/\s{2,}/g, ' ');
+  }
+  /* Andere landen: spaties weghalen */
+  return raw.replace(/\s+/g, '');
+}
+
 
 function getFixedLabelCost() {
   const raw = String(process.env.SENDCLOUD_LABEL_FIXED_COST || '6.50').replace(',', '.');
@@ -36,9 +56,9 @@ function buildCustomerRecipient(body) {
     company_name: field(body.companyName).trim(),
     address: field(body.street).trim(),
     house_number: field(body.houseNumber).trim(),
-    postal_code: cleanDutchPostalCode(body.postalCode),
+    postal_code: cleanPostalCode(body.postalCode, field(body.country).trim() || 'NL'),
     city: field(body.city).trim(),
-    country: field(body.country).trim() || 'NL',
+    country: (field(body.country).trim() || 'NL').toUpperCase().slice(0, 2),
     telephone: field(body.phone).trim() || '0612345678',
     email: field(body.email).trim() || 'administratie@gents.nl'
   };
