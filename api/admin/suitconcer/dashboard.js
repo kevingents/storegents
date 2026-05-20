@@ -181,31 +181,68 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...cached.data, cached: true });
   }
 
+  /* Fail-soft helper: returnt array van transacties OF lege array als de
+     call faalt, met de error gelogd voor debugging. Eén traag SRS-stuk
+     blokkeert zo niet het hele dashboard. */
+  async function safeTx(label, from, until) {
+    try {
+      const r = await getTransactions({ from: iso(from), until: iso(until) });
+      return { ok: true, transactions: r.transactions || [], error: null };
+    } catch (error) {
+      console.error(`[suitconcer/dashboard] ${label} faalde:`, error.message);
+      return { ok: false, transactions: [], error: error.message };
+    }
+  }
+
+  async function safeStock() {
+    try {
+      const s = await buildStockSummary();
+      return { ok: true, summary: s, error: null };
+    } catch (error) {
+      console.error('[suitconcer/dashboard] stock faalde:', error.message);
+      return {
+        ok: false,
+        summary: { totalSkus: 0, withStock: 0, outOfStock: 0, totalPieces: 0, verkoopPieces: 0, magazijnPieces: 0, lowStock: [], snapshotUpdatedAt: { verkoop: null, magazijn: null } },
+        error: error.message
+      };
+    }
+  }
+
   try {
     const todayR = todayRange();
     const weekR = weekRange();
     const monthR = monthRange();
 
-    /* Parallel: 3 SRS-calls + 1 stock-summary */
-    const [todayTx, weekTx, weekPrevTx, monthTx, stockSummary] = await Promise.all([
-      getTransactions({ from: iso(todayR.from), until: iso(todayR.until) }),
-      getTransactions({ from: iso(weekR.from), until: iso(weekR.until) }),
-      getTransactions({ from: iso(weekR.prevFrom), until: iso(weekR.prevUntil) }),
-      getTransactions({ from: iso(monthR.from), until: iso(monthR.until) }),
-      buildStockSummary()
+    /* Parallel: 4 SRS-calls + 1 stock-summary, allemaal fail-soft */
+    const [todayRes, weekRes, weekPrevRes, monthRes, stockRes] = await Promise.all([
+      safeTx('today', todayR.from, todayR.until),
+      safeTx('week', weekR.from, weekR.until),
+      safeTx('weekPrev', weekR.prevFrom, weekR.prevUntil),
+      safeTx('month', monthR.from, monthR.until),
+      safeStock()
     ]);
 
-    const todaySum = summarizeTransactions(todayTx.transactions || []);
-    const weekSum = summarizeTransactions(weekTx.transactions || []);
-    const weekPrevSum = summarizeTransactions(weekPrevTx.transactions || []);
-    const monthSum = summarizeTransactions(monthTx.transactions || []);
+    const todaySum = summarizeTransactions(todayRes.transactions);
+    const weekSum = summarizeTransactions(weekRes.transactions);
+    const weekPrevSum = summarizeTransactions(weekPrevRes.transactions);
+    const monthSum = summarizeTransactions(monthRes.transactions);
 
     const trendPct = weekPrevSum.revenue
       ? Number((((weekSum.revenue - weekPrevSum.revenue) / weekPrevSum.revenue) * 100).toFixed(1))
       : null;
 
+    /* Verzamel eventuele fouten zodat UI laat zien wat er mis ging */
+    const errors = [];
+    if (!todayRes.ok) errors.push({ source: 'srs-today', message: todayRes.error });
+    if (!weekRes.ok) errors.push({ source: 'srs-week', message: weekRes.error });
+    if (!weekPrevRes.ok) errors.push({ source: 'srs-week-prev', message: weekPrevRes.error });
+    if (!monthRes.ok) errors.push({ source: 'srs-month', message: monthRes.error });
+    if (!stockRes.ok) errors.push({ source: 'stock-snapshot', message: stockRes.error });
+
     const data = {
       success: true,
+      degraded: errors.length > 0,
+      errors,
       generatedAt: new Date().toISOString(),
       branchIds: { verkoop: VERKOOP, magazijn: MAGAZIJN },
       today: {
@@ -226,24 +263,29 @@ export default async function handler(req, res) {
           ? Number((monthSum.revenue / monthSum.transactionCount).toFixed(2))
           : 0
       },
-      stock: stockSummary,
+      stock: stockRes.summary,
       recentOrders: monthSum.orders.slice(0, 10),
       topProducts: monthSum.topProducts,
       lowStockThreshold: LOW_STOCK_THRESHOLD
     };
 
-    cached = { at: Date.now(), data };
+    /* Alleen cachen als alles slaagde — anders proberen we het bij de
+       volgende request opnieuw */
+    if (!data.degraded) {
+      cached = { at: Date.now(), data };
+    }
     return res.status(200).json(data);
   } catch (error) {
-    console.error('[suitconcer/dashboard] error:', error);
+    console.error('[suitconcer/dashboard] fatal error:', error);
     return res.status(200).json({
       success: true,
       degraded: true,
       message: error.message || 'Dashboard data kon niet worden opgehaald.',
+      errors: [{ source: 'fatal', message: error.message }],
       today: { revenue: 0, transactionCount: 0, itemsSold: 0 },
       thisWeek: { revenue: 0, transactionCount: 0, trendPct: null },
       thisMonth: { revenue: 0, transactionCount: 0, itemsSold: 0, avgOrderValue: 0 },
-      stock: { totalSkus: 0, withStock: 0, outOfStock: 0, totalPieces: 0, lowStock: [] },
+      stock: { totalSkus: 0, withStock: 0, outOfStock: 0, totalPieces: 0, verkoopPieces: 0, magazijnPieces: 0, lowStock: [], snapshotUpdatedAt: { verkoop: null, magazijn: null } },
       recentOrders: [],
       topProducts: []
     });
