@@ -4,26 +4,37 @@ import { listAllBranches, getStoreNameByBranchId, isWarehouseStore } from '../..
 import { getAllOpenstaandeUitwisselingen } from '../../lib/srs-exchanges-client.js';
 
 /**
- * GET /api/store/stock-lookup?barcode=XXX or ?sku=YYY
+ * GET /api/store/stock-lookup
  *
  * Winkel-tool: zoek artikel-voorraad over ALLE branches + check lopende
  * uitwisselingen. Geen admin-token nodig (winkel-medewerkers gebruiken het).
  *
- * Response:
+ * Query parameters (één van):
+ *   ?barcode=XXX        — exact match op barcode (legacy)
+ *   ?sku=XXX            — exact match op SKU (legacy)
+ *   ?query=XXX          — generic: matcht barcode, sku, articleNumber (exact)
+ *                         OF titel (case-insensitive contains, min 3 tekens)
+ *
+ * Bij meerdere matches via name-search → response bevat `matches: [...]`
+ * met aparte product-cards, en client kan er één kiezen.
+ *
+ * Response (single match):
  *   {
  *     success,
- *     query: { barcode, sku },
- *     item: { barcode, sku, title, color, size },     // metadata van eerste match
+ *     query: { barcode, sku, value, kind },
+ *     item: { barcode, sku, articleNumber, title, color, size },
  *     totalPieces,
- *     branchCount,                                     // # branches met voorraad
- *     branches: [
- *       { branchId, store, pieces, type:'retail|warehouse', updatedAt, isOwn? }
- *     ],
- *     exchanges: {
- *       count,                                         // totaal lopende uitwisselingen met dit item
- *       byBranch: [...],                               // verzameld per van-naar
- *       items: [{ uitwisselingId, vanWinkel, naarWinkel, aantal, createdAt, sellerName }]
- *     }
+ *     branchCount,
+ *     branches: [{ branchId, store, pieces, type, updatedAt, isOwn? }],
+ *     exchanges: { count, aantal, items: [...] }
+ *   }
+ *
+ * Response (multiple matches via name-search):
+ *   {
+ *     success,
+ *     query: { value, kind:'name' },
+ *     multipleMatches: true,
+ *     matches: [{ barcode, sku, articleNumber, title, color, size, totalPieces, branchCount }]
  *   }
  *
  * Cache: exchanges 5 min in-memory (zwaar SOAP-call).
@@ -35,6 +46,24 @@ let exchangesCache = { at: 0, data: null };
 function clean(v) { return String(v || '').trim(); }
 function eqBarcode(a, b) {
   return clean(a).toLowerCase() === clean(b).toLowerCase();
+}
+/* Case-insensitive contains-match, alle zoekwoorden moeten voorkomen */
+function titleMatches(title, query) {
+  const t = String(title || '').toLowerCase();
+  if (!t) return false;
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every(w => t.includes(w));
+}
+/* Detecteer wat voor soort zoekterm het is */
+function detectQueryKind(value) {
+  const v = clean(value);
+  if (!v) return 'empty';
+  /* Cijfer- of letter/cijfer-combinatie zonder spaties + min 5 lang → identifier
+     (barcode / sku / articleNumber). Anders: vrije tekst → titel-zoek. */
+  if (/\s/.test(v)) return 'name';
+  if (v.length < 3) return 'short';
+  if (/^[A-Za-z0-9._-]+$/.test(v) && v.length >= 5) return 'identifier';
+  return 'name';
 }
 
 async function getCachedExchanges() {
@@ -62,13 +91,37 @@ export default async function handler(req, res) {
 
   const barcode = clean(req.query.barcode);
   const sku = clean(req.query.sku);
+  const query = clean(req.query.query || req.query.q); /* nieuw: generic */
   const ownStore = clean(req.query.store); /* huidige winkel voor highlight */
 
-  if (!barcode && !sku) {
-    return res.status(400).json({ success: false, message: 'Geef barcode of sku mee.' });
+  if (!barcode && !sku && !query) {
+    return res.status(400).json({ success: false, message: 'Geef barcode, sku of query mee.' });
   }
 
-  const queryValue = barcode || sku;
+  /* Bepaal soort zoekopdracht */
+  const queryValue = barcode || sku || query;
+  let queryKind;
+  if (barcode) queryKind = 'barcode';
+  else if (sku) queryKind = 'sku';
+  else queryKind = detectQueryKind(query);
+
+  if (queryKind === 'short') {
+    return res.status(400).json({ success: false, message: 'Zoekterm te kort — minimaal 3 tekens.' });
+  }
+
+  /* Match-functie per row obv queryKind */
+  const matchRow = (r) => {
+    if (queryKind === 'barcode') return eqBarcode(r.barcode, queryValue);
+    if (queryKind === 'sku') return eqBarcode(r.sku, queryValue) || eqBarcode(r.barcode, queryValue);
+    if (queryKind === 'identifier') {
+      /* Probeer barcode, sku, articleNumber */
+      return eqBarcode(r.barcode, queryValue) || eqBarcode(r.sku, queryValue) || eqBarcode(r.articleNumber, queryValue);
+    }
+    if (queryKind === 'name') {
+      return titleMatches(r.title, queryValue);
+    }
+    return false;
+  };
 
   try {
     /* Parallel: alle branch-snapshots + open uitwisselingen */
@@ -87,16 +140,64 @@ export default async function handler(req, res) {
       getCachedExchanges()
     ]);
 
-    /* Filter rows per branch op de barcode/sku */
+    /* Bij name-search → mogelijke verschillende artikelen groeperen per articleNumber/sku */
+    if (queryKind === 'name' || queryKind === 'identifier') {
+      const productMap = new Map(); /* key = articleNumber||sku||barcode */
+      for (const { branchId, snap } of snapshots) {
+        if (!snap || !Array.isArray(snap.rows)) continue;
+        for (const r of snap.rows) {
+          if (!matchRow(r)) continue;
+          const key = clean(r.articleNumber || r.sku || r.barcode).toLowerCase();
+          if (!key) continue;
+          const entry = productMap.get(key) || {
+            barcode: clean(r.barcode),
+            sku: clean(r.sku || r.barcode),
+            articleNumber: clean(r.articleNumber || ''),
+            title: clean(r.title || ''),
+            color: clean(r.color || ''),
+            size: clean(r.size || ''),
+            totalPieces: 0,
+            branchCount: 0,
+            _branchSet: new Set()
+          };
+          entry.totalPieces += Number(r.pieces || 0);
+          entry._branchSet.add(branchId);
+          if (!entry.title && r.title) entry.title = clean(r.title);
+          productMap.set(key, entry);
+        }
+      }
+      /* >1 distinct artikel → multipleMatches response */
+      if (productMap.size > 1) {
+        const matches = Array.from(productMap.values()).map(e => ({
+          barcode: e.barcode,
+          sku: e.sku,
+          articleNumber: e.articleNumber,
+          title: e.title,
+          color: e.color,
+          size: e.size,
+          totalPieces: e.totalPieces,
+          branchCount: e._branchSet.size
+        })).sort((a, b) => b.totalPieces - a.totalPieces).slice(0, 50);
+        return res.status(200).json({
+          success: true,
+          query: { value: queryValue, kind: queryKind },
+          multipleMatches: true,
+          matchCount: productMap.size,
+          truncated: productMap.size > 50,
+          matches,
+          generatedAt: new Date().toISOString()
+        });
+      }
+      /* Precies 1 distinct artikel → val terug op normale single-response;
+         de matchRow filter hieronder pakt 'm. */
+    }
+
+    /* Filter rows per branch op de barcode/sku/articleNumber/title */
     const branches = [];
     let item = null;
     for (const { branchId, snap } of snapshots) {
       if (!snap || !Array.isArray(snap.rows)) continue;
-      const matchingRows = snap.rows.filter((r) => {
-        if (barcode && eqBarcode(r.barcode, barcode)) return true;
-        if (sku && (eqBarcode(r.sku, sku) || eqBarcode(r.barcode, sku))) return true;
-        return false;
-      });
+      const matchingRows = snap.rows.filter(matchRow);
       if (!matchingRows.length) continue;
 
       /* Eerste niet-lege metadata wint */
@@ -105,6 +206,7 @@ export default async function handler(req, res) {
         item = {
           barcode: clean(first.barcode),
           sku: clean(first.sku || first.barcode),
+          articleNumber: clean(first.articleNumber || ''),
           title: clean(first.title || ''),
           color: clean(first.color || ''),
           size: clean(first.size || '')
@@ -135,20 +237,22 @@ export default async function handler(req, res) {
 
     const totalPieces = branches.reduce((s, b) => s + b.pieces, 0);
 
-    /* Filter exchanges op deze barcode */
+    /* Filter exchanges — gebruik resolved item-velden uit de gevonden snapshot */
+    const exchBarcode = item?.barcode || (queryKind === 'barcode' ? queryValue : '');
+    const exchSku = item?.sku || (queryKind === 'sku' ? queryValue : '');
+    const exchArticle = item?.articleNumber || (queryKind === 'identifier' ? queryValue : '');
+
+    const matchExchItem = (it) => (
+      (exchBarcode && (eqBarcode(it.barcode, exchBarcode) || eqBarcode(it.sku, exchBarcode))) ||
+      (exchSku && (eqBarcode(it.sku, exchSku) || eqBarcode(it.barcode, exchSku))) ||
+      (exchArticle && eqBarcode(it.articleNumber, exchArticle))
+    );
+
     const matchingExchanges = [];
     for (const exch of (exchangesResult.data.exchanges || [])) {
-      const hasItem = (exch.items || []).some((it) => {
-        if (barcode && (eqBarcode(it.barcode, barcode) || eqBarcode(it.sku, barcode))) return true;
-        if (sku && (eqBarcode(it.sku, sku) || eqBarcode(it.barcode, sku))) return true;
-        return false;
-      });
-      if (!hasItem) continue;
-      /* Aantal pieces in deze specifieke uitwisseling voor deze barcode */
-      const itemsInExchange = (exch.items || []).filter((it) =>
-        (barcode && (eqBarcode(it.barcode, barcode) || eqBarcode(it.sku, barcode))) ||
-        (sku && (eqBarcode(it.sku, sku) || eqBarcode(it.barcode, sku)))
-      );
+      const items = exch.items || [];
+      if (!items.some(matchExchItem)) continue;
+      const itemsInExchange = items.filter(matchExchItem);
       const aantalInExchange = itemsInExchange.reduce((s, i) => s + Number(i.aantal || 0), 0);
       matchingExchanges.push({
         uitwisselingId: exch.uitwisselingId,
@@ -167,7 +271,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      query: { barcode, sku, value: queryValue },
+      query: { barcode, sku, value: queryValue, kind: queryKind },
       item,
       totalPieces,
       branchCount: branches.length,
