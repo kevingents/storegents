@@ -151,15 +151,32 @@ export default async function handler(req, res) {
 
   try {
     const allLogs = await getSrsReturnLogs();
-    /* Orphan-records (geen orderNr én geen shopifyOrderId én geen refund)
-       zijn half-afgemaakte flows die nooit een echte retour zijn geweest.
-       Negeer ze altijd — niet relevant voor de admin-overzichten.
-       Override met ?includeOrphans=1 voor diagnose/cleanup. */
-    const includeOrphans = String(req.query.includeOrphans || '') === '1';
-    const logs = includeOrphans ? allLogs : allLogs.filter((l) => {
-      const hasOrder = clean(l.orderNr) || clean(l.shopifyOrderId);
-      const hasRefund = clean(l.shopifyRefundId) || Number(l.refundAmount || 0) > 0;
-      return hasOrder || hasRefund;
+    /* Strikte filter: een record is alleen 'echt' als de portal-flow er
+       daadwerkelijk een retour van heeft gemaakt. Dat betekent ÉÉN van:
+         - success === true (Shopify-refund call slaagde)
+         - shopifyRefundId aanwezig (Shopify gaf een refund ID terug)
+         - srsTransactionId aanwezig (SRS GetReturn slaagde)
+         - refundAmount > 0 (er is een echt bedrag verwerkt)
+
+       Daarnaast filteren we records van GENTS Magazijn weg: dat
+       magazijn werkt niet met het portal. Records 'van magazijn' zijn
+       dus altijd test/legacy data.
+
+       Override met ?includeAll=1 voor diagnose.
+       (Alias: ?includeOrphans=1 doet hetzelfde) */
+    const includeAll = String(req.query.includeAll || req.query.includeOrphans || '') === '1';
+    const isMagazijnStore = (s) => /magazijn/i.test(String(s || ''));
+    const isRealReturn = (l) => {
+      if (l.success === true) return true;
+      if (clean(l.shopifyRefundId)) return true;
+      if (clean(l.srsTransactionId)) return true;
+      if (Number(l.refundAmount || 0) > 0) return true;
+      return false;
+    };
+    const logs = includeAll ? allLogs : allLogs.filter((l) => {
+      if (isMagazijnStore(l.store)) return false;
+      if (!isRealReturn(l)) return false;
+      return true;
     });
     let rows = (Array.isArray(logs) ? logs : []).flatMap(lineRowsFromLog);
 
