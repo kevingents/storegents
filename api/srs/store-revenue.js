@@ -166,13 +166,29 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...payload, cache: { hit: false } });
   } catch (error) {
     console.error('[store-revenue]', error);
-    /* Fail-soft: return 200 met error-info zodat UI graceful kan degraderen */
+    /* Fail-soft: return 200 met degraded-flag zodat fetchJson NIET gooit
+       (success:false zou een client-side exception triggeren). UI checkt
+       'degraded' en kan een nette melding tonen. */
+    const reason = String(error.message || error || 'SRS-fetch mislukt');
+    const isAuth = /SRS_MESSAGE_USER|SRS_MESSAGE_PASSWORD|ontbreken/i.test(reason);
+    const isTimeout = /timeout|aborted/i.test(reason);
     return res.status(200).json({
-      success: false,
+      success: true,
+      degraded: true,
       store: store || '',
       branchId,
       period,
-      message: error.message || 'SRS-fetch mislukt',
+      error: {
+        message: reason,
+        kind: isAuth ? 'auth-missing' : isTimeout ? 'timeout' : 'srs-fault',
+        hint: isAuth
+          ? 'Controleer SRS_MESSAGE_USER en SRS_MESSAGE_PASSWORD env-vars in Vercel.'
+          : isTimeout
+            ? 'SRS GetTransactions duurt langer dan toegestaan — mogelijk veel transacties of trage SRS-API.'
+            : 'Bekijk Vercel logs voor de exacte SOAP-fout.'
+      },
+      from: iso(range.from),
+      until: iso(range.until),
       totals: { revenue: 0, transactionCount: 0, itemsSold: 0 },
       previous: { revenue: 0, transactionCount: 0, trendPct: null },
       byHour: []
