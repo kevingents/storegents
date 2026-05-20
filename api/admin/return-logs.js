@@ -150,7 +150,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const logs = await getSrsReturnLogs();
+    const allLogs = await getSrsReturnLogs();
+    /* Orphan-records (geen orderNr én geen shopifyOrderId én geen refund)
+       zijn half-afgemaakte flows die nooit een echte retour zijn geweest.
+       Negeer ze altijd — niet relevant voor de admin-overzichten.
+       Override met ?includeOrphans=1 voor diagnose/cleanup. */
+    const includeOrphans = String(req.query.includeOrphans || '') === '1';
+    const logs = includeOrphans ? allLogs : allLogs.filter((l) => {
+      const hasOrder = clean(l.orderNr) || clean(l.shopifyOrderId);
+      const hasRefund = clean(l.shopifyRefundId) || Number(l.refundAmount || 0) > 0;
+      return hasOrder || hasRefund;
+    });
     let rows = (Array.isArray(logs) ? logs : []).flatMap(lineRowsFromLog);
 
     /* Filters */
