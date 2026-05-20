@@ -1,6 +1,8 @@
 import loyaltyVoucherRunHandler from '../admin/vouchers/loyalty-run.js';
+import { guardCron, finishCron } from '../../lib/cron-guard.js';
 
 const CRON_BUILD = 'daily-loyalty-vouchers-safe-v2-2026-05-12';
+const CRON_KEY = 'daily-loyalty-vouchers';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -57,6 +59,23 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, build: CRON_BUILD, message: 'Niet bevoegd.' });
   }
 
+  /* Admin-override: skip als de cron uitgezet is of vertraagd */
+  const guard = await guardCron(CRON_KEY, req);
+  if (guard.skip) {
+    return res.status(200).json({
+      success: true,
+      build: CRON_BUILD,
+      skipped: true,
+      reason: guard.reason,
+      config: {
+        enabled: guard.config.enabled,
+        minIntervalMin: guard.config.minIntervalMin,
+        lastRun: guard.config.lastRun
+      }
+    });
+  }
+  const cronStartedAt = Date.now();
+
   const live = isLiveRun(req);
   const dryRun = !live || String(req.query.dryRun || '').toLowerCase() === 'true';
 
@@ -78,12 +97,27 @@ export default async function handler(req, res) {
   };
 
   const originalJson = res.json.bind(res);
-  res.json = (payload) => originalJson({
-    build: CRON_BUILD,
-    cronLive: live,
-    cronDryRun: dryRun,
-    ...payload
-  });
+  res.json = (payload) => {
+    /* Bij JSON-response: registreer cron-resultaat in cron-config-store.
+       Non-blocking — geen await want dat zou de response vertragen. */
+    finishCron(CRON_KEY, {
+      status: payload?.success === false ? 'failed' : (dryRun ? 'dry-run' : 'success'),
+      durationMs: Date.now() - cronStartedAt,
+      error: payload?.message || '',
+      summary: {
+        cronLive: live,
+        cronDryRun: dryRun,
+        vouchersCreated: Array.isArray(payload?.vouchers) ? payload.vouchers.length : 0,
+        reference: payload?.reference || ''
+      }
+    }).catch(() => {});
+    return originalJson({
+      build: CRON_BUILD,
+      cronLive: live,
+      cronDryRun: dryRun,
+      ...payload
+    });
+  };
 
   return loyaltyVoucherRunHandler(req, res);
 }
