@@ -41,6 +41,10 @@
       "schedule": "30 6 * * 1,2"
     },
     {
+      "path": "/api/cron/birthday-notifications",
+      "schedule": "0 7 * * *"
+    },
+    {
       "path": "/api/cron/region-manager-weekly-report",
       "schedule": "0 8 * * *"
     },
