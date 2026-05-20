@@ -149,7 +149,16 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
   }
 
-  if (!requireCronSecret(req, res, 'WEBORDER_MAIL_SECRET')) return;
+  /* Auth: cron-secret OF admin-token (admin mag handmatig dry-runnen). */
+  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const givenAdmin = String(
+    req.headers['x-admin-token'] ||
+    req.query.adminToken ||
+    req.query.admin_token ||
+    ''
+  ).replace(/^Bearer\s+/i, '').trim();
+  const isAdmin = Boolean(adminToken && givenAdmin && adminToken === givenAdmin);
+  if (!isAdmin && !requireCronSecret(req, res, 'WEBORDER_MAIL_SECRET')) return;
 
   const dryRun = String(req.query.dryRun || req.query.preview || '') === '1';
   const onlyStore = String(req.query.store || '').trim();
