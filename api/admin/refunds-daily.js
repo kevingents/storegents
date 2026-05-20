@@ -71,21 +71,32 @@ export default async function handler(req, res) {
 
     /* Bron 2: unavailable-processing-logs — niet-leverbaar refunds */
     let unavailableInPeriod = [];
+    let failuresInPeriod = [];
     try {
       const allUnavailableLogs = await getUnavailableProcessingLogs();
-      unavailableInPeriod = allUnavailableLogs.filter((l) => {
+      /* Eerst: alle logs binnen periode */
+      const logsInRange = allUnavailableLogs.filter((l) => {
         const dt = new Date(l.createdAt || 0);
         if (isNaN(dt.getTime())) return false;
-        if (dt < from || dt > to) return false;
-        /* Alleen success-records met een refund-amount tellen mee */
+        return dt >= from && dt <= to;
+      });
+      /* Successvolle refunds */
+      unavailableInPeriod = logsInRange.filter((l) => {
         if (l.success === false) return false;
         if (!(Number(l.amount || 0) > 0)) return false;
-        /* En het type moet een refund-actie zijn — niet bv. een 'mark-srs-only' */
         const type = String(l.type || '').toLowerCase();
         const refundStatus = String(l.refundStatus || '').toLowerCase();
         const validRefundTypes = ['refund', 'shopify-refund', 'process', 'process-refund', 'completed'];
-        const refundDone = validRefundTypes.includes(type) || refundStatus === 'completed' || refundStatus === 'refunded';
-        return refundDone;
+        return validRefundTypes.includes(type) || refundStatus === 'completed' || refundStatus === 'refunded';
+      });
+      /* Cron/handmatig FOUTEN — voor de "Vandaag in actie"-banner zodat
+         beheerders zien wat er niet werkt. Filteren op success=false OF
+         expliciete failure-types. */
+      failuresInPeriod = logsInRange.filter((l) => {
+        if (l.success === false) return true;
+        const type = String(l.type || '').toLowerCase();
+        const failureTypes = ['failed', 'error', 'srs_cancel_failed', 'process_failed', 'shopify_refund_failed'];
+        return failureTypes.some(t => type.includes(t));
       });
     } catch (error) {
       console.warn('[refunds-daily] kon unavailable-logs niet laden:', error.message);
@@ -180,6 +191,17 @@ export default async function handler(req, res) {
     const returnTotal = moneyNum(timeline.filter((t) => t.source === 'return').reduce((s, t) => s + t.amount, 0));
     const unavailableTotal = moneyNum(timeline.filter((t) => t.source === 'unavailable').reduce((s, t) => s + t.amount, 0));
 
+    /* Per-winkel breakdown van failures voor evt. drill-down */
+    const failuresByStore = new Map();
+    for (const log of failuresInPeriod) {
+      const store = clean(log.store) || '(onbekend)';
+      const amt = moneyNum(log.amount);
+      const e = failuresByStore.get(store) || { store, count: 0, amount: 0 };
+      e.count += 1;
+      e.amount += amt;
+      failuresByStore.set(store, e);
+    }
+
     const totals = {
       count: timeline.length,
       amount: moneyNum(timeline.reduce((s, t) => s + t.amount, 0)),
@@ -188,7 +210,10 @@ export default async function handler(req, res) {
       unavailableCount: unavailableInPeriod.length,
       unavailableAmount: unavailableTotal,
       uniqueStores: byStore.length,
-      uniqueEmployees: new Set(timeline.map((t) => t.employee)).size
+      uniqueEmployees: new Set(timeline.map((t) => t.employee)).size,
+      /* Failures (cron of handmatig) — voor dashboard-banner */
+      failureCount: failuresInPeriod.length,
+      failureAmount: moneyNum(failuresInPeriod.reduce((s, l) => s + Number(l.amount || 0), 0))
     };
 
     return res.status(200).json({
@@ -197,7 +222,25 @@ export default async function handler(req, res) {
       totals,
       byStore,
       timeline,
-      note: 'Bronnen: srs-returns/returns.json (winkel-retouren) + unavailable-processing-logs (niet-leverbaar refunds).'
+      failures: {
+        count: failuresInPeriod.length,
+        amount: totals.failureAmount,
+        byStore: Array.from(failuresByStore.values())
+          .map(e => ({ ...e, amount: moneyNum(e.amount) }))
+          .sort((a, b) => b.amount - a.amount),
+        items: failuresInPeriod.map(l => ({
+          createdAt: l.createdAt,
+          type: l.type,
+          orderNr: clean(l.orderNr),
+          store: clean(l.store),
+          processedBy: clean(l.processedBy),
+          amount: moneyNum(l.amount),
+          refundStatus: clean(l.refundStatus),
+          srsCancelStatus: clean(l.srsCancelStatus),
+          message: clean(l.message)
+        }))
+      },
+      note: 'Bronnen: srs-returns/returns.json (winkel-retouren) + unavailable-processing-logs (niet-leverbaar refunds + failures).'
     });
   } catch (error) {
     console.error('[admin/refunds-daily] error:', error);
