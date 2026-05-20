@@ -7,10 +7,10 @@ import {
   getDhlNoshowStats
 } from '../../lib/dhl-noshow-store.js';
 import {
-  getDhlHubForStore,
-  getDepotEmailForStore,
-  getDhlHubsGrouped,
-  DHL_HUBS
+  getDhlHubForStoreAsync,
+  getDepotEmailForStoreAsync,
+  getDhlHubsGroupedAsync,
+  getAllDhlHubsMergedAsync
 } from '../../lib/dhl-hubs.js';
 
 /**
@@ -86,12 +86,13 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     /* Hub-info per winkel — geen admin token vereist (winkel-modal heeft dit nodig) */
     if (req.query.hubFor) {
-      const hub = getDhlHubForStore(String(req.query.hubFor));
+      const hub = await getDhlHubForStoreAsync(String(req.query.hubFor));
       return res.status(200).json({ success: true, hub });
     }
     /* Volledige hub-lijst gegroepeerd per hub */
     if (req.query.hubs === '1') {
-      return res.status(200).json({ success: true, hubs: getDhlHubsGrouped() });
+      const hubs = await getDhlHubsGroupedAsync();
+      return res.status(200).json({ success: true, hubs });
     }
     /* Stats endpoint — admin token vereist */
     if (!isAdminRequest(req)) {
@@ -100,12 +101,15 @@ export default async function handler(req, res) {
     try {
       const sinceDays = Math.min(Math.max(Number(req.query.sinceDays || 90), 1), 365);
       const stats = await getDhlNoshowStats({ sinceDays });
-      /* Verrijk perStore met hub-info */
-      stats.perStore = (stats.perStore || []).map((s) => ({
-        ...s,
-        hub: getDhlHubForStore(s.store)
-      }));
-      return res.status(200).json({ success: true, ...stats, hubs: getDhlHubsGrouped() });
+      /* Verrijk perStore met hub-info (async per winkel) */
+      stats.perStore = await Promise.all(
+        (stats.perStore || []).map(async (s) => ({
+          ...s,
+          hub: await getDhlHubForStoreAsync(s.store)
+        }))
+      );
+      const hubs = await getDhlHubsGroupedAsync();
+      return res.status(200).json({ success: true, ...stats, hubs });
     } catch (error) {
       console.error('[dhl-noshow] GET error:', error);
       return res.status(500).json({ success: false, message: error.message || 'Kon stats niet ophalen.' });
@@ -151,9 +155,9 @@ export default async function handler(req, res) {
       });
     }
 
-    /* Hub-info opzoeken voor deze winkel */
-    const hub = getDhlHubForStore(store);
-    const depotEmail = getDepotEmailForStore(store);
+    /* Hub-info opzoeken voor deze winkel (inclusief admin-overrides) */
+    const hub = await getDhlHubForStoreAsync(store);
+    const depotEmail = await getDepotEmailForStoreAsync(store);
 
     /* Opslaan in store — inclusief hub-info zodat admin-overzicht ziet
        welke depot is aangeschreven */
