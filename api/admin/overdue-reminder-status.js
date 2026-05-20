@@ -1,6 +1,6 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getMailLog } from '../../lib/gents-mail-log-store.js';
-import { getStoreNames, getStoreMail, getApiBaseUrl, getAdminToken, isExcludedStore } from '../../lib/gents-mail-config.js';
+import { getStoreNames, getStoreMail, getStoreMailAsync, getApiBaseUrl, getAdminToken, isExcludedStore } from '../../lib/gents-mail-config.js';
 
 /**
  * GET /api/admin/overdue-reminder-status
@@ -60,9 +60,10 @@ export default async function handler(req, res) {
     return row.type === 'weborder_overdue_store' || row.type === 'weborder_overdue_region_manager';
   });
 
-  /* Per-store aggregatie */
-  const perStore = stores.map((store) => {
-    const recipient = getStoreMail(store);
+  /* Per-store aggregatie. getStoreMailAsync leest eerst uit Blob (admin
+     instellingen via Winkel-emailadressen) en valt dan terug op env-var. */
+  const perStore = await Promise.all(stores.map(async (store) => {
+    const recipient = await getStoreMailAsync(store);
     const email = recipient?.email || '';
     const myEntries = recentReminders.filter((r) => clean(r.store).toLowerCase() === clean(store).toLowerCase());
     const storeMails = myEntries.filter((r) => r.type === 'weborder_overdue_store' && r.status === 'sent');
@@ -88,8 +89,9 @@ export default async function handler(req, res) {
         recipient: r.recipient || ''
       }))
     };
-  }).sort((a, b) => {
-    /* Sortering: winkels zonder email eerst (rood), dan op aantal recent verstuurd (hoog eerst) */
+  }));
+  /* Sortering: winkels zonder email eerst (rood), dan op aantal recent verstuurd (hoog eerst) */
+  perStore.sort((a, b) => {
     if (a.hasEmail !== b.hasEmail) return a.hasEmail ? 1 : -1;
     return (b.sent7d.storeMails + b.sent7d.managerMails) - (a.sent7d.storeMails + a.sent7d.managerMails);
   });

@@ -1,7 +1,7 @@
 import { appendMailLog, getMailLog, wasSentRecently } from '../../lib/gents-mail-log-store.js';
 import { ageLabel, operationalDaysBetween } from '../../lib/gents-business-deadline.js';
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
-import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
 
 function setNoStore(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -134,7 +134,8 @@ export default async function handler(req, res) {
   const results = [];
 
   for (const store of stores) {
-    const recipient = getStoreMail(store);
+    /* Async variant leest eerst uit Blob (admin > Winkel-emailadressen). */
+    const recipient = await getStoreMailAsync(store);
 
     if (!recipient.email) {
       results.push({ store, skipped: true, reason: 'Geen winkel e-mail ingesteld.' });
