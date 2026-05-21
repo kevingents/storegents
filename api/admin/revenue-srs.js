@@ -67,10 +67,12 @@ function computeRange(period, now = new Date()) {
   return { from, until, prevFrom, prevUntil };
 }
 
-function aggregate(transactions, storeFilter, branchIdFilter) {
+function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders = true } = {}) {
   let totalRevenue = 0;
   let itemsSold = 0;
   let orderCount = 0;
+  let skippedWeborders = 0;
+  let skippedWeborderRevenue = 0;
   const storeMap = new Map();
   const productMap = new Map();
   const dayMap = new Map();
@@ -81,6 +83,19 @@ function aggregate(transactions, storeFilter, branchIdFilter) {
 
     const storeName = getStoreNameByBranchId(branchId);
     if (storeFilter && storeName !== storeFilter) continue;
+
+    /* Bonnen-filter: transactie moet een receiptNr hebben (=bon afgedrukt
+       op kassa). Pure webshop-orders zonder bon (alleen orderNr) worden
+       NIET als winkel-omzet geteld — die zijn webshop-omzet. Een webshop-
+       order die afgehaald wordt in de winkel heeft WEL een receiptNr en
+       telt dus mee. */
+    const hasReceipt = Boolean(String(tx.receiptNr || '').trim());
+    const hasOrderOnly = Boolean(String(tx.orderNr || '').trim()) && !hasReceipt;
+    if (excludeWeborders && hasOrderOnly) {
+      skippedWeborders += 1;
+      skippedWeborderRevenue += Number(tx.total || 0);
+      continue;
+    }
 
     const total = Number(tx.total || 0);
     totalRevenue += total;
@@ -119,6 +134,10 @@ function aggregate(transactions, storeFilter, branchIdFilter) {
     orderCount,
     avgOrderValue: orderCount ? Number((totalRevenue / orderCount).toFixed(2)) : 0,
     itemsSold,
+    /* Diagnostiek: hoeveel weborder-omzet werd uitgesloten (excludeWeborders=true) */
+    excludedWeborderCount: skippedWeborders,
+    excludedWeborderRevenue: Number(skippedWeborderRevenue.toFixed(2)),
+    revenueSourceLabel: 'Bonnen (kassa-transacties, excl. puur web-orders)',
     perStore: [...storeMap.values()]
       .map((s) => ({ ...s, revenue: Number(s.revenue.toFixed(2)) }))
       .sort((a, b) => b.revenue - a.revenue),
@@ -168,7 +187,12 @@ export default async function handler(req, res) {
     }
   }
 
-  const cacheKey = `${period}|${iso(range.from)}|${iso(range.until)}|${storeFilter}|${branchIdFilter}`;
+  /* Default: alleen bonnen (kassa-transacties). Met ?includeWeborders=1
+     krijgt admin alle SRS-transacties incl. puur web-orders. */
+  const includeWeborders = String(req.query.includeWeborders || '') === '1';
+  const excludeWeborders = !includeWeborders;
+
+  const cacheKey = `${period}|${iso(range.from)}|${iso(range.until)}|${storeFilter}|${branchIdFilter}|excl=${excludeWeborders}`;
   const cached = cache.get(cacheKey);
   if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -180,8 +204,8 @@ export default async function handler(req, res) {
       fetchPeriod(range.prevFrom, range.prevUntil)
     ]);
 
-    const cur = aggregate(current, storeFilter, branchIdFilter);
-    const prev = aggregate(previous, storeFilter, branchIdFilter);
+    const cur = aggregate(current, storeFilter, branchIdFilter, { excludeWeborders });
+    const prev = aggregate(previous, storeFilter, branchIdFilter, { excludeWeborders });
     const trendPct = prev.totalRevenue
       ? Number((((cur.totalRevenue - prev.totalRevenue) / prev.totalRevenue) * 100).toFixed(1))
       : null;
