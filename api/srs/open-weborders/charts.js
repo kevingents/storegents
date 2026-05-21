@@ -16,7 +16,7 @@ import { getCachedWeborders } from '../../../lib/srs-weborders-cache.js';
 import {
   normalizeWeborder,
   isOrderLineOpenForStore,
-  isOrderLineOverdue,
+  isOverdueWeborder,
   isOpenWeborderStatus,
   isClosedWeborderStatus
 } from '../../../lib/weborder-request-store.js';
@@ -88,7 +88,7 @@ function buildTrend(items, days, storeName) {
 
     if (isClosedWeborderStatus(item.status)) continue;
     bucket.open += 1;
-    if (isOrderLineOverdue(item)) bucket.overdue += 1;
+    if (isOverdueWeborder(item)) bucket.overdue += 1;
   }
 
   return buckets;

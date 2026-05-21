@@ -75,7 +75,7 @@ export default async function handler(req, res) {
         const items = (cached.items || []).map((item) => weborders.normalizeWeborder(item));
         const summary = weborders.summarizeOpenWeborders(items, resolvedStore);
         const requests = items.filter((item) => weborders.isOrderLineOpenForStore(item, resolvedStore)).slice(0, 500);
-        const filteredRequests = overdueOnly ? requests.filter((item) => weborders.isOrderLineOverdue(item)) : requests;
+        const filteredRequests = overdueOnly ? requests.filter((item) => weborders.isOverdueWeborder(item)) : requests;
         /* Shopify-enrich: voor de zichtbare rijen (max ~100) productnaam, klant, maat, foto. */
         const enrichedRequests = enrich
           ? await enrichOpenWebOrders(filteredRequests.slice(0, 100)).then((res) => res.concat(filteredRequests.slice(100)))
@@ -114,7 +114,7 @@ export default async function handler(req, res) {
           .slice(0, 1000);
 
     const filteredRequests = overdueOnly
-      ? requests.filter((item) => weborders.isOrderLineOverdue(item))
+      ? requests.filter((item) => weborders.isOverdueWeborder(item))
       : requests;
 
     /* Shopify-enrich voor de zichtbare lijst (max 100). Rest blijft raw SRS-data. */
