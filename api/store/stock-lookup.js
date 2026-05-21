@@ -47,11 +47,30 @@ function clean(v) { return String(v || '').trim(); }
 function eqBarcode(a, b) {
   return clean(a).toLowerCase() === clean(b).toLowerCase();
 }
-/* Bouw doorzoekbare haystack uit row — naast titel ook kleur/maat/sku/artnr */
+/* Partial match: query is substring van veld (bv. articleNumber-prefix bij scan) */
+function containsCode(field, query) {
+  const f = clean(field).toLowerCase();
+  const q = clean(query).toLowerCase();
+  return Boolean(f && q && f.includes(q));
+}
+/* Bouw doorzoekbare haystack uit row — naast titel ook kleur/maat/sku/artnr.
+   We voegen ook brand/Description-variant velden toe voor het geval delta-merge
+   sommige velden anders heeft opgeslagen (raw was er, maar wordt niet bewaard
+   na merge — defensief bouwen we de haystack uit alle string-velden). */
 function buildRowHaystack(r) {
-  return [
-    r.title, r.color, r.size, r.sku, r.barcode, r.articleNumber
-  ].map((v) => String(v || '').toLowerCase()).join(' ');
+  const parts = [];
+  /* Standaard structured fields */
+  parts.push(r.title, r.color, r.size, r.sku, r.barcode, r.articleNumber);
+  /* Defensieve fallback — pak ook alle andere string-velden mee zodat oudere
+     snapshot-data met alternatieve veldnamen (bv. description, productName)
+     toch matched. We slaan grote/object-velden over. */
+  for (const [k, v] of Object.entries(r || {})) {
+    if (['title', 'color', 'size', 'sku', 'barcode', 'articleNumber', 'pieces',
+         'stockType', 'unitPrice', 'source', 'sourceFile', 'updatedAt', 'raw',
+         'branchId', 'store'].includes(k)) continue;
+    if (typeof v === 'string' && v.length < 200) parts.push(v);
+  }
+  return parts.map((v) => String(v || '').toLowerCase()).join(' ');
 }
 /* Strikte match: ALLE zoekwoorden moeten in de haystack */
 function rowMatchesAllWords(r, words) {
@@ -99,15 +118,18 @@ function collectProductMatches(snapshots, matchFn) {
   }
   return map;
 }
-/* Detecteer wat voor soort zoekterm het is */
+/* Detecteer wat voor soort zoekterm het is.
+   - Spaties → name (vrije tekst, fuzzy op alle velden)
+   - <3 chars → short (te kort om iets zinnigs mee te doen)
+   - 3+ alphanumeric chars zonder spaties → identifier (barcode/SKU/artikelnr) —
+     verlaagd van 5 naar 3 zodat korte artikelcodes (bv. "G42") ook werken
+   - Anders → name */
 function detectQueryKind(value) {
   const v = clean(value);
   if (!v) return 'empty';
-  /* Cijfer- of letter/cijfer-combinatie zonder spaties + min 5 lang → identifier
-     (barcode / sku / articleNumber). Anders: vrije tekst → titel-zoek. */
   if (/\s/.test(v)) return 'name';
   if (v.length < 3) return 'short';
-  if (/^[A-Za-z0-9._-]+$/.test(v) && v.length >= 5) return 'identifier';
+  if (/^[A-Za-z0-9._/\\-]+$/.test(v) && v.length >= 3) return 'identifier';
   return 'name';
 }
 
@@ -159,14 +181,27 @@ export default async function handler(req, res) {
     ? String(queryValue || '').toLowerCase().split(/\s+/).filter((w) => w.length >= 2)
     : [];
 
-  /* Strikte match per row */
+  /* Strikte match per row. Voor identifiers proberen we eerst EXACT, dan
+     CONTAINS (partial barcode/sku/articleNumber match) — kassa-medewerkers
+     scannen soms maar deel van een barcode, of SRS-articleNumber heeft
+     leading zeros / suffixes die de exact-match breken. */
   const matchRow = (r) => {
-    if (queryKind === 'barcode') return eqBarcode(r.barcode, queryValue);
-    if (queryKind === 'sku') return eqBarcode(r.sku, queryValue) || eqBarcode(r.barcode, queryValue);
+    if (queryKind === 'barcode') {
+      return eqBarcode(r.barcode, queryValue) || containsCode(r.barcode, queryValue);
+    }
+    if (queryKind === 'sku') {
+      return eqBarcode(r.sku, queryValue)
+        || eqBarcode(r.barcode, queryValue)
+        || containsCode(r.sku, queryValue)
+        || containsCode(r.barcode, queryValue);
+    }
     if (queryKind === 'identifier') {
-      /* Probeer barcode, sku, articleNumber — exact match */
+      /* 1) Exact match — snelste pad voor scanners */
       if (eqBarcode(r.barcode, queryValue) || eqBarcode(r.sku, queryValue) || eqBarcode(r.articleNumber, queryValue)) return true;
-      /* Identifier kan ook deel zijn van titel + andere velden (bv. SKU-suffix) */
+      /* 2) Partial code match — voor scanners die maar deel van de barcode pakken
+         en voor SRS-articleNumbers met formats als "12345-S" of "0012345" */
+      if (containsCode(r.barcode, queryValue) || containsCode(r.sku, queryValue) || containsCode(r.articleNumber, queryValue)) return true;
+      /* 3) Vrije-tekst fallback — identifier zou ook deel kunnen zijn van titel */
       return searchWords.length > 0 && rowMatchesAllWords(r, searchWords);
     }
     if (queryKind === 'name') {
