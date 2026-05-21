@@ -1,6 +1,7 @@
 import syncHandler from '../admin/stock-negative/sync.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const secret = process.env.STOCK_NEGATIVE_SYNC_SECRET || '';
   const incoming = String(req.headers.authorization || req.query.secret || '').replace(/^Bearer\s+/i, '').trim();
 
@@ -15,3 +16,5 @@ export default async function handler(req, res) {
 
   return syncHandler(req, res);
 }
+
+export default trackedCron('stock-negative-sync', handler);

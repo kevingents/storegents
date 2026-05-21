@@ -1,6 +1,7 @@
 import { listBranches } from '../../lib/branch-metrics.js';
 import { getCronState, saveCronState, appendCronRun } from '../../lib/cron-state-store.js';
 import { syncSrsCancellationsForBranch, boolEnv, currentMonth, statusListFromValue } from '../../lib/srs-cancellation-sync-service.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 const DEFAULT_MAX_RUNTIME_MS = 22000;
 
@@ -34,7 +35,7 @@ function selectedBranchesFromState(branches, startIndex, batchSize) {
   return selected;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
   }
@@ -158,3 +159,5 @@ export default async function handler(req, res) {
     message: `Cron sync klaar. Volgende startIndex: ${nextIndex}.`
   });
 }
+
+export default trackedCron('srs-cancellations-nightly', handler);

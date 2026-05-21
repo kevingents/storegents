@@ -1,6 +1,7 @@
 import pointsSyncHandler from '../admin/points/sync-shopify-metafields.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (!['GET', 'POST'].includes(req.method)) {
     return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
   }
@@ -23,3 +24,5 @@ export default async function handler(req, res) {
 
   return pointsSyncHandler(req, res);
 }
+
+export default trackedCron('sync-shopify-points', handler);

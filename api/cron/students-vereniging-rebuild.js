@@ -1,5 +1,6 @@
 import { getCustomers } from '../../lib/srs-customers-client.js';
 import { upsertCustomersInMap, markFullRebuild, readVerenigingMap } from '../../lib/students-vereniging-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * GET /api/cron/students-vereniging-rebuild
@@ -36,7 +37,7 @@ function isAuthorizedCron(req) {
   return authHeader === `Bearer ${expected}` || querySecret === expected;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET of POST.' });
@@ -128,3 +129,5 @@ export default async function handler(req, res) {
     });
   }
 }
+
+export default trackedCron('students-vereniging-rebuild', handler);

@@ -8,6 +8,7 @@ import {
   writeSyncState,
   appendSyncHistoryRun
 } from '../../lib/shopify-offline-sync.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * GET /api/cron/shopify-offline-sync
@@ -65,7 +66,7 @@ async function lookupEmailForCustomer(customerId) {
   }
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET of POST.' });
@@ -238,3 +239,5 @@ export default async function handler(req, res) {
     });
   }
 }
+
+export default trackedCron('shopify-offline-sync', handler);

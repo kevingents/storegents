@@ -1,4 +1,5 @@
 import { getUnavailableCronState, appendUnavailableCronRun } from '../../lib/unavailable-cron-state-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -78,7 +79,7 @@ async function callBackfill(req, { offset, limit, dryRun }) {
   return { status: response.status, data, url: url.toString().replace(/admin(Token|_token)=[^&]+/g, 'adminToken=***') };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
@@ -166,3 +167,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: error.message || 'SRS cancelled backfill cron mislukt.' });
   }
 }
+
+export default trackedCron('srs-cancelled-backfill-2026', handler);

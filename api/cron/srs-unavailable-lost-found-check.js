@@ -3,6 +3,7 @@ import { cancellationLineRows } from '../../lib/order-cancellation-store.js';
 import { getUnavailableStockSnapshot } from '../../lib/srs-stock-client.js';
 import { getBranchIdByStore } from '../../lib/branch-metrics.js';
 import { appendUnavailableCronRun } from '../../lib/unavailable-cron-state-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -192,7 +193,7 @@ function patchCancellation(cancellation, row, check) {
   };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET of POST is toegestaan.' });
@@ -301,3 +302,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: error.message || 'Lost & Found check mislukt.' });
   }
 }
+
+export default trackedCron('srs-unavailable-lost-found-check', handler);

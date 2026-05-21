@@ -4,6 +4,7 @@ import { getAdminToken, requireCronSecret } from '../../lib/gents-mail-config.js
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { getDragerCache, summarizeDragers } from '../../lib/srs-dragers-store.js';
 import { addCurrentOverdueDrager, addLoggedWeeklyDragers, ensureWeeklyDragerRow } from '../../lib/region-weekly-drager-memory.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -81,8 +82,10 @@ function reportHtml(region, summary, dateFrom, dateTo) {
     ]) : '<p style="color:#3a4a5a;">Geen te late dragers geregistreerd in deze regio.</p>'}`;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setHeaders(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
   return res.status(410).json({ success: false, message: 'Dragers functie is tijdelijk uitgeschakeld omdat SRS-koppeling nog niet stabiel is.' });
 }
+
+export default trackedCron('region-manager-weekly-drager-report', handler);

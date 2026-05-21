@@ -21,6 +21,7 @@ import { getSubscriptionsForStores, removeSubscriptionByEndpoint } from '../../l
 import { sendPushToStores, pushowlConfigured } from '../../lib/pushowl-client.js';
 import { getSeenIds, markSeen } from '../../lib/notifications-watermark-store.js';
 import { listBranches } from '../../lib/branch-metrics.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   /* Vercel cron stuurt User-Agent: vercel-cron */
@@ -159,7 +160,7 @@ async function checkStoreWeborders(req, store) {
   return result;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
@@ -190,3 +191,5 @@ export default async function handler(req, res) {
 
   return res.status(200).json({ success: true, totals, results });
 }
+
+export default trackedCron('new-order-watcher', handler);

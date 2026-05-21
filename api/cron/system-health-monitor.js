@@ -1,4 +1,5 @@
 import { evaluateAlerts } from '../../lib/system-alert-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * Cron: GET /api/cron/system-health-monitor
@@ -85,7 +86,7 @@ async function sendAlertEmail(notifications) {
   return { sent: resp.ok, status: resp.status, id: data.id, error: !resp.ok ? data : null };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
@@ -125,3 +126,5 @@ export default async function handler(req, res) {
     mailResult
   });
 }
+
+export default trackedCron('system-health-monitor', handler);

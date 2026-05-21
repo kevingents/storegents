@@ -16,6 +16,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getReserveringen, updateReservering } from '../../lib/reserveringen-store.js';
 import { cancelFulfillment } from '../../lib/srs-weborders-cancel-client.js';
 import { getEmailForStore } from '../../lib/store-emails-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   /* Vercel-cron stuurt Authorization: Bearer <CRON_SECRET> */
@@ -76,7 +77,7 @@ async function sendNearExpireMail(reservering) {
   }
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -158,3 +159,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: error.message });
   }
 }
+
+export default trackedCron('reserveringen-expire', handler);

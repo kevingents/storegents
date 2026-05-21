@@ -21,6 +21,7 @@ import { getTransactions } from '../../lib/srs-customers-client.js';
 import { listBranches } from '../../lib/branch-metrics.js';
 import { aggregateInsights, computeRange, PERIODS, isoDateTime } from '../../lib/store-insights-compute.js';
 import { writeInsights } from '../../lib/store-insights-cache.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -30,7 +31,7 @@ function isAuthorized(req) {
   return Boolean(adminToken && token && token === adminToken);
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
@@ -103,3 +104,5 @@ export default async function handler(req, res) {
     results: results.slice(0, 100) /* truncate response */
   });
 }
+
+export default trackedCron('store-insights-builder', handler);

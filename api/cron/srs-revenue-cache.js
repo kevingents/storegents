@@ -7,6 +7,7 @@ import {
   readRevenueIndex,
   writeRevenueIndex
 } from '../../lib/srs-revenue-cache-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * SRS revenue cache cron.
@@ -115,7 +116,7 @@ function aggregateDayForBranches(transactions) {
   return result;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -196,3 +197,5 @@ export default async function handler(req, res) {
     completedAt: new Date().toISOString()
   });
 }
+
+export default trackedCron('srs-revenue-cache', handler);

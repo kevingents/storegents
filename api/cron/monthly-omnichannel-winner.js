@@ -37,6 +37,7 @@ import { sendPushToStores, pushowlConfigured } from '../../lib/pushowl-client.js
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { baseMailHtml, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl } from '../../lib/gents-mail-config.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -359,7 +360,7 @@ async function sendRegionManagerMails({ winner, subWinners, bottom3, allRows, mo
 /* ─────────────────────────────────────────────────────────────────────────
    HANDLER
    ───────────────────────────────────────────────────────────────────────── */
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -497,3 +498,5 @@ export default async function handler(req, res) {
     });
   }
 }
+
+export default trackedCron('monthly-omnichannel-winner', handler);

@@ -3,6 +3,7 @@ import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getStoreMail, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getDragerCache, saveDragerCache, summarizeDragers } from '../../lib/srs-dragers-store.js';
 import { getDragerInfo } from '../../lib/srs-dragers-soap.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -54,7 +55,9 @@ async function sendStoreMail({ store, recipient, rows, dryRun }) {
   return { sent: true, count: rows.length };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setNoStore(res);
   return res.status(410).json({ success: false, message: 'Dragers functie is tijdelijk uitgeschakeld omdat SRS-koppeling nog niet stabiel is.' });
 }
+
+export default trackedCron('drager-mail-run', handler);

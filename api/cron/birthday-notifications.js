@@ -2,6 +2,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getBirthdayProfilesFor } from '../../lib/user-profile-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
 import { getStoreMailAsync } from '../../lib/gents-mail-config.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * Verjaardags-cron: dagelijks 07:00 UTC. Voor elke jarige gebruiker
@@ -39,7 +40,7 @@ function esc(v) {
   return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -126,3 +127,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: error.message || 'Cron-fout.' });
   }
 }
+
+export default trackedCron('birthday-notifications', handler);

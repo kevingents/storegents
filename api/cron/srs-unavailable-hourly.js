@@ -2,6 +2,7 @@ import { syncGlobalUnavailableOrderLines } from '../../lib/srs-unavailable-globa
 import { listUnavailableOrderLines } from '../../lib/unavailable-order-line-service.js';
 import { processSyncedUnavailableRecord } from '../../lib/unavailable-cron-record-processor.js';
 import { appendUnavailableCronRun } from '../../lib/unavailable-cron-state-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function clean(value) {
   return String(value || '').trim();
@@ -182,7 +183,7 @@ async function processOpenUnavailableRows({ rows = [], maxProcessRecords = 25, m
   };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setCors(res);
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -301,3 +302,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message });
   }
 }
+
+export default trackedCron('srs-unavailable-hourly', handler);

@@ -3,6 +3,7 @@ import { getOpenFulfillmentsByBranch } from '../../lib/srs-weborders-message-cli
 import { getWeborderRequests, normalizeWeborder } from '../../lib/weborder-request-store.js';
 import { setCachedWeborders } from '../../lib/srs-weborders-cache.js';
 import { requireCronSecret } from '../../lib/gents-mail-config.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function shouldUseSrs() {
   return String(process.env.SRS_OPEN_WEBORDERS_SOURCE || 'local').toLowerCase() !== 'local';
@@ -42,7 +43,7 @@ async function refreshStore(branchId, store, localItems) {
   }
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (!requireCronSecret(req, res, 'CRON_SECRET')) return;
 
@@ -68,3 +69,5 @@ export default async function handler(req, res) {
 
   return res.status(200).json({ success: true, refreshed: ok, failed, stores: summary });
 }
+
+export default trackedCron('srs-cache-refresh', handler);

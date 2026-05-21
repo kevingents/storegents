@@ -3,6 +3,7 @@ import {
   updateVoucherLogByCode
 } from '../../lib/voucher-log-store.js';
 import { sendVoucherReminderEmail } from '../../lib/voucher-mailer.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const cronSecret = process.env.CRON_SECRET || '';
@@ -81,7 +82,7 @@ async function sendReminder(log, reminderType) {
   return updateVoucherLogByCode(log.voucherCode, updates);
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (!['GET', 'POST'].includes(req.method)) {
     return res.status(405).json({
       success: false,
@@ -162,3 +163,5 @@ export default async function handler(req, res) {
     results
   });
 }
+
+export default trackedCron('voucher-reminders', handler);

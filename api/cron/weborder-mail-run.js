@@ -2,6 +2,7 @@ import { appendMailLog, getMailLog, wasSentRecently } from '../../lib/gents-mail
 import { ageLabel, isOverdueWithWeekendRule, operationalDaysBetween } from '../../lib/gents-business-deadline.js';
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -143,7 +144,7 @@ async function sendRegionManagerMail({ store, recipient, overdueRows, dryRun }) 
   return { sent: true, count: escalationRows.length, resendId: result.resendId || '' };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setNoStore(res);
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST is toegestaan.' });
@@ -222,3 +223,5 @@ export default async function handler(req, res) {
     results
   });
 }
+
+export default trackedCron('weborder-mail-run', handler);

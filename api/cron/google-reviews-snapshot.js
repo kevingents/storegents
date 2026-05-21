@@ -19,6 +19,7 @@ import { getGoogleReviewsForStore } from '../../lib/google-reviews-client.js';
 import { recordSnapshot } from '../../lib/google-reviews-trend-store.js';
 import { flagNewReviews, markReviewsSeen } from '../../lib/google-reviews-seen-store.js';
 import { createNotification } from '../../lib/store-notifications-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -29,7 +30,7 @@ function isAuthorized(req) {
   return Boolean(adminToken && token && token === adminToken);
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
@@ -114,3 +115,5 @@ export default async function handler(req, res) {
     results
   });
 }
+
+export default trackedCron('google-reviews-snapshot', handler);

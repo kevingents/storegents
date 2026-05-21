@@ -3,6 +3,7 @@ import { listBranches, getStoreEmail, getRegionManagerEmail, isWarehouseStore } 
 import { sendGentsMail } from '../../lib/resend-mailer.js';
 import { updateAutomationState } from '../../lib/automation-state-store.js';
 import { businessAgeDays } from '../../lib/business-time.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function authorized(req) {
   const secret = String(process.env.WEBORDER_MAIL_SECRET || '').trim();
@@ -45,7 +46,7 @@ async function loadOpenWeborders(baseUrl, store) {
   return data.requests || data.summary?.fulfilmentOpen || [];
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
@@ -126,3 +127,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: error.message || 'Weborder mail automation mislukt.' });
   }
 }
+
+export default trackedCron('weborder-mail-automation', handler);

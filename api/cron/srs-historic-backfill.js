@@ -1,6 +1,7 @@
 import { getFulfillments, isSrsCancelledStatus } from '../../lib/srs-weborders-message-client.js';
 import { addOrderCancellationsBulk } from '../../lib/order-cancellation-bulk-store.js';
 import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
  * Nachtelijke cron: backfill van CANCELLED weborder-fulfillments uit SRS
@@ -85,7 +86,7 @@ function buildRecord(fulfillment) {
   };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   setCors(res);
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -158,3 +159,5 @@ export default async function handler(req, res) {
     year: new Date().getFullYear()
   });
 }
+
+export default trackedCron('srs-historic-backfill', handler);

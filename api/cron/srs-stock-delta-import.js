@@ -29,6 +29,7 @@ import {
   replaceBranchSnapshot,
   bumpSnapshotIndex
 } from '../../lib/srs-stock-snapshot-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -50,7 +51,7 @@ function groupRowsByBranch(rows = []) {
   return byBranch;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
@@ -144,3 +145,5 @@ export default async function handler(req, res) {
     });
   }
 }
+
+export default trackedCron('srs-stock-delta-import', handler);
