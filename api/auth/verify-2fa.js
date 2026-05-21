@@ -77,11 +77,13 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
-    /* Lees user-permissions + bepaal defaultAfdeling op basis van department */
+    /* Lees user-permissions + bepaal defaultAfdeling. Expliciet afdeling-veld
+       wint van department-name mapping. */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
     const department = perm?.department || user.department || '';
-    const defaultAfdeling = resolveAfdelingForDepartment(department);
+    const defaultAfdeling = clean(perm?.afdeling) || resolveAfdelingForDepartment(department) || '';
+    const groups = Array.isArray(perm?.groups) ? perm.groups : [];
 
     return res.status(200).json({
       success: true,
@@ -93,6 +95,7 @@ export default async function handler(req, res) {
         active: user.active !== false,
         allowedStores,
         defaultAfdeling,
+        groups,
         role: perm?.role || 'office'
       }
     });

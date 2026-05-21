@@ -106,11 +106,13 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
-    /* Lees user-permissions voor allowedStoresOverride + bepaal defaultAfdeling */
+    /* Lees user-permissions voor allowedStoresOverride + bepaal defaultAfdeling.
+       Voorrang: expliciete afdeling-veld > department-naam mapping (fallback). */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
     const department = perm?.department || user.department || '';
-    const defaultAfdeling = resolveAfdelingForDepartment(department);
+    const defaultAfdeling = clean(perm?.afdeling) || resolveAfdelingForDepartment(department) || '';
+    const groups = Array.isArray(perm?.groups) ? perm.groups : [];
 
     return res.status(200).json({
       success: true,
@@ -122,7 +124,8 @@ export default async function handler(req, res) {
         department,
         active: user.active !== false,
         allowedStores,
-        defaultAfdeling, /* bv. 'Supplychain' bij department='Logistiek / magazijn' */
+        defaultAfdeling, /* bv. 'Supplychain' bij afdeling='Supplychain' of department='Logistiek / magazijn' */
+        groups,
         role: perm?.role || 'office'
       }
     });

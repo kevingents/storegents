@@ -90,10 +90,12 @@ export default async function handler(req, res) {
       return {
         role,
         department: perm?.department || snapshot?.department || '',
+        afdeling: perm?.afdeling || '',
         region: perm?.region || '',
         extraPermissions: perm?.extraPermissions || [],
         revokedPermissions: perm?.revokedPermissions || [],
         allowedStoresOverride: perm?.allowedStoresOverride || [],
+        groups: perm?.groups || [],
         resolved,
         permissionCount: resolved.length,
         notes: perm?.notes || '',
