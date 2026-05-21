@@ -201,12 +201,15 @@ async function handler(req, res) {
       const storeMail = await sendStoreOverdueMail({ store, recipient, overdueRows: storeMailRows, dryRun });
       const managerMail = await sendRegionManagerMail({ store, recipient, overdueRows: managerRows, dryRun });
 
-      for (const row of storeMailRows) {
-        await appendMailLog({ type: 'weborder_overdue_store', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: storeMail.resendId || '' });
-      }
+      /* Skip mail-log bij dry-run zodat preview-runs niet vervuilen. */
+      if (!dryRun) {
+        for (const row of storeMailRows) {
+          await appendMailLog({ type: 'weborder_overdue_store', store, key: orderKey(row), order: orderNumber(row), status: 'sent', recipient: recipient.email, resendId: storeMail.resendId || '' });
+        }
 
-      for (const row of managerRows) {
-        await appendMailLog({ type: 'weborder_overdue_region_manager', store, key: orderKey(row), order: orderNumber(row), status: dryRun ? 'dry_run' : 'sent', recipient: (recipient.regionManagerEmail || []).join(', '), resendId: managerMail.resendId || '' });
+        for (const row of managerRows) {
+          await appendMailLog({ type: 'weborder_overdue_region_manager', store, key: orderKey(row), order: orderNumber(row), status: 'sent', recipient: (recipient.regionManagerEmail || []).join(', '), resendId: managerMail.resendId || '' });
+        }
       }
 
       results.push({ store, open: rows.length, overdue: overdueRows.length, storeMails: storeMail.count, regionManagerMails: managerMail.count, source: data.source || 'open-weborders' });

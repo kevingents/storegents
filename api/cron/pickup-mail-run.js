@@ -167,12 +167,16 @@ async function handler(req, res) {
       const newResult = await mailNewPickup({ store, recipient, orders: newOrders, dryRun });
       const reminderResult = await mailPickupReminder({ store, recipient, orders: reminderOrders, dryRun });
 
-      for (const order of newOrders) {
-        await appendMailLog({ type: 'pickup_new_store', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: newResult.resendId || '' });
-      }
+      /* Skip mail-log entries voor dry-run runs — anders vervuilt de log met
+         "zou-verstuurd-zijn" rijen die geen echte mails representeren. */
+      if (!dryRun) {
+        for (const order of newOrders) {
+          await appendMailLog({ type: 'pickup_new_store', store, key: orderKey(order), order: orderNumber(order), status: 'sent', recipient: recipient.email, resendId: newResult.resendId || '' });
+        }
 
-      for (const order of reminderOrders) {
-        await appendMailLog({ type: 'pickup_not_ready_reminder', store, key: orderKey(order), order: orderNumber(order), status: dryRun ? 'dry_run' : 'sent', recipient: recipient.email, resendId: reminderResult.resendId || '' });
+        for (const order of reminderOrders) {
+          await appendMailLog({ type: 'pickup_not_ready_reminder', store, key: orderKey(order), order: orderNumber(order), status: 'sent', recipient: recipient.email, resendId: reminderResult.resendId || '' });
+        }
       }
 
       results.push({ store, open: orders.length, newMails: newResult.count, reminderMails: reminderResult.count });
