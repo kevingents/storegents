@@ -193,10 +193,10 @@ export default async function handler(req, res) {
               const d = await r.json();
               if (d.success) {
                 const target = d.redirect || PORTAL_URL;
-                msg.innerHTML = '<div class="ok">✓ Wachtwoord opgeslagen — je wordt doorgestuurd naar het portaal…<br><small>Werkt 'm niet? <a href="' + target + '">Klik hier</a></small></div>';
+                msg.innerHTML = '<div class="ok">✓ Wachtwoord opgeslagen — je wordt doorgestuurd naar het portaal…<br><small>Werkt het niet? <a href="' + target + '">Klik hier</a></small></div>';
                 form.querySelectorAll('input,button').forEach(el => el.disabled = true);
                 btn.textContent = 'Doorsturen…';
-                setTimeout(() => { window.location.href = target; }, 1500);
+                setTimeout(() => { window.location.href = target; }, 1200);
               } else {
                 msg.innerHTML = '<div class="err">' + (d.message || 'Opslaan mislukt') + '</div>';
                 btn.disabled = false; btn.textContent = 'Wachtwoord opslaan';
@@ -215,12 +215,35 @@ export default async function handler(req, res) {
     const token = clean(body.token);
     const password = String(body.password || '');
 
-    if (!token) return res.status(400).json({ success: false, message: 'Token ontbreekt.' });
-    if (!password || password.length < 8) return res.status(400).json({ success: false, message: 'Wachtwoord moet minimaal 8 tekens zijn.' });
+    /* Detect of dit een form-encoded POST is (browser native submit zonder JS).
+       Wanneer dat zo is geven we GEEN JSON terug maar een echte 302-redirect
+       of een nette HTML error-pagina. Anders ziet de user rauwe JSON. */
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const acceptHeader = String(req.headers['accept'] || '').toLowerCase();
+    const isFormEncoded = contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data');
+    const wantsJson = acceptHeader.includes('application/json') || contentType.includes('application/json');
+    const isBrowserForm = isFormEncoded && !wantsJson;
+
+    function respondError(status, message) {
+      if (isBrowserForm) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.status(status).end(renderHtmlPage({
+          title: 'Wachtwoord instellen',
+          body: `<h1>Er ging iets mis</h1>
+            <div class="err">${escapeHtml(message)}</div>
+            <p>Ga terug naar de uitnodigings-link of vraag een nieuwe invite aan.</p>
+            <a href="javascript:history.back()" style="display:inline-block;padding:12px 18px;background:#0a1f33;color:#fff;border-radius:10px;font-weight:600;text-decoration:none;font-size:14px">← Terug</a>`
+        }));
+      }
+      return res.status(status).json({ success: false, message });
+    }
+
+    if (!token) return respondError(400, 'Token ontbreekt.');
+    if (!password || password.length < 8) return respondError(400, 'Wachtwoord moet minimaal 8 tekens zijn.');
 
     try {
       const user = await findUserByInviteToken(token);
-      if (!user) return res.status(400).json({ success: false, message: 'Token ongeldig of verlopen. Vraag opnieuw een uitnodiging.' });
+      if (!user) return respondError(400, 'Token ongeldig of verlopen. Vraag opnieuw een uitnodiging.');
       await setUserPassword(user.userId, password);
       await appendAuditEntry({
         actor: user.userId,
@@ -248,6 +271,13 @@ export default async function handler(req, res) {
           redirectUrl = getPortalUrl(req);
         }
       }
+
+      /* Browser form-fallback: echte 302 redirect naar portal. */
+      if (isBrowserForm) {
+        res.setHeader('Location', redirectUrl);
+        return res.status(302).end();
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Wachtwoord opgeslagen. Je kan nu inloggen.',
@@ -257,7 +287,7 @@ export default async function handler(req, res) {
       });
     } catch (error) {
       console.error('[auth/set-password] error:', error);
-      return res.status(500).json({ success: false, message: error.message || 'Opslaan mislukt.' });
+      return respondError(500, error.message || 'Opslaan mislukt.');
     }
   }
 
