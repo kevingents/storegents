@@ -1,6 +1,11 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
-import { authenticateOfficeUser } from '../../lib/office-users-store.js';
+import {
+  authenticateOfficeUser,
+  setTwoFactorCodeForUser,
+  isTwoFactorEnabled
+} from '../../lib/office-users-store.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
+import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
 
 /**
  * POST /api/auth/login-office
@@ -42,16 +47,64 @@ export default async function handler(req, res) {
       return res.status(401).json({ success: false, message: 'Ongeldige e-mail of wachtwoord.' });
     }
 
+    /* 2FA flow: als enabled → genereer code + mail, return requires2FA */
+    if (isTwoFactorEnabled(user)) {
+      const { code, expiresAt } = await setTwoFactorCodeForUser(user.userId);
+      let mailWarning = null;
+      try {
+        await sendMail({
+          to: user.email,
+          subject: `GENTS Portaal — 2FA code: ${code}`,
+          html: baseMailHtml({
+            title: 'Verifieer je login',
+            intro: `Hallo ${user.name || ''}, vul deze code in om in te loggen op het GENTS Portaal.`,
+            bodyHtml: `
+              <div style="text-align:center;padding:24px;background:#f5f5f2;border-radius:12px;margin-bottom:18px">
+                <div style="font-size:11px;color:#3a4a5a;letter-spacing:.18em;font-weight:700;text-transform:uppercase;margin-bottom:8px">Jouw verificatie-code</div>
+                <div style="font-size:48px;font-weight:700;letter-spacing:.16em;color:#0a1f33;font-family:'SF Mono',Menlo,monospace">${code}</div>
+                <div style="margin-top:10px;font-size:12px;color:#3a4a5a">Geldig tot ${new Date(expiresAt).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}</div>
+              </div>
+              <p style="margin:0;font-size:13px;color:#3a4a5a;line-height:1.55">Heb jij niet zojuist geprobeerd in te loggen? Negeer deze mail en wijzig direct je wachtwoord via je beheerder.</p>
+            `,
+            footer: 'Code is 5 minuten geldig. Max 5 pogingen.'
+          })
+        });
+      } catch (mailErr) {
+        console.warn('[login-office] 2FA mail send failed:', mailErr.message);
+        mailWarning = mailErr.message;
+      }
+
+      await appendAuditEntry({
+        actor: user.userId,
+        action: 'login-office-2fa-sent',
+        targetUserId: user.userId,
+        targetName: user.name,
+        note: '2FA-code verstuurd na succesvolle password-verify'
+      }).catch(() => {});
+
+      return res.status(200).json({
+        success: true,
+        requires2FA: true,
+        userId: user.userId,
+        emailMasked: maskEmail(user.email),
+        message: mailWarning
+          ? `Code kon niet gemaild worden: ${mailWarning}. Vraag admin om hulp.`
+          : `We hebben een 6-cijferige code gestuurd naar ${maskEmail(user.email)}. Vul deze in.`
+      });
+    }
+
+    /* Geen 2FA: direct doorlaten (alleen voor admins die 't expliciet hebben uitgezet) */
     await appendAuditEntry({
       actor: user.userId,
       action: 'login-office',
       targetUserId: user.userId,
       targetName: user.name,
-      note: `Login via email+password`
+      note: 'Login via email+password (2FA uit)'
     }).catch(() => {});
 
     return res.status(200).json({
       success: true,
+      requires2FA: false,
       user: {
         userId: user.userId,
         name: user.name,
@@ -64,4 +117,13 @@ export default async function handler(req, res) {
     console.error('[auth/login-office] error:', error);
     return res.status(500).json({ success: false, message: 'Login mislukt.' });
   }
+}
+
+function maskEmail(email) {
+  const e = String(email || '');
+  const [local, domain] = e.split('@');
+  if (!local || !domain) return e;
+  const visible = local.slice(0, 2);
+  const masked = '*'.repeat(Math.max(0, local.length - 2));
+  return `${visible}${masked}@${domain}`;
 }
