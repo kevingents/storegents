@@ -54,7 +54,8 @@ export default async function handler(req, res) {
         action: 'login-office-2fa-failed',
         targetUserId: userId,
         targetName: '',
-        note: `2FA verify faalde: ${result.reason}`
+        note: `2FA verify faalde: ${result.reason}`,
+        request: req
       }).catch(() => {});
       return res.status(401).json({
         success: false,
@@ -70,7 +71,8 @@ export default async function handler(req, res) {
       action: 'login-office-2fa-success',
       targetUserId: user.userId,
       targetName: user.name,
-      note: 'Login compleet met 2FA'
+      note: 'Login compleet met 2FA',
+      request: req
     }).catch(() => {});
 
     return res.status(200).json({

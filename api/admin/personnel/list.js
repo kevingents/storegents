@@ -117,24 +117,47 @@ export default async function handler(req, res) {
         permissions: buildPermBlock(person.personnelId)
       }));
 
-    /* Office users (kantoor zonder kassa-login) */
+    /* Office users (kantoor zonder kassa-login) — met account-staat */
     const officeRows = Object.values(officeUsers || {})
       .filter((u) => includeInactive || u.active !== false)
-      .map((u) => ({
-        personnelId: u.userId,
-        name: u.name,
-        internalName: u.name,
-        externalName: u.name,
-        email: u.email,
-        phone: u.phone || '',
-        personnelGroupId: '',
-        active: u.active !== false,
-        source: 'office',
-        branches: [],
-        stores: [],
-        department: u.department || '',
-        permissions: buildPermBlock(u.userId, u)
-      }));
+      .map((u) => {
+        /* Bepaal account-status voor de UI */
+        const hasPassword = Boolean(u.passwordHash);
+        const inviteActive = Boolean(u.inviteToken && u.inviteTokenExpiresAt && new Date(u.inviteTokenExpiresAt).getTime() > Date.now());
+        const inviteExpired = Boolean(u.inviteToken && u.inviteTokenExpiresAt && new Date(u.inviteTokenExpiresAt).getTime() <= Date.now());
+        let accountStatus = 'unknown';
+        if (u.active === false) accountStatus = 'inactive';
+        else if (hasPassword) accountStatus = 'active';
+        else if (inviteActive) accountStatus = 'invited';
+        else if (inviteExpired) accountStatus = 'invite-expired';
+        else accountStatus = 'no-password';
+
+        return {
+          personnelId: u.userId,
+          name: u.name,
+          internalName: u.name,
+          externalName: u.name,
+          email: u.email,
+          phone: u.phone || '',
+          personnelGroupId: '',
+          active: u.active !== false,
+          source: 'office',
+          branches: [],
+          stores: [],
+          department: u.department || '',
+          /* Account-staat metadata voor de UI */
+          accountStatus,
+          hasPassword,
+          inviteActive,
+          inviteExpired,
+          inviteSentAt: u.inviteSentAt || null,
+          inviteTokenExpiresAt: u.inviteTokenExpiresAt || null,
+          passwordSetAt: u.passwordSetAt || null,
+          twoFactorEnabled: u.twoFactorEnabled !== false,
+          lastLoginAt: u.twoFactorLastVerifiedAt || u.lastLoginAt || null,
+          permissions: buildPermBlock(u.userId, u)
+        };
+      });
 
     let rows = [...srsRows, ...officeRows];
 

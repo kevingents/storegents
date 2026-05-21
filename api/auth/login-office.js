@@ -79,7 +79,8 @@ export default async function handler(req, res) {
         action: 'login-office-2fa-sent',
         targetUserId: user.userId,
         targetName: user.name,
-        note: '2FA-code verstuurd na succesvolle password-verify'
+        note: '2FA-code verstuurd na succesvolle password-verify',
+        request: req
       }).catch(() => {});
 
       return res.status(200).json({
@@ -99,7 +100,8 @@ export default async function handler(req, res) {
       action: 'login-office',
       targetUserId: user.userId,
       targetName: user.name,
-      note: 'Login via email+password (2FA uit)'
+      note: 'Login via email+password (2FA uit)',
+      request: req
     }).catch(() => {});
 
     return res.status(200).json({
