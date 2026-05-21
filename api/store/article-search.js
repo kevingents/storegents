@@ -44,7 +44,11 @@ function buildHaystack(article) {
   return [
     article.title, article.color, article.size,
     article.articleNumber, article.barcode, article.sku,
-    article.vendor, article.productType, article.descriptionPlain
+    article.vendor, article.productType, article.descriptionPlain,
+    /* SRSERP metafields uit Shopify — zoeken op artikel-id, rve-nummer,
+       subgroep en hoofdgroep-omschrijving werkt nu ook */
+    article.srsArtikelId, article.srsRveArtikelnummer,
+    article.subgroep, article.hoofdgroep, article.hoofdgroepOmschrijving
   ].map((v) => lower(v)).join(' ');
 }
 
@@ -67,6 +71,7 @@ export default async function handler(req, res) {
   const colorFilter = lower(req.query.color);
   const sizeFilter = lower(req.query.size);
   const hoofdgroepFilter = lower(req.query.hoofdgroep);
+  const subgroepFilter = lower(req.query.subgroep);
   const ownStore = clean(req.query.store);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit || 24)));
   const onlyAvailable = String(req.query.available || '') === '1';
@@ -101,10 +106,12 @@ export default async function handler(req, res) {
         const key = lower(r.articleNumber || r.sku || r.barcode);
         if (!key) continue;
 
-        /* Join met Shopify cache voor foto + omschrijving */
+        /* Join met Shopify cache voor foto + omschrijving + SRSERP metafields */
         const shopifyMatch = productsCache.byBarcode?.[lower(r.barcode)]
           || productsCache.bySku?.[lower(r.sku)]
           || productsCache.bySrsArticleNumber?.[lower(r.articleNumber)]
+          || productsCache.bySrsArtikelId?.[lower(r.articleNumber)]
+          || productsCache.bySrsRveArtikelnummer?.[lower(r.articleNumber)]
           || null;
 
         let entry = productMap.get(key);
@@ -124,6 +131,12 @@ export default async function handler(req, res) {
             vendor: clean(shopifyMatch?.vendor || ''),
             productType: clean(shopifyMatch?.productType || ''),
             price: clean(shopifyMatch?.price || ''),
+            /* SRSERP metafields uit Shopify (gedeeld door alle varianten) */
+            srsArtikelId: clean(shopifyMatch?.srsArtikelId || ''),
+            srsRveArtikelnummer: clean(shopifyMatch?.srsRveArtikelnummer || ''),
+            subgroep: clean(shopifyMatch?.subgroep || ''),
+            hoofdgroep: clean(shopifyMatch?.hoofdgroep || ''),
+            hoofdgroepOmschrijving: clean(shopifyMatch?.hoofdgroepOmschrijving || ''),
             totalPieces: 0,
             branchCount: 0,
             branches: []
@@ -159,7 +172,11 @@ export default async function handler(req, res) {
     const facets = {
       colors: facetMap('color'),
       sizes: facetMap('size'),
-      hoofdgroepen: facetMap('productType')
+      /* Hoofdgroep: prefereer SRSERP.hoofdgroep_omschrijving > productType uit Shopify */
+      hoofdgroepen: facetMap('hoofdgroepOmschrijving').length
+        ? facetMap('hoofdgroepOmschrijving')
+        : facetMap('productType'),
+      subgroepen: facetMap('subgroep')
     };
 
     /* Filters toepassen */
@@ -173,7 +190,14 @@ export default async function handler(req, res) {
       articles = articles.filter((a) => lower(a.size) === sizeFilter);
     }
     if (hoofdgroepFilter) {
-      articles = articles.filter((a) => lower(a.productType) === hoofdgroepFilter);
+      /* Match op SRSERP-hoofdgroep_omschrijving (prio) of Shopify productType (fallback) */
+      articles = articles.filter((a) =>
+        lower(a.hoofdgroepOmschrijving) === hoofdgroepFilter
+        || lower(a.productType) === hoofdgroepFilter
+      );
+    }
+    if (subgroepFilter) {
+      articles = articles.filter((a) => lower(a.subgroep) === subgroepFilter);
     }
     if (onlyAvailable) {
       articles = articles.filter((a) => a.totalPieces > 0);
@@ -206,7 +230,15 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      query: { q, color: req.query.color || '', size: req.query.size || '', hoofdgroep: req.query.hoofdgroep || '', store: ownStore, available: onlyAvailable },
+      query: {
+        q,
+        color: req.query.color || '',
+        size: req.query.size || '',
+        hoofdgroep: req.query.hoofdgroep || '',
+        subgroep: req.query.subgroep || '',
+        store: ownStore,
+        available: onlyAvailable
+      },
       count: totalMatched,
       shown: articles.length,
       truncated,
