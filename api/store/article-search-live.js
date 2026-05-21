@@ -64,7 +64,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { results: rawResults, cached, productCount } = await realtimeSearch({ q, ownStore, limit: limit * 2 });
+    const { results: rawResults, cached, productCount, inventoryStatus } = await realtimeSearch({ q, ownStore, limit: limit * 2 });
+
+    /* Inventory-betrouwbaarheid: als ALLE chunks faalden óf 0 variants succeeded,
+       dan is de voorraad-data onbruikbaar en moeten we de available-filter
+       overslaan (anders krijgt user 0 resultaten ondanks producten in Shopify). */
+    const inventoryReliable = inventoryStatus
+      ? (inventoryStatus.chunksOk > 0 && inventoryStatus.succeeded > 0)
+      : true;
 
     /* Filter toepassen post-search */
     let results = rawResults;
@@ -75,7 +82,10 @@ export default async function handler(req, res) {
       || lower(r.productType) === hoofdgroepFilter
     );
     if (subgroepFilter) results = results.filter((r) => lower(r.subgroep) === subgroepFilter);
-    if (onlyAvailable) results = results.filter((r) => r.totalPieces > 0);
+    /* Available-filter alleen toepassen als inventory daadwerkelijk geladen is */
+    if (onlyAvailable && inventoryReliable) {
+      results = results.filter((r) => r.totalPieces > 0);
+    }
 
     /* Sorteer: eigen-winkel voorraad eerst, dan op totaalPieces, dan title */
     results.sort((a, b) => {
@@ -111,6 +121,8 @@ export default async function handler(req, res) {
       productCount,
       facets,
       results,
+      inventoryStatus,
+      inventoryReliable,
       productsCacheRefreshedAt: new Date().toISOString(),
       generatedAt: new Date().toISOString()
     });
