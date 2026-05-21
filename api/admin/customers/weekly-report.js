@@ -1,6 +1,7 @@
 import { getCustomers, getTransactions } from '../../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId, getBranchIdByStore } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
+import { getTargetsForPeriod, attachTargetsToRow, countReceiptsByBranch } from '../../../lib/customer-target-helpers.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(
   1000,
@@ -635,7 +636,7 @@ function resolveBranches({ branchId, store }) {
   return listBranches();
 }
 
-function buildPayload({
+async function buildPayload({
   dateFrom,
   dateTo,
   branchId,
@@ -646,12 +647,55 @@ function buildPayload({
   sourceMode,
   errors,
   cacheHit = false,
-  receiptCheck = null
+  receiptCheck = null,
+  transactions = []
 }) {
   const allCustomers = rows.flatMap((row) => row.customers || []);
   const totals = summarizeCustomers(allCustomers);
   const blockingErrors = (errors || []).filter((message) => !String(message || '').startsWith('transactions customer '));
   const degraded = Boolean(blockingErrors.length || totals.unknownBon > 0);
+
+  /* Targets + percentages joinen.
+     - Load targets pro-rata over de periode per store
+     - Tel totale bonnen per branchId vanuit transactions array
+     - Verrijk elke row met percentages */
+  const storeNames = rows.map((r) => r.store).filter(Boolean);
+  let targetsByStore = {};
+  let receiptsByBranch = {};
+  try {
+    targetsByStore = await getTargetsForPeriod(storeNames, dateFrom, dateTo);
+  } catch (err) {
+    console.warn('[weekly-report] getTargetsForPeriod failed:', err.message);
+  }
+  try {
+    receiptsByBranch = countReceiptsByBranch(transactions);
+  } catch (err) {
+    console.warn('[weekly-report] countReceiptsByBranch failed:', err.message);
+  }
+
+  for (const row of rows) {
+    const target = targetsByStore[row.store] || { inschrijvingen: 0, metBon: 0, metEmail: 0 };
+    const totalReceipts = receiptsByBranch[row.branchId] || 0;
+    attachTargetsToRow(row, target, totalReceipts);
+  }
+
+  /* Totals krijgen aggregeerde targets + percentages */
+  const totalTargets = {
+    inschrijvingen: rows.reduce((s, r) => s + (r.targetInschrijvingen || 0), 0),
+    metBon: rows.reduce((s, r) => s + (r.targetMetBon || 0), 0),
+    metEmail: rows.reduce((s, r) => s + (r.targetMetEmail || 0), 0)
+  };
+  const totalReceiptsAll = rows.reduce((s, r) => s + (r.totalReceiptsInStore || 0), 0);
+  totals.targetInschrijvingen = totalTargets.inschrijvingen;
+  totals.targetMetBon = totalTargets.metBon;
+  totals.targetMetEmail = totalTargets.metEmail;
+  totals.totalReceipts = totalReceiptsAll;
+  /* Computed totals (gebruik dezelfde calcPct als per-store) */
+  const calcPct = (a, t) => (t > 0 ? Math.round((Number(a) / t) * 100) : null);
+  totals.pctInschrijvingenVsTarget = calcPct(totals.totalNew || totals.total, totalTargets.inschrijvingen);
+  totals.pctMetBonVsTarget = calcPct(totals.withBon, totalTargets.metBon);
+  totals.pctMetEmailVsTarget = calcPct(totals.withEmail, totalTargets.metEmail);
+  totals.pctInschrijvingenVsBons = calcPct(totals.totalNew || totals.total, totalReceiptsAll);
 
   return {
     success: true,
@@ -667,6 +711,7 @@ function buildPayload({
     receiptCheck,
     totals,
     rows,
+    targetsByStore,
     errors: (errors || []).map((message) => ({ message })),
     warnings: errors || [],
     note: degraded
@@ -798,7 +843,7 @@ export default async function handler(req, res) {
       receiptFailureMap
     );
 
-    const payload = buildPayload({
+    const payload = await buildPayload({
       dateFrom,
       dateTo,
       branchId,
@@ -808,7 +853,8 @@ export default async function handler(req, res) {
       sourceTransactionCount: transactions.length,
       sourceMode: `${customerResult.sourceMode}-with-deep-receipts-v2`,
       errors,
-      receiptCheck
+      receiptCheck,
+      transactions
     });
 
     reportCache.set(cacheKey, {
@@ -825,7 +871,7 @@ export default async function handler(req, res) {
     const message = error.message || 'Klantinschrijvingen konden niet worden opgehaald.';
     const rows = fallbackRows(branches);
 
-    const payload = buildPayload({
+    const payload = await buildPayload({
       dateFrom,
       dateTo,
       branchId,
@@ -834,7 +880,8 @@ export default async function handler(req, res) {
       sourceCustomerCount: 0,
       sourceTransactionCount: 0,
       sourceMode: 'fatal-safe-empty-fallback',
-      errors: [message]
+      errors: [message],
+      transactions: []
     });
 
     return res.status(200).json(payload);
