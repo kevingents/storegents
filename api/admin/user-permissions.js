@@ -121,11 +121,13 @@ export default async function handler(req, res) {
         targetName: snapshotName,
         before: before ? {
           role: before.role, department: before.department, region: before.region,
-          extraPermissions: before.extraPermissions, revokedPermissions: before.revokedPermissions
+          extraPermissions: before.extraPermissions, revokedPermissions: before.revokedPermissions,
+          allowedStoresOverride: before.allowedStoresOverride || []
         } : null,
         after: {
           role: entry.role, department: entry.department, region: entry.region,
-          extraPermissions: entry.extraPermissions, revokedPermissions: entry.revokedPermissions
+          extraPermissions: entry.extraPermissions, revokedPermissions: entry.revokedPermissions,
+          allowedStoresOverride: entry.allowedStoresOverride || []
         }
       }).catch((e) => console.error('[audit-log]', e));
 

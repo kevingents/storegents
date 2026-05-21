@@ -43,7 +43,10 @@ function matchesSearch(person, search) {
 function matchesStore(person, store) {
   if (!store) return true;
   const lower = store.toLowerCase();
-  return (person.stores || []).some((s) => String(s).toLowerCase().includes(lower));
+  /* Match op effectieve stores (SRS ∪ override) zodat office-users met
+     een toegewezen winkel ook gevonden worden bij filter. */
+  const haystack = person.effectiveStores || person.stores || [];
+  return haystack.some((s) => String(s).toLowerCase().includes(lower));
 }
 
 export default async function handler(req, res) {
@@ -90,6 +93,7 @@ export default async function handler(req, res) {
         region: perm?.region || '',
         extraPermissions: perm?.extraPermissions || [],
         revokedPermissions: perm?.revokedPermissions || [],
+        allowedStoresOverride: perm?.allowedStoresOverride || [],
         resolved,
         permissionCount: resolved.length,
         notes: perm?.notes || '',
@@ -99,23 +103,37 @@ export default async function handler(req, res) {
       };
     };
 
+    /* Bereken effectieve toegestane winkels = SRS-stores ∪ allowedStoresOverride.
+       SRS-personeel: SRS-stores zijn de primaire koppeling, override is additief.
+       Office-users: hebben geen SRS-stores, dus override = volledige lijst. */
+    const computeEffectiveStores = (srsStores, override) => {
+      const set = new Set();
+      (srsStores || []).forEach((s) => { if (s) set.add(String(s).trim()); });
+      (override || []).forEach((s) => { if (s) set.add(String(s).trim()); });
+      return [...set].sort((a, b) => a.localeCompare(b, 'nl'));
+    };
+
     /* SRS personnel rows (winkel-medewerkers met kassa-login) */
     const srsRows = (persons || [])
       .filter((p) => includeInactive || p.active)
-      .map((person) => ({
-        personnelId: person.personnelId,
-        name: person.name,
-        internalName: person.internalName,
-        externalName: person.externalName,
-        email: '',
-        phone: '',
-        personnelGroupId: person.personnelGroupId,
-        active: person.active,
-        source: 'srs',
-        branches: person.branches,
-        stores: person.stores,
-        permissions: buildPermBlock(person.personnelId)
-      }));
+      .map((person) => {
+        const perms = buildPermBlock(person.personnelId);
+        return {
+          personnelId: person.personnelId,
+          name: person.name,
+          internalName: person.internalName,
+          externalName: person.externalName,
+          email: '',
+          phone: '',
+          personnelGroupId: person.personnelGroupId,
+          active: person.active,
+          source: 'srs',
+          branches: person.branches,
+          stores: person.stores,
+          effectiveStores: computeEffectiveStores(person.stores, perms.allowedStoresOverride),
+          permissions: perms
+        };
+      });
 
     /* Office users (kantoor zonder kassa-login) — met account-staat */
     const officeRows = Object.values(officeUsers || {})
@@ -132,6 +150,7 @@ export default async function handler(req, res) {
         else if (inviteExpired) accountStatus = 'invite-expired';
         else accountStatus = 'no-password';
 
+        const perms = buildPermBlock(u.userId, u);
         return {
           personnelId: u.userId,
           name: u.name,
@@ -144,6 +163,7 @@ export default async function handler(req, res) {
           source: 'office',
           branches: [],
           stores: [],
+          effectiveStores: computeEffectiveStores([], perms.allowedStoresOverride),
           department: u.department || '',
           /* Account-staat metadata voor de UI */
           accountStatus,
@@ -155,7 +175,7 @@ export default async function handler(req, res) {
           passwordSetAt: u.passwordSetAt || null,
           twoFactorEnabled: u.twoFactorEnabled !== false,
           lastLoginAt: u.twoFactorLastVerifiedAt || u.lastLoginAt || null,
-          permissions: buildPermBlock(u.userId, u)
+          permissions: perms
         };
       });
 
