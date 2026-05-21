@@ -60,8 +60,13 @@ function detectQueryKind(q) {
     if (v.length <= 7) return 'artikelcode';
     return 'barcode';
   }
-  /* Letter+cijfer combinatie zonder spaties → identifier (SKU-stijl) */
-  if (/^[A-Za-z0-9._/\\-]+$/.test(v) && v.length >= 3) return 'identifier';
+  /* Identifier (SKU-stijl) = MOET cijfers of separator bevatten — pure letters
+     (bv "rokjas", "broek") is een NAAM-zoekopdracht, geen SKU. */
+  if (/^[A-Za-z0-9._/\\-]+$/.test(v) && v.length >= 3) {
+    const hasDigit = /\d/.test(v);
+    const hasSeparator = /[._/\\-]/.test(v);
+    if (hasDigit || hasSeparator) return 'identifier';
+  }
   return 'name';
 }
 
