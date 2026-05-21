@@ -111,6 +111,10 @@
     {
       "path": "/api/cron/customer-mail-run?mode=monthly",
       "schedule": "0 9 1 * *"
+    },
+    {
+      "path": "/api/cron/shopify-products-refresh",
+      "schedule": "0 3 * * *"
     }
   ]
 }
