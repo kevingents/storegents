@@ -95,6 +95,14 @@
     {
       "path": "/api/cron/reserveringen-expire",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/students-vereniging-rebuild",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/shopify-offline-sync",
+      "schedule": "30 3 * * *"
     }
   ]
 }
