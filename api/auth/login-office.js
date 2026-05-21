@@ -4,6 +4,7 @@ import {
   setTwoFactorCodeForUser,
   isTwoFactorEnabled
 } from '../../lib/office-users-store.js';
+import { getUserPermissions } from '../../lib/user-permissions-store.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
 
@@ -104,6 +105,12 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
+    /* Lees user-permissions voor allowedStoresOverride — frontend filtert
+       de store-switcher op deze lijst zodat office-users niet alle winkels
+       kunnen kiezen waarvoor ze geen toegang hebben. */
+    const perm = await getUserPermissions(user.userId).catch(() => null);
+    const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+
     return res.status(200).json({
       success: true,
       requires2FA: false,
@@ -112,7 +119,9 @@ export default async function handler(req, res) {
         name: user.name,
         email: user.email,
         department: user.department || '',
-        active: user.active !== false
+        active: user.active !== false,
+        allowedStores,
+        role: perm?.role || 'office'
       }
     });
   } catch (error) {

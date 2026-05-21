@@ -1,5 +1,6 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { verifyTwoFactorCode } from '../../lib/office-users-store.js';
+import { getUserPermissions } from '../../lib/user-permissions-store.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 
 /**
@@ -75,6 +76,10 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
+    /* Lees user-permissions voor allowedStoresOverride */
+    const perm = await getUserPermissions(user.userId).catch(() => null);
+    const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+
     return res.status(200).json({
       success: true,
       user: {
@@ -82,7 +87,9 @@ export default async function handler(req, res) {
         name: user.name,
         email: user.email,
         department: user.department || '',
-        active: user.active !== false
+        active: user.active !== false,
+        allowedStores,
+        role: perm?.role || 'office'
       }
     });
   } catch (error) {
