@@ -2,6 +2,7 @@ import { appendMailLog, getMailLog, wasSentRecently } from '../../lib/gents-mail
 import { ageLabel, isOverdueWithWeekendRule, operationalDaysBetween } from '../../lib/gents-business-deadline.js';
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { getGroupMailRecipients } from '../../lib/mail-recipient-resolver.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
@@ -85,6 +86,28 @@ function getOverdueRows(rows) {
   });
 }
 
+/**
+ * Bouw recipient-lijst: default + group-recipients voor specifiek mail-type.
+ */
+async function buildWeborderRecipients({ type, store, defaultTo, defaultCc }) {
+  const { emails: groupEmails, hasReplaceRule, groups } = await getGroupMailRecipients({ type, store });
+  const finalTo = new Set();
+  const finalCc = new Set();
+
+  if (!hasReplaceRule) {
+    const tos = Array.isArray(defaultTo) ? defaultTo : (defaultTo ? [defaultTo] : []);
+    for (const t of tos) if (t) finalTo.add(String(t).toLowerCase());
+    for (const c of (defaultCc || [])) if (c) finalCc.add(String(c).toLowerCase());
+  }
+  for (const e of groupEmails) finalTo.add(e);
+
+  return {
+    to: [...finalTo],
+    cc: [...finalCc].filter((c) => !finalTo.has(c)),
+    groupCount: groups.length
+  };
+}
+
 async function sendStoreOverdueMail({ store, recipient, overdueRows, dryRun }) {
   if (!overdueRows.length) return { sent: false, count: 0, resendId: '' };
 
@@ -102,20 +125,28 @@ async function sendStoreOverdueMail({ store, recipient, overdueRows, dryRun }) {
 
   if (dryRun) return { sent: false, count: overdueRows.length, resendId: '' };
 
+  const rcpt = await buildWeborderRecipients({
+    type: 'weborder-overdue-store',
+    store,
+    defaultTo: recipient.email,
+    defaultCc: recipient.cc
+  });
+  if (!rcpt.to.length) return { sent: false, count: 0, resendId: '', skipped: 'no-recipients' };
+
   const result = await sendMail({
-    to: recipient.email,
-    cc: recipient.cc,
+    to: rcpt.to,
+    cc: rcpt.cc,
     subject: `Actie nodig: ${overdueRows.length} te late order${overdueRows.length === 1 ? '' : 's'} - ${store}`,
     html,
     text: `Te late orders voor ${store}: ${overdueRows.map(orderNumber).join(', ')}`
   });
 
-  return { sent: true, count: overdueRows.length, resendId: result.resendId || '' };
+  return { sent: true, count: overdueRows.length, resendId: result.resendId || '', groupCount: rcpt.groupCount };
 }
 
 async function sendRegionManagerMail({ store, recipient, overdueRows, dryRun }) {
   const managerRecipients = recipient.regionManagerEmail || [];
-  if (!managerRecipients.length || !overdueRows.length) return { sent: false, count: 0, resendId: '' };
+  if (!overdueRows.length) return { sent: false, count: 0, resendId: '' };
 
   const escalationRows = overdueRows.filter((row) => operationalDaysBetween(orderCreatedAt(row)) >= 4);
   if (!escalationRows.length) return { sent: false, count: 0, resendId: '' };
@@ -134,14 +165,22 @@ async function sendRegionManagerMail({ store, recipient, overdueRows, dryRun }) 
 
   if (dryRun) return { sent: false, count: escalationRows.length, resendId: '' };
 
+  const rcpt = await buildWeborderRecipients({
+    type: 'weborder-overdue-region-manager',
+    store,
+    defaultTo: managerRecipients,
+    defaultCc: []
+  });
+  if (!rcpt.to.length) return { sent: false, count: 0, resendId: '', skipped: 'no-recipients' };
+
   const result = await sendMail({
-    to: managerRecipients,
+    to: rcpt.to,
     subject: `Escalatie: ${escalationRows.length} order${escalationRows.length === 1 ? '' : 's'} langer dan 4 dagen open - ${store}`,
     html,
     text: `Escalatie ${store}: ${escalationRows.map(orderNumber).join(', ')}`
   });
 
-  return { sent: true, count: escalationRows.length, resendId: result.resendId || '' };
+  return { sent: true, count: escalationRows.length, resendId: result.resendId || '', groupCount: rcpt.groupCount };
 }
 
 async function handler(req, res) {

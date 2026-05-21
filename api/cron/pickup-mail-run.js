@@ -2,6 +2,7 @@ import { appendMailLog, getMailLog, wasSentRecently } from '../../lib/gents-mail
 import { ageLabel, operationalDaysBetween } from '../../lib/gents-business-deadline.js';
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { getGroupMailRecipients } from '../../lib/mail-recipient-resolver.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
@@ -64,6 +65,33 @@ async function fetchPickupOrders(req, store) {
   return data.orders || [];
 }
 
+/**
+ * Bouw recipient-lijst voor een specifiek pickup-mail-type:
+ *  - Default: recipient.email + recipient.cc (uit Winkel-emailadressen)
+ *  - PLUS group-recipients indien er groups zijn met matchende mailRules
+ *  - Bij rule.mode='replace' worden de default-recipients overgeslagen
+ */
+async function buildRecipients({ type, store, defaultRecipient }) {
+  const { emails: groupEmails, hasReplaceRule, groups } = await getGroupMailRecipients({ type, store });
+  const finalTo = new Set();
+  const finalCc = new Set();
+
+  if (!hasReplaceRule && defaultRecipient?.email) {
+    finalTo.add(String(defaultRecipient.email).toLowerCase());
+    for (const c of (defaultRecipient.cc || [])) {
+      if (c) finalCc.add(String(c).toLowerCase());
+    }
+  }
+  for (const e of groupEmails) finalTo.add(e);
+
+  return {
+    to: [...finalTo],
+    cc: [...finalCc].filter((c) => !finalTo.has(c)),
+    groupCount: groups.length,
+    replaceUsed: hasReplaceRule
+  };
+}
+
 async function mailNewPickup({ store, recipient, orders, dryRun }) {
   if (!orders.length) return { sent: false, count: 0, resendId: '' };
 
@@ -81,15 +109,18 @@ async function mailNewPickup({ store, recipient, orders, dryRun }) {
 
   if (dryRun) return { sent: false, count: orders.length, resendId: '' };
 
+  const rcpt = await buildRecipients({ type: 'pickup-new', store, defaultRecipient: recipient });
+  if (!rcpt.to.length) return { sent: false, count: 0, resendId: '', skipped: 'no-recipients' };
+
   const result = await sendMail({
-    to: recipient.email,
-    cc: recipient.cc,
+    to: rcpt.to,
+    cc: rcpt.cc,
     subject: `Nieuwe ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
     html,
     text: `Nieuwe ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
   });
 
-  return { sent: true, count: orders.length, resendId: result.resendId || '' };
+  return { sent: true, count: orders.length, resendId: result.resendId || '', groupCount: rcpt.groupCount };
 }
 
 async function mailPickupReminder({ store, recipient, orders, dryRun }) {
@@ -109,15 +140,18 @@ async function mailPickupReminder({ store, recipient, orders, dryRun }) {
 
   if (dryRun) return { sent: false, count: orders.length, resendId: '' };
 
+  const rcpt = await buildRecipients({ type: 'pickup-reminder', store, defaultRecipient: recipient });
+  if (!rcpt.to.length) return { sent: false, count: 0, resendId: '', skipped: 'no-recipients' };
+
   const result = await sendMail({
-    to: recipient.email,
-    cc: recipient.cc,
+    to: rcpt.to,
+    cc: rcpt.cc,
     subject: `Reminder ophaalorder${orders.length === 1 ? '' : 's'} - ${store}`,
     html,
     text: `Reminder ophaalorders voor ${store}: ${orders.map(orderNumber).join(', ')}`
   });
 
-  return { sent: true, count: orders.length, resendId: result.resendId || '' };
+  return { sent: true, count: orders.length, resendId: result.resendId || '', groupCount: rcpt.groupCount };
 }
 
 async function handler(req, res) {
