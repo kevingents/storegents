@@ -77,12 +77,16 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
-    /* Lees user-permissions + bepaal defaultAfdeling. Expliciet afdeling-veld
-       wint van department-name mapping. */
+    /* Lees user-permissions + bepaal afdelingen-array + defaultAfdeling. */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
     const department = perm?.department || user.department || '';
-    const defaultAfdeling = clean(perm?.afdeling) || resolveAfdelingForDepartment(department) || '';
+    const afdelingen = Array.isArray(perm?.afdelingen) && perm.afdelingen.length
+      ? perm.afdelingen
+      : (perm?.afdeling
+          ? [perm.afdeling]
+          : (resolveAfdelingForDepartment(department) ? [resolveAfdelingForDepartment(department)] : []));
+    const defaultAfdeling = afdelingen[0] || '';
     const groups = Array.isArray(perm?.groups) ? perm.groups : [];
 
     return res.status(200).json({
@@ -94,6 +98,7 @@ export default async function handler(req, res) {
         department,
         active: user.active !== false,
         allowedStores,
+        afdelingen,
         defaultAfdeling,
         groups,
         role: perm?.role || 'office'

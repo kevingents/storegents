@@ -107,11 +107,19 @@ export default async function handler(req, res) {
     }).catch(() => {});
 
     /* Lees user-permissions voor allowedStoresOverride + bepaal defaultAfdeling.
-       Voorrang: expliciete afdeling-veld > department-naam mapping (fallback). */
+       Voorrang: expliciete afdelingen-array > afdeling-veld > department-mapping. */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
     const department = perm?.department || user.department || '';
-    const defaultAfdeling = clean(perm?.afdeling) || resolveAfdelingForDepartment(department) || '';
+    /* Multi-afdelingen: array van virtuele winkels + 'Admin' waar deze user
+       toegang toe heeft. Eerste = login-default. Fallback voor oude data:
+       single 'afdeling' veld of mapping vanuit department. */
+    const afdelingen = Array.isArray(perm?.afdelingen) && perm.afdelingen.length
+      ? perm.afdelingen
+      : (perm?.afdeling
+          ? [perm.afdeling]
+          : (resolveAfdelingForDepartment(department) ? [resolveAfdelingForDepartment(department)] : []));
+    const defaultAfdeling = afdelingen[0] || '';
     const groups = Array.isArray(perm?.groups) ? perm.groups : [];
 
     return res.status(200).json({
@@ -124,7 +132,8 @@ export default async function handler(req, res) {
         department,
         active: user.active !== false,
         allowedStores,
-        defaultAfdeling, /* bv. 'Supplychain' bij afdeling='Supplychain' of department='Logistiek / magazijn' */
+        afdelingen,        /* alle afdelingen waar user toegang toe heeft */
+        defaultAfdeling,   /* eerste = login-default */
         groups,
         role: perm?.role || 'office'
       }
