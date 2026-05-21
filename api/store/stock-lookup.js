@@ -47,12 +47,57 @@ function clean(v) { return String(v || '').trim(); }
 function eqBarcode(a, b) {
   return clean(a).toLowerCase() === clean(b).toLowerCase();
 }
-/* Case-insensitive contains-match, alle zoekwoorden moeten voorkomen */
-function titleMatches(title, query) {
-  const t = String(title || '').toLowerCase();
-  if (!t) return false;
-  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-  return words.length > 0 && words.every(w => t.includes(w));
+/* Bouw doorzoekbare haystack uit row — naast titel ook kleur/maat/sku/artnr */
+function buildRowHaystack(r) {
+  return [
+    r.title, r.color, r.size, r.sku, r.barcode, r.articleNumber
+  ].map((v) => String(v || '').toLowerCase()).join(' ');
+}
+/* Strikte match: ALLE zoekwoorden moeten in de haystack */
+function rowMatchesAllWords(r, words) {
+  if (!words.length) return false;
+  const hay = buildRowHaystack(r);
+  if (!hay) return false;
+  return words.every((w) => hay.includes(w));
+}
+/* Loose match: tel hoeveel van de zoekwoorden voorkomen — voor fallback */
+function rowMatchScore(r, words) {
+  if (!words.length) return 0;
+  const hay = buildRowHaystack(r);
+  if (!hay) return 0;
+  let hits = 0;
+  for (const w of words) if (hay.includes(w)) hits++;
+  return hits;
+}
+
+/* Verzamel rows die matchen → groepeer per articleNumber/sku/barcode */
+function collectProductMatches(snapshots, matchFn) {
+  const map = new Map();
+  for (const { branchId, snap } of snapshots) {
+    if (!snap || !Array.isArray(snap.rows)) continue;
+    for (const r of snap.rows) {
+      if (!matchFn(r)) continue;
+      const key = String(r.articleNumber || r.sku || r.barcode || '').trim().toLowerCase();
+      if (!key) continue;
+      const entry = map.get(key) || {
+        barcode: String(r.barcode || '').trim(),
+        sku: String(r.sku || r.barcode || '').trim(),
+        articleNumber: String(r.articleNumber || '').trim(),
+        title: String(r.title || '').trim(),
+        color: String(r.color || '').trim(),
+        size: String(r.size || '').trim(),
+        totalPieces: 0,
+        branchCount: 0,
+        _branchSet: new Set(),
+        _sampleRow: r
+      };
+      entry.totalPieces += Number(r.pieces || 0);
+      entry._branchSet.add(branchId);
+      if (!entry.title && r.title) entry.title = String(r.title).trim();
+      map.set(key, entry);
+    }
+  }
+  return map;
 }
 /* Detecteer wat voor soort zoekterm het is */
 function detectQueryKind(value) {
@@ -109,16 +154,23 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, message: 'Zoekterm te kort — minimaal 3 tekens.' });
   }
 
-  /* Match-functie per row obv queryKind */
+  /* Voor name-zoek: bouw woorden vooraf — gebruikt voor zowel strict als loose */
+  const searchWords = (queryKind === 'name' || queryKind === 'identifier')
+    ? String(queryValue || '').toLowerCase().split(/\s+/).filter((w) => w.length >= 2)
+    : [];
+
+  /* Strikte match per row */
   const matchRow = (r) => {
     if (queryKind === 'barcode') return eqBarcode(r.barcode, queryValue);
     if (queryKind === 'sku') return eqBarcode(r.sku, queryValue) || eqBarcode(r.barcode, queryValue);
     if (queryKind === 'identifier') {
-      /* Probeer barcode, sku, articleNumber */
-      return eqBarcode(r.barcode, queryValue) || eqBarcode(r.sku, queryValue) || eqBarcode(r.articleNumber, queryValue);
+      /* Probeer barcode, sku, articleNumber — exact match */
+      if (eqBarcode(r.barcode, queryValue) || eqBarcode(r.sku, queryValue) || eqBarcode(r.articleNumber, queryValue)) return true;
+      /* Identifier kan ook deel zijn van titel + andere velden (bv. SKU-suffix) */
+      return searchWords.length > 0 && rowMatchesAllWords(r, searchWords);
     }
     if (queryKind === 'name') {
-      return titleMatches(r.title, queryValue);
+      return rowMatchesAllWords(r, searchWords);
     }
     return false;
   };
@@ -142,32 +194,29 @@ export default async function handler(req, res) {
 
     /* Bij name-search → mogelijke verschillende artikelen groeperen per articleNumber/sku */
     if (queryKind === 'name' || queryKind === 'identifier') {
-      const productMap = new Map(); /* key = articleNumber||sku||barcode */
-      for (const { branchId, snap } of snapshots) {
-        if (!snap || !Array.isArray(snap.rows)) continue;
-        for (const r of snap.rows) {
-          if (!matchRow(r)) continue;
-          const key = clean(r.articleNumber || r.sku || r.barcode).toLowerCase();
-          if (!key) continue;
-          const entry = productMap.get(key) || {
-            barcode: clean(r.barcode),
-            sku: clean(r.sku || r.barcode),
-            articleNumber: clean(r.articleNumber || ''),
-            title: clean(r.title || ''),
-            color: clean(r.color || ''),
-            size: clean(r.size || ''),
-            totalPieces: 0,
-            branchCount: 0,
-            _branchSet: new Set()
-          };
-          entry.totalPieces += Number(r.pieces || 0);
-          entry._branchSet.add(branchId);
-          if (!entry.title && r.title) entry.title = clean(r.title);
-          productMap.set(key, entry);
+      /* Stap 1: strict matching */
+      const productMap = collectProductMatches(snapshots, matchRow);
+
+      /* Stap 2: als 0 strict matches en >1 zoekwoord → probeer loose (N-1 woorden) */
+      let isFuzzy = false;
+      if (productMap.size === 0 && searchWords.length >= 2) {
+        isFuzzy = true;
+        const minHits = Math.max(1, searchWords.length - 1); /* minstens N-1 van N */
+        const looseMatch = (r) => rowMatchScore(r, searchWords) >= minHits;
+        const looseProductMap = collectProductMatches(snapshots, looseMatch);
+        /* Voeg score-velden toe voor sortering */
+        for (const entry of looseProductMap.values()) {
+          entry._matchScore = entry._sampleRow ? rowMatchScore(entry._sampleRow, searchWords) : 0;
         }
+        /* Overschrijf productMap */
+        for (const [k, v] of looseProductMap) productMap.set(k, v);
       }
-      /* >1 distinct artikel → multipleMatches response */
-      if (productMap.size > 1) {
+
+      /* >1 distinct artikel → multipleMatches response.
+         OOK bij fuzzy met 1 match → toon als picker zodat de gebruiker
+         duidelijk ziet dat 't een fuzzy hit is en die kan bevestigen. */
+      const showMultiple = productMap.size > 1 || (isFuzzy && productMap.size === 1);
+      if (showMultiple) {
         const matches = Array.from(productMap.values()).map(e => ({
           barcode: e.barcode,
           sku: e.sku,
@@ -176,20 +225,26 @@ export default async function handler(req, res) {
           color: e.color,
           size: e.size,
           totalPieces: e.totalPieces,
-          branchCount: e._branchSet.size
-        })).sort((a, b) => b.totalPieces - a.totalPieces).slice(0, 50);
+          branchCount: e._branchSet.size,
+          matchScore: e._matchScore || searchWords.length
+        })).sort((a, b) => {
+          /* Fuzzy: sorteer op match-score desc, dan op stock desc */
+          if (isFuzzy && a.matchScore !== b.matchScore) return b.matchScore - a.matchScore;
+          return b.totalPieces - a.totalPieces;
+        }).slice(0, 50);
         return res.status(200).json({
           success: true,
-          query: { value: queryValue, kind: queryKind },
+          query: { value: queryValue, kind: queryKind, fuzzy: isFuzzy, searchWords },
           multipleMatches: true,
           matchCount: productMap.size,
           truncated: productMap.size > 50,
+          fuzzyHint: isFuzzy ? `Geen exact match op alle ${searchWords.length} woorden — fuzzy matches op ${searchWords.length - 1}+ woorden getoond.` : null,
           matches,
           generatedAt: new Date().toISOString()
         });
       }
-      /* Precies 1 distinct artikel → val terug op normale single-response;
-         de matchRow filter hieronder pakt 'm. */
+      /* Precies 1 distinct artikel via strict match → val terug op normale
+         single-response; matchRow hieronder pakt 'm. */
     }
 
     /* Filter rows per branch op de barcode/sku/articleNumber/title */
