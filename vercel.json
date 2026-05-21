@@ -103,6 +103,14 @@
     {
       "path": "/api/cron/shopify-offline-sync",
       "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/customer-mail-run?mode=weekly",
+      "schedule": "30 8 * * 1"
+    },
+    {
+      "path": "/api/cron/customer-mail-run?mode=monthly",
+      "schedule": "0 9 1 * *"
     }
   ]
 }
