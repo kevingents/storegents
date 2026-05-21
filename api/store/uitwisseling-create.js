@@ -118,10 +118,15 @@ export default async function handler(req, res) {
 
     /* SRS returnt "OK" bij succes — bij andere antwoorden mappen we naar 502. */
     if (!result.success) {
+      const isLoginFail = /login.*failed|authentication|not authorized/i.test(result.status || '');
+      const helpText = isLoginFail
+        ? ` De ingestelde SRS-credentials hebben geen rechten op de boek-uitwisseling endpoint. Configureer in Vercel SRS_UITWISSEL_CREDS_JSON (per-filiaal accounts) of SRS_UITWISSEL_USER + SRS_UITWISSEL_PASSWORD (globaal account met write-rechten).`
+        : '';
       return res.status(502).json({
         success: false,
-        message: `SRS gaf geen OK terug: "${result.status}"`,
+        message: `SRS gaf geen OK terug: "${result.status}".${helpText}`,
         srsStatus: result.status,
+        credSource: result.credSource || null,
         vanFiliaal,
         naarFiliaal,
         regels: normRegels
