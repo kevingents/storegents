@@ -1,15 +1,23 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { getMailLog } from '../../lib/gents-mail-log-store.js';
+import { getTransactions } from '../../lib/srs-customers-client.js';
 
 /**
  * GET /api/admin/today-stats
  *
  * Snapshot van vandaag:
- *  - newOrders: nieuwe orders vandaag (Shopify)
- *  - revenue: totale omzet vandaag (Shopify orders)
+ *  - newOrders: nieuwe orders vandaag (Shopify weborders)
+ *  - revenue: omzet vandaag = SRS-bonnen (winkel) + Shopify webshop netto
+ *  - storeRevenue: alleen winkel-bonnen (SRS, pure POS)
+ *  - webshopRevenue: webshop netto (Shopify − refunds − cancelled)
  *  - newCustomers: nieuwe klantinschrijvingen vandaag
  *  - refunds: aantal retouren gestart vandaag
  *  - vs yesterday: trend per metric
+ *
+ * Business rules:
+ *  - Winkel-omzet = SRS bonnen met receiptNr én ZONDER orderNr (pure POS)
+ *  - Webshop-omzet = Shopify orders − refunds − cancelled
+ *  - Totaal = winkel + webshop netto (geen overlap, geen dubbeltelling)
  */
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
@@ -29,11 +37,16 @@ export default async function handler(req, res) {
   const apiVersion = process.env.SHOPIFY_API_VERSION || '2025-01';
   const configured = Boolean(shopifyToken && shopifyDomain);
 
-  let newOrders = 0;
-  let revenue = 0;
-  let refunds = 0;
-  let yesterdayOrders = 0;
-  let yesterdayRevenue = 0;
+  /* Webshop-data (Shopify): orders, refunds, cancellations */
+  let webshopOrders = 0;
+  let webshopRevenue = 0;       /* bruto */
+  let webshopRefunded = 0;
+  let webshopCancelled = 0;
+  let webshopOrdersY = 0;
+  let webshopRevenueY = 0;
+  let webshopRefundedY = 0;
+  let webshopCancelledY = 0;
+  let refunds = 0;              /* aantal refund-events vandaag */
   let shopifyError = '';
 
   if (configured) {
@@ -46,12 +59,18 @@ export default async function handler(req, res) {
         orders.forEach(o => {
           const created = new Date(o.created_at);
           const total = Number(o.total_price || 0);
+          const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);
+          const cancelled = o.cancelled_at ? total : 0;
           if (created >= today) {
-            newOrders++;
-            revenue += total;
+            webshopOrders++;
+            webshopRevenue += total;
+            webshopRefunded += refunded;
+            webshopCancelled += cancelled;
           } else if (created >= yesterday) {
-            yesterdayOrders++;
-            yesterdayRevenue += total;
+            webshopOrdersY++;
+            webshopRevenueY += total;
+            webshopRefundedY += refunded;
+            webshopCancelledY += cancelled;
           }
           if ((o.refunds || []).some(rf => new Date(rf.created_at) >= today)) refunds++;
         });
@@ -60,6 +79,39 @@ export default async function handler(req, res) {
       }
     } catch (e) { shopifyError = e.message || 'fetch failed'; }
   }
+
+  /* Winkel-bonnen (SRS): pure POS-aankopen vandaag + gisteren */
+  let storeOrders = 0;
+  let storeRevenue = 0;
+  let storeOrdersY = 0;
+  let storeRevenueY = 0;
+  let srsError = '';
+
+  try {
+    const srsRes = await getTransactions({
+      from: yesterday.toISOString().slice(0, 19),
+      until: tomorrow.toISOString().slice(0, 19)
+    });
+    const txns = srsRes.transactions || [];
+    for (const tx of txns) {
+      const hasReceipt = Boolean(String(tx.receiptNr || '').trim());
+      const hasOrderNr = Boolean(String(tx.orderNr || '').trim());
+      /* Pure POS = receipt zonder ordernr (geen weborder) */
+      if (!hasReceipt || hasOrderNr) continue;
+      const ts = new Date(tx.dateTime || tx.date || 0);
+      const total = Number(tx.total || 0);
+      if (ts >= today) { storeOrders++; storeRevenue += total; }
+      else if (ts >= yesterday) { storeOrdersY++; storeRevenueY += total; }
+    }
+  } catch (e) { srsError = e.message || 'SRS fetch failed'; }
+
+  /* Combineer voor de KPI "totale omzet" */
+  const webshopNet = webshopRevenue - webshopRefunded - webshopCancelled;
+  const webshopNetY = webshopRevenueY - webshopRefundedY - webshopCancelledY;
+  const revenue = storeRevenue + webshopNet;
+  const yesterdayRevenue = storeRevenueY + webshopNetY;
+  const newOrders = webshopOrders;          /* "nieuwe orders" blijft = web-orders (kassa heeft geen 'order' concept) */
+  const yesterdayOrders = webshopOrdersY;
 
   /* New customers — uit mail-log heuristisch (welcome mails) of niet vulbaar zonder Shopify Customers API */
   let newCustomers = 0;
@@ -92,10 +144,13 @@ export default async function handler(req, res) {
           : 'SHOPIFY_STORE_DOMAIN ontbreekt in Vercel env-vars.'),
     metrics: {
       newOrders: { value: newOrders, prev: yesterdayOrders, trendPct: trend(newOrders, yesterdayOrders) },
-      revenue:   { value: revenue,   prev: yesterdayRevenue, trendPct: trend(revenue, yesterdayRevenue) },
+      revenue:   { value: Number(revenue.toFixed(2)), prev: Number(yesterdayRevenue.toFixed(2)), trendPct: trend(revenue, yesterdayRevenue) },
+      storeRevenue:   { value: Number(storeRevenue.toFixed(2)), prev: Number(storeRevenueY.toFixed(2)), trendPct: trend(storeRevenue, storeRevenueY), orders: storeOrders },
+      webshopRevenue: { value: Number(webshopNet.toFixed(2)), prev: Number(webshopNetY.toFixed(2)), trendPct: trend(webshopNet, webshopNetY), orders: webshopOrders, refunded: Number(webshopRefunded.toFixed(2)), cancelled: Number(webshopCancelled.toFixed(2)) },
       newCustomers: { value: newCustomers, prev: null, trendPct: null },
       refunds:   { value: refunds, prev: null, trendPct: null }
-    }
+    },
+    srsError
   });
 }
 
