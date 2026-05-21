@@ -55,9 +55,11 @@ function detectQueryKind(q) {
   if (v.length < 2) return 'short';
   /* Spaces → vrije-tekst / naam-zoek */
   if (/\s/.test(v)) return 'name';
-  /* Volledig numeriek? */
+  /* Volledig numeriek? Voor lengte-vergelijking strippen we leading zeros,
+     anders zou "00000008" (artikelcode met padding) als barcode worden gezien. */
   if (/^\d+$/.test(v)) {
-    if (v.length <= 7) return 'artikelcode';
+    const stripped = v.replace(/^0+(?=\d)/, '');
+    if (stripped.length <= 7) return 'artikelcode';
     return 'barcode';
   }
   /* Identifier (SKU-stijl) = MOET cijfers of separator bevatten — pure letters
