@@ -21,6 +21,38 @@ function parseBody(req) {
 
 function clean(v) { return String(v || '').trim(); }
 
+/* Bepaal de portal-URL waar naartoe geredirect moet worden na succes.
+   - Default: /pages/winkel-portaal op de Shopify-storefront (gents-production.myshopify.com)
+   - Override met env PORTAL_REDIRECT_URL (absolute URL)
+   - Via ?next= query param op de set-password call
+   - preview_theme_id wordt automatisch doorgegeven als die op de GET stond */
+function getPortalUrl(req) {
+  const previewId = clean(req.query?.preview_theme_id);
+  const fromQuery = clean(req.query?.next);
+  if (fromQuery && /^https?:\/\//.test(fromQuery)) {
+    return previewId && !fromQuery.includes('preview_theme_id')
+      ? `${fromQuery}${fromQuery.includes('?') ? '&' : '?'}preview_theme_id=${encodeURIComponent(previewId)}`
+      : fromQuery;
+  }
+  const fromEnv = clean(process.env.PORTAL_REDIRECT_URL || process.env.PORTAL_BASE_URL);
+  let baseUrl;
+  if (fromEnv) {
+    baseUrl = fromEnv.endsWith('/pages/winkel-portaal')
+      ? fromEnv
+      : `${fromEnv.replace(/\/$/, '')}/pages/winkel-portaal`;
+  } else {
+    /* Default: Shopify-storefront op gents-production.myshopify.com.
+       (Set-password endpoint draait op Vercel — die hostname willen we NIET
+       als redirect-target. De portal staat op het Shopify-domain.) */
+    const shopifyDomain = clean(process.env.SHOPIFY_STORE_URL || 'gents-production.myshopify.com').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    baseUrl = `https://${shopifyDomain}/pages/winkel-portaal`;
+  }
+  if (previewId) {
+    baseUrl += `${baseUrl.includes('?') ? '&' : '?'}preview_theme_id=${encodeURIComponent(previewId)}`;
+  }
+  return baseUrl;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -80,12 +112,14 @@ export default async function handler(req, res) {
           <p>Vraag de beheerder om een nieuwe uitnodiging te sturen via <strong>Gebruikersbeheer → Nieuwe uitnodiging</strong>.</p>`
       }));
     }
+    const portalUrl = getPortalUrl(req);
     return res.status(200).end(renderHtmlPage({
       title: 'Wachtwoord instellen',
       body: `<h1>Welkom, ${escapeHtml(user.name || user.email)}!</h1>
         <p>Stel hieronder je eigen wachtwoord in voor het GENTS Portaal. Minimaal 8 tekens.</p>
         <form id="setpwd-form" method="POST" action="/api/auth/set-password">
           <input type="hidden" name="token" value="${escapeHtml(token)}">
+          <input type="hidden" name="next" value="${escapeHtml(portalUrl)}">
           <label for="pwd">Wachtwoord</label>
           <input type="password" id="pwd" name="password" required minlength="8" autocomplete="new-password" autofocus>
           <div class="pwd-hint">Minimaal 8 tekens. Tip: gebruik een zin van 3+ woorden.</div>
@@ -99,6 +133,7 @@ export default async function handler(req, res) {
           const form = document.getElementById('setpwd-form');
           const msg = document.getElementById('msg');
           const btn = document.getElementById('btn');
+          const PORTAL_URL = ${JSON.stringify(portalUrl)};
           form.addEventListener('submit', async (e) => {
             e.preventDefault();
             msg.innerHTML = '';
@@ -111,12 +146,15 @@ export default async function handler(req, res) {
               const r = await fetch('/api/auth/set-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: form.token.value, password: pwd })
+                body: JSON.stringify({ token: form.token.value, password: pwd, next: PORTAL_URL })
               });
               const d = await r.json();
               if (d.success) {
-                msg.innerHTML = '<div class="ok">Wachtwoord opgeslagen. Je kan nu inloggen via het portaal.</div>';
+                const target = d.redirect || PORTAL_URL;
+                msg.innerHTML = '<div class="ok">✓ Wachtwoord opgeslagen — je wordt doorgestuurd naar het portaal…<br><small>Werkt 'm niet? <a href="' + target + '">Klik hier</a></small></div>';
                 form.querySelectorAll('input,button').forEach(el => el.disabled = true);
+                btn.textContent = 'Doorsturen…';
+                setTimeout(() => { window.location.href = target; }, 1500);
               } else {
                 msg.innerHTML = '<div class="err">' + (d.message || 'Opslaan mislukt') + '</div>';
                 btn.disabled = false; btn.textContent = 'Wachtwoord opslaan';
@@ -149,11 +187,31 @@ export default async function handler(req, res) {
         targetName: user.name,
         note: 'Wachtwoord ingesteld via invite-token'
       }).catch(() => {});
+      /* Redirect-URL bepalen: uit body (next) of fallback naar getPortalUrl(req).
+         Veiligheid: alleen redirect naar onze eigen domains / relatieve paths. */
+      let redirectUrl = clean(body.next) || getPortalUrl(req);
+      if (redirectUrl && /^https?:\/\//.test(redirectUrl)) {
+        const allowedHosts = [
+          clean(req.headers['x-forwarded-host'] || req.headers.host),
+          'gents-production.myshopify.com',
+          'gents.nl',
+          'www.gents.nl'
+        ].filter(Boolean);
+        try {
+          const u = new URL(redirectUrl);
+          if (!allowedHosts.some((h) => u.host === h || u.host.endsWith('.' + h))) {
+            redirectUrl = getPortalUrl(req);
+          }
+        } catch {
+          redirectUrl = getPortalUrl(req);
+        }
+      }
       return res.status(200).json({
         success: true,
         message: 'Wachtwoord opgeslagen. Je kan nu inloggen.',
         userId: user.userId,
-        email: user.email
+        email: user.email,
+        redirect: redirectUrl
       });
     } catch (error) {
       console.error('[auth/set-password] error:', error);
