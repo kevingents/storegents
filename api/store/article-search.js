@@ -40,13 +40,76 @@ import { readProductsCache } from '../../lib/shopify-products-cache.js';
 function clean(v) { return String(v || '').trim(); }
 function lower(v) { return clean(v).toLowerCase(); }
 
+/**
+ * Detecteer wat voor soort zoekterm de gebruiker heeft ingegeven.
+ *  - artikelcode  → korte numeriek, 3-7 cijfers (bv. "12345", "8", "0008")
+ *                   GENTS-medewerkers gebruiken dit het meest. Skip barcode-match.
+ *  - barcode      → lange numeriek, 8+ cijfers (EAN-13 etc.)
+ *  - identifier   → letter+cijfer combinatie zonder spaties (SKU-stijl)
+ *  - name         → vrije tekst (1+ woorden, kan spaties bevatten)
+ *  - short        → te kort voor zinvolle search
+ */
+function detectQueryKind(q) {
+  const v = clean(q);
+  if (!v) return 'empty';
+  if (v.length < 2) return 'short';
+  /* Spaces → vrije-tekst / naam-zoek */
+  if (/\s/.test(v)) return 'name';
+  /* Volledig numeriek? */
+  if (/^\d+$/.test(v)) {
+    if (v.length <= 7) return 'artikelcode';
+    return 'barcode';
+  }
+  /* Letter+cijfer combinatie zonder spaties → identifier (SKU-stijl) */
+  if (/^[A-Za-z0-9._/\\-]+$/.test(v) && v.length >= 3) return 'identifier';
+  return 'name';
+}
+
+/**
+ * Strip leading zeros voor artikelcode-matching ("00000008" matched "8").
+ */
+function stripLeadingZeros(v) {
+  return String(v || '').replace(/^0+(?=\d)/, '');
+}
+
+/**
+ * Match een article tegen een artikelcode-query (korte numeriek).
+ * Match alleen op articleNumber / sku / srsArtikelId / srsRveArtikelnummer.
+ * EXPLICIET NIET op barcode — gebruiker wil dat niet.
+ */
+function matchesArtikelcode(article, q) {
+  const target = lower(stripLeadingZeros(q));
+  const candidates = [article.articleNumber, article.sku, article.srsArtikelId, article.srsRveArtikelnummer];
+  for (const c of candidates) {
+    const val = lower(stripLeadingZeros(c));
+    if (!val) continue;
+    if (val === target) return true;                  /* exact match */
+    if (val.endsWith(target) && target.length >= 3) return true; /* trailing match (handig voor leading-zero variaties) */
+    if (val.includes(target) && target.length >= 4) return true; /* contains, min 4 cijfers anders te losse match */
+  }
+  return false;
+}
+
+/**
+ * Match een article tegen een barcode-query.
+ * Match alleen op barcode.
+ */
+function matchesBarcode(article, q) {
+  const target = lower(q);
+  const bc = lower(article.barcode);
+  if (!bc) return false;
+  return bc === target || bc.endsWith(target);
+}
+
+/**
+ * Bouw haystack voor name-search — bevat ALLE doorzoekbare velden.
+ */
 function buildHaystack(article) {
   return [
     article.title, article.color, article.size,
     article.articleNumber, article.barcode, article.sku,
     article.vendor, article.productType, article.descriptionPlain,
-    /* SRSERP metafields uit Shopify — zoeken op artikel-id, rve-nummer,
-       subgroep en hoofdgroep-omschrijving werkt nu ook */
+    /* SRSERP metafields uit Shopify */
     article.srsArtikelId, article.srsRveArtikelnummer,
     article.subgroep, article.hoofdgroep, article.hoofdgroepOmschrijving
   ].map((v) => lower(v)).join(' ');
@@ -56,6 +119,27 @@ function rowMatchesAllWords(article, words) {
   if (!words.length) return true;
   const hay = buildHaystack(article);
   return words.every((w) => hay.includes(w));
+}
+
+/**
+ * Combineer alle match-strategieën o.b.v. query-kind.
+ */
+function matchesQuery(article, q, kind, searchWords) {
+  if (!q) return true;
+  switch (kind) {
+    case 'artikelcode':
+      /* Korte numeriek → alleen artikelcode-velden, NIET barcode */
+      return matchesArtikelcode(article, q);
+    case 'barcode':
+      /* Lange numeriek → alleen barcode */
+      return matchesBarcode(article, q);
+    case 'identifier':
+      /* Alphanumeriek zonder spaties → eerst artikelcode-velden, fallback name-search */
+      return matchesArtikelcode(article, q) || rowMatchesAllWords(article, searchWords);
+    case 'name':
+    default:
+      return rowMatchesAllWords(article, searchWords);
+  }
 }
 
 export default async function handler(req, res) {
@@ -76,7 +160,15 @@ export default async function handler(req, res) {
   const limit = Math.min(100, Math.max(1, Number(req.query.limit || 24)));
   const onlyAvailable = String(req.query.available || '') === '1';
 
+  const queryKind = detectQueryKind(q);
   const searchWords = q ? q.toLowerCase().split(/\s+/).filter((w) => w.length >= 2) : [];
+
+  if (queryKind === 'short') {
+    return res.status(400).json({
+      success: false,
+      message: 'Zoekterm te kort — minimaal 2 tekens.'
+    });
+  }
 
   try {
     /* Parallel: alle branch-snapshots + Shopify product cache */
@@ -179,9 +271,9 @@ export default async function handler(req, res) {
       subgroepen: facetMap('subgroep')
     };
 
-    /* Filters toepassen */
-    if (q && searchWords.length) {
-      articles = articles.filter((a) => rowMatchesAllWords(a, searchWords));
+    /* Filters toepassen — gebruik query-kind specifieke matcher */
+    if (q) {
+      articles = articles.filter((a) => matchesQuery(a, q, queryKind, searchWords));
     }
     if (colorFilter) {
       articles = articles.filter((a) => lower(a.color) === colorFilter);
@@ -232,6 +324,7 @@ export default async function handler(req, res) {
       success: true,
       query: {
         q,
+        kind: queryKind, /* 'artikelcode' | 'barcode' | 'identifier' | 'name' */
         color: req.query.color || '',
         size: req.query.size || '',
         hoofdgroep: req.query.hoofdgroep || '',
