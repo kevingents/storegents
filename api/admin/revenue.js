@@ -127,12 +127,24 @@ function aggregate(orders, storeFilter, range) {
   const productMap = new Map();
   const dayMap = new Map();
 
+  let cancelledRevenue = 0;
+  let cancelledCount = 0;
+
   orders.forEach(o => {
     const store = inferStore(o);
     if (storeFilter && store !== storeFilter) return;
 
     const total = Number(o.total_price || 0);
     const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);
+    const isCancelled = Boolean(o.cancelled_at);
+
+    /* Cancellations: tel apart zodat ze van webshop-omzet kunnen worden
+       afgetrokken. Shopify zet cancelled_at maar laat total_price staan,
+       dus zonder deze aftrek krijg je geïnflateerde webshop-omzet. */
+    if (isCancelled) {
+      cancelledRevenue += total;
+      cancelledCount += 1;
+    }
 
     totalRevenue += total;
     refundedRevenue += refunded;
@@ -158,15 +170,21 @@ function aggregate(orders, storeFilter, range) {
     dayMap.set(day, dayCur);
   });
 
+  /* Webshop-omzet = bruto - retouren - geannuleerd (per business-regel) */
+  const netRevenue = totalRevenue - refundedRevenue - cancelledRevenue;
+
   return {
     totalRevenue: Number(totalRevenue.toFixed(2)),
     refundedRevenue: Number(refundedRevenue.toFixed(2)),
-    netRevenue: Number((totalRevenue - refundedRevenue).toFixed(2)),
+    cancelledRevenue: Number(cancelledRevenue.toFixed(2)),
+    cancelledCount,
+    netRevenue: Number(netRevenue.toFixed(2)),
     orderCount,
     avgOrderValue: orderCount ? Number((totalRevenue / orderCount).toFixed(2)) : 0,
     perStore: [...storeMap.values()].sort((a, b) => b.revenue - a.revenue),
     topProducts: [...productMap.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
-    byDay: [...dayMap.values()].sort((a, b) => a.day.localeCompare(b.day))
+    byDay: [...dayMap.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    revenueSourceLabel: 'Webshop (orders − retouren − geannuleerd)'
   };
 }
 

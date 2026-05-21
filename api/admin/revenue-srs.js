@@ -84,14 +84,17 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
     const storeName = getStoreNameByBranchId(branchId);
     if (storeFilter && storeName !== storeFilter) continue;
 
-    /* Bonnen-filter: transactie moet een receiptNr hebben (=bon afgedrukt
-       op kassa). Pure webshop-orders zonder bon (alleen orderNr) worden
-       NIET als winkel-omzet geteld — die zijn webshop-omzet. Een webshop-
-       order die afgehaald wordt in de winkel heeft WEL een receiptNr en
-       telt dus mee. */
+    /* Bonnen-filter (winkel-omzet): alleen PURE POS-aankopen tellen mee.
+       Business-regel: alle omzet gekocht in de winkel gaat naar de winkel.
+       Weborders (incl. afhalingen in winkel) horen bij webshop-omzet, niet
+       winkel — ook al is er een bon. Dus filter:
+       - ✓ Pure POS: receiptNr + GEEN orderNr → winkel-omzet
+       - ✗ Webshop-pickup: receiptNr + orderNr → webshop (niet winkel)
+       - ✗ Pure web: GEEN receiptNr + orderNr → webshop (niet winkel)
+    */
     const hasReceipt = Boolean(String(tx.receiptNr || '').trim());
-    const hasOrderOnly = Boolean(String(tx.orderNr || '').trim()) && !hasReceipt;
-    if (excludeWeborders && hasOrderOnly) {
+    const hasOrderNr = Boolean(String(tx.orderNr || '').trim());
+    if (excludeWeborders && (!hasReceipt || hasOrderNr)) {
       skippedWeborders += 1;
       skippedWeborderRevenue += Number(tx.total || 0);
       continue;
@@ -134,10 +137,11 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
     orderCount,
     avgOrderValue: orderCount ? Number((totalRevenue / orderCount).toFixed(2)) : 0,
     itemsSold,
-    /* Diagnostiek: hoeveel weborder-omzet werd uitgesloten (excludeWeborders=true) */
+    /* Diagnostiek: hoeveel weborder-omzet werd uitgesloten (excludeWeborders=true)
+       Dit is webshop-omzet en moet apart worden geboekt (zie /api/admin/webshop-revenue). */
     excludedWeborderCount: skippedWeborders,
     excludedWeborderRevenue: Number(skippedWeborderRevenue.toFixed(2)),
-    revenueSourceLabel: 'Bonnen (kassa-transacties, excl. puur web-orders)',
+    revenueSourceLabel: 'Winkel-bonnen (pure POS-aankopen, excl. alle weborders)',
     perStore: [...storeMap.values()]
       .map((s) => ({ ...s, revenue: Number(s.revenue.toFixed(2)) }))
       .sort((a, b) => b.revenue - a.revenue),
