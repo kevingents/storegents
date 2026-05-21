@@ -1,6 +1,7 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { verifyTwoFactorCode } from '../../lib/office-users-store.js';
 import { getUserPermissions } from '../../lib/user-permissions-store.js';
+import { resolveAfdelingForDepartment } from '../../lib/department-afdeling-map.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 
 /**
@@ -76,9 +77,11 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
-    /* Lees user-permissions voor allowedStoresOverride */
+    /* Lees user-permissions + bepaal defaultAfdeling op basis van department */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+    const department = perm?.department || user.department || '';
+    const defaultAfdeling = resolveAfdelingForDepartment(department);
 
     return res.status(200).json({
       success: true,
@@ -86,9 +89,10 @@ export default async function handler(req, res) {
         userId: user.userId,
         name: user.name,
         email: user.email,
-        department: user.department || '',
+        department,
         active: user.active !== false,
         allowedStores,
+        defaultAfdeling,
         role: perm?.role || 'office'
       }
     });

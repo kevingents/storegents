@@ -5,6 +5,7 @@ import {
   isTwoFactorEnabled
 } from '../../lib/office-users-store.js';
 import { getUserPermissions } from '../../lib/user-permissions-store.js';
+import { resolveAfdelingForDepartment } from '../../lib/department-afdeling-map.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
 
@@ -105,11 +106,11 @@ export default async function handler(req, res) {
       request: req
     }).catch(() => {});
 
-    /* Lees user-permissions voor allowedStoresOverride — frontend filtert
-       de store-switcher op deze lijst zodat office-users niet alle winkels
-       kunnen kiezen waarvoor ze geen toegang hebben. */
+    /* Lees user-permissions voor allowedStoresOverride + bepaal defaultAfdeling */
     const perm = await getUserPermissions(user.userId).catch(() => null);
     const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+    const department = perm?.department || user.department || '';
+    const defaultAfdeling = resolveAfdelingForDepartment(department);
 
     return res.status(200).json({
       success: true,
@@ -118,9 +119,10 @@ export default async function handler(req, res) {
         userId: user.userId,
         name: user.name,
         email: user.email,
-        department: user.department || '',
+        department,
         active: user.active !== false,
         allowedStores,
+        defaultAfdeling, /* bv. 'Supplychain' bij department='Logistiek / magazijn' */
         role: perm?.role || 'office'
       }
     });
