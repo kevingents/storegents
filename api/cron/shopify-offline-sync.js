@@ -3,9 +3,11 @@ import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 import {
   findShopifyCustomerByEmail,
   isTransactionAlreadySynced,
-  createOfflineOrderInShopify
+  createOfflineOrderInShopify,
+  readSyncState,
+  writeSyncState,
+  appendSyncHistoryRun
 } from '../../lib/shopify-offline-sync.js';
-import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 
 /**
  * GET /api/cron/shopify-offline-sync
@@ -26,7 +28,6 @@ import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
  * Failed customers worden in state opgeslagen zodat volgende run anderen pakt.
  */
 
-const STATE_PATH = 'shopify-offline-sync/state.json';
 const DEFAULT_LOOKBACK_DAYS = 1;
 const DEFAULT_MAX_RUNTIME_MS = 50000;
 const DEFAULT_MAX_CUSTOMERS = 25;
@@ -46,25 +47,6 @@ function isAuthorizedCron(req) {
   if (adminToken && (queryAdminToken === adminToken || headerAdminToken === adminToken)) return true;
   if (!expected) return userAgent.includes('vercel-cron/1.0');
   return authHeader === `Bearer ${expected}` || querySecret === expected;
-}
-
-async function readState() {
-  return readJsonBlob(STATE_PATH, {
-    lastRunAt: null,
-    lastSuccessAt: null,
-    processedCustomers: 0,
-    createdOrders: 0,
-    errors: 0,
-    skippedNoEmail: 0,
-    skippedNoShopify: 0
-  });
-}
-
-async function writeState(state) {
-  await writeJsonBlob(STATE_PATH, {
-    ...state,
-    lastRunAt: new Date().toISOString()
-  });
 }
 
 /* Email-lookup-cache: getCustomers per customerId om email te krijgen.
@@ -191,8 +173,8 @@ export default async function handler(req, res) {
     }
 
     /* Stap 4: state bijwerken */
-    const prevState = await readState();
-    await writeState({
+    const prevState = await readSyncState();
+    await writeSyncState({
       ...prevState,
       lastSuccessAt: new Date().toISOString(),
       processedCustomers: stats.processedCustomers,
@@ -203,6 +185,27 @@ export default async function handler(req, res) {
     });
 
     const runtimeMs = Date.now() - startedAt;
+    const message = `${stats.createdOrders} orders aangemaakt voor ${stats.processedCustomers} klanten (${stats.alreadySynced} al synced, ${stats.skippedNoEmail} zonder email, ${stats.skippedNoShopify} niet in Shopify, ${stats.errors} fouten)`;
+
+    /* Stap 5: history-log toevoegen */
+    await appendSyncHistoryRun({
+      success: true,
+      durationMs: runtimeMs,
+      dryRun,
+      lookbackDays,
+      transactionsInPeriod: stats.transactionsInPeriod,
+      uniqueCustomersWithTx: stats.uniqueCustomersWithTx,
+      processedCustomers: stats.processedCustomers,
+      createdOrders: stats.createdOrders,
+      alreadySynced: stats.alreadySynced,
+      skippedNoEmail: stats.skippedNoEmail,
+      skippedNoShopify: stats.skippedNoShopify,
+      errors: stats.errors,
+      errorDetails: stats.errorDetails || [],
+      message,
+      triggeredBy: clean(req.query.adminToken || req.query.admin_token) ? 'admin' : 'cron'
+    }).catch((e) => console.warn('[shopify-offline-sync] history-log failed', e.message));
+
     return res.status(200).json({
       success: true,
       mode: 'shopify_offline_sync',
@@ -212,14 +215,26 @@ export default async function handler(req, res) {
       until,
       stats,
       runtimeMs,
-      message: `${stats.createdOrders} orders aangemaakt voor ${stats.processedCustomers} klanten (${stats.alreadySynced} al synced, ${stats.skippedNoEmail} zonder email, ${stats.skippedNoShopify} niet in Shopify, ${stats.errors} fouten)`
+      message
     });
   } catch (error) {
     console.error('[cron/shopify-offline-sync] error:', error);
+    const runtimeMs = Date.now() - startedAt;
+    /* Ook bij fail loggen */
+    await appendSyncHistoryRun({
+      success: false,
+      durationMs: runtimeMs,
+      dryRun,
+      lookbackDays,
+      message: error.message || 'Cron offline-sync mislukt.',
+      errors: 1,
+      errorDetails: [{ message: error.message || 'Onbekend' }],
+      triggeredBy: clean(req.query.adminToken || req.query.admin_token) ? 'admin' : 'cron'
+    }).catch(() => {});
     return res.status(500).json({
       success: false,
       message: error.message || 'Cron offline-sync mislukt.',
-      runtimeMs: Date.now() - startedAt
+      runtimeMs
     });
   }
 }
