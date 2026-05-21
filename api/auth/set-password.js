@@ -8,7 +8,12 @@ import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
  * Geen admin-token nodig (publieke pagina) — auth via invite-token.
  *
  * Het token wordt door /api/admin/office-users/invite gegenereerd en
- * gemaild naar de user. Token is geldig voor 7 dagen.
+ * gemaild naar de user. Token is geldig voor 2 dagen (INVITE_TTL_MS env).
+ *
+ * Wanneer de admin opnieuw een invite verstuurt naar dezelfde gebruiker,
+ * wordt de oude token vervangen. Een klik op een verouderde link leidt
+ * dan naar de "Link is verlopen"-pagina met daarop een formulier om
+ * zelf een nieuwe invite aan te vragen via /api/auth/request-invite.
  */
 
 function parseBody(req) {
@@ -108,8 +113,45 @@ export default async function handler(req, res) {
       return res.status(400).end(renderHtmlPage({
         title: 'Ongeldige link',
         body: `<h1>Link is verlopen of ongeldig</h1>
-          <p>De uitnodigings-link werkt niet meer. Mogelijk is hij meer dan 7 dagen oud, of is het wachtwoord al eerder ingesteld.</p>
-          <p>Vraag de beheerder om een nieuwe uitnodiging te sturen via <strong>Gebruikersbeheer → Nieuwe uitnodiging</strong>.</p>`
+          <p>De uitnodigings-link werkt niet meer. Mogelijke oorzaken:</p>
+          <ul style="margin:0 0 18px 18px;padding:0;font-size:13.5px;color:#3a4a5a;line-height:1.6">
+            <li>De link is ouder dan 2 dagen.</li>
+            <li>De beheerder heeft een nieuwere invite gestuurd — gebruik dan de laatste mail.</li>
+            <li>Het wachtwoord is al eerder ingesteld (je kunt gewoon inloggen op het portaal).</li>
+          </ul>
+          <div style="padding:14px;background:#f5f5f2;border-radius:10px;margin-bottom:16px;border:1px solid #e1e6eb">
+            <strong style="display:block;font-size:13px;margin-bottom:6px;color:#0a1f33">Zelf nieuwe invite aanvragen</strong>
+            <p style="margin:0 0 12px;font-size:12.5px;color:#3a4a5a;line-height:1.5">Vul je werkmail in en je ontvangt direct een verse link. (Mits het adres bij ons bekend is en je nog geen wachtwoord hebt.)</p>
+            <form id="req-form" onsubmit="event.preventDefault(); reqInvite();" style="display:flex;flex-direction:column;gap:8px">
+              <input type="email" id="req-email" placeholder="naam@gents.nl" autocomplete="email" required style="padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px">
+              <button type="submit" id="req-btn" style="padding:10px;background:#0a1f33;color:#fff;border:0;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Verstuur nieuwe invite</button>
+              <div id="req-msg" style="font-size:12.5px"></div>
+            </form>
+          </div>
+          <p style="font-size:12.5px;color:#3a4a5a">Werkt het nog steeds niet? Vraag de beheerder een nieuwe uitnodiging via <strong>Gebruikers → Reset wachtwoord</strong>.</p>
+          <script>
+            async function reqInvite() {
+              const email = document.getElementById('req-email').value.trim();
+              const btn = document.getElementById('req-btn');
+              const msg = document.getElementById('req-msg');
+              if (!email) return;
+              btn.disabled = true; btn.textContent = 'Verzenden…';
+              msg.innerHTML = '';
+              try {
+                const r = await fetch('/api/auth/request-invite', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ email })
+                });
+                const d = await r.json();
+                msg.innerHTML = '<div style="padding:10px 12px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;border-radius:8px;margin-top:8px">' + (d.message || 'Verstuurd — check je inbox.') + '</div>';
+              } catch (err) {
+                msg.innerHTML = '<div style="padding:10px 12px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:8px;margin-top:8px">Netwerk-fout. Probeer opnieuw.</div>';
+              } finally {
+                btn.disabled = false; btn.textContent = 'Verstuur nieuwe invite';
+              }
+            }
+          </script>`
       }));
     }
     const portalUrl = getPortalUrl(req);
