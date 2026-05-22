@@ -1,5 +1,6 @@
-import openingHoursSyncHandler from '../admin/shopify/sync-google-opening-hours.js';
+import { getConfiguredGoogleStoreLocations, syncGoogleOpeningHoursToShopify } from '../../lib/google-shopify-opening-hours.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { withCronLog } from '../../lib/gents-cron-log-store.js';
 
 async function handler(req, res) {
   if (!['GET', 'POST'].includes(req.method)) {
@@ -8,21 +9,47 @@ async function handler(req, res) {
 
   const cronSecret = process.env.CRON_SECRET || '';
   const header = req.headers.authorization || '';
-  const token = header.replace(/^Bearer\s+/i, '');
+  const token = header.replace(/^Bearer\s+/i, '').trim();
   const isCronAuthorized = !cronSecret || token === cronSecret || req.query.secret === cronSecret;
 
   if (!isCronAuthorized) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
-  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || '12345';
+  const dryRun = String(req.query.dryRun || req.body?.dryRun || '') === 'true';
 
-  if (req.method === 'GET') {
-    req.method = 'POST';
-    req.body = { dryRun: String(req.query.dryRun || '') === 'true' };
+  try {
+    const syncResult = await withCronLog(
+      { job: 'sync-google-opening-hours', source: 'cron', meta: { dryRun } },
+      async () => {
+        const locations = getConfiguredGoogleStoreLocations();
+        const results = [];
+        const errors = [];
+
+        for (const location of locations) {
+          try {
+            const r = await syncGoogleOpeningHoursToShopify(location, { dryRun });
+            results.push(r);
+          } catch (err) {
+            errors.push({ store: location.store || 'onbekend', message: err.message || String(err) });
+          }
+        }
+
+        return {
+          success: errors.length === 0,
+          dryRun,
+          synced: results.length,
+          failed: errors.length,
+          results,
+          errors
+        };
+      }
+    );
+
+    return res.status(syncResult.failed > 0 ? 207 : 200).json(syncResult);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message || 'Synchroniseren mislukt.' });
   }
-
-  return openingHoursSyncHandler(req, res);
 }
 
 export default trackedCron('sync-google-opening-hours', handler);
