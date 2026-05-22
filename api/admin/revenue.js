@@ -55,7 +55,8 @@ export default async function handler(req, res) {
 
     const cur = aggregate(current, storeFilter, range);
     const prev = aggregate(previous, storeFilter, range);
-    const trendPct = prev.totalRevenue ? Number((((cur.totalRevenue - prev.totalRevenue) / prev.totalRevenue) * 100).toFixed(1)) : null;
+    /* Trend op netRevenue (na retouren + annuleringen) — eerlijkere vergelijking */
+    const trendPct = prev.netRevenue ? Number((((cur.netRevenue - prev.netRevenue) / prev.netRevenue) * 100).toFixed(1)) : null;
 
     return res.status(200).json({
       success: true,
@@ -121,14 +122,14 @@ async function fetchShopifyOrders(domain, token, apiVersion, from, to) {
 
 function aggregate(orders, storeFilter, range) {
   let totalRevenue = 0;
-  let refundedRevenue = 0;
-  let orderCount = 0;
+  let refundedRevenue = 0;  /* refunds op NIET-geannuleerde orders */
+  let netRevenue = 0;       /* per order berekend, vermijdt dubbelaftrek */
+  let orderCount = 0;       /* niet-geannuleerde orders */
+  let cancelledRevenue = 0; /* bruto waarde van geannuleerde orders */
+  let cancelledCount = 0;
   const storeMap = new Map();
   const productMap = new Map();
   const dayMap = new Map();
-
-  let cancelledRevenue = 0;
-  let cancelledCount = 0;
 
   orders.forEach(o => {
     const store = inferStore(o);
@@ -138,24 +139,34 @@ function aggregate(orders, storeFilter, range) {
     const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);
     const isCancelled = Boolean(o.cancelled_at);
 
-    /* Cancellations: tel apart zodat ze van webshop-omzet kunnen worden
-       afgetrokken. Shopify zet cancelled_at maar laat total_price staan,
-       dus zonder deze aftrek krijg je geïnflateerde webshop-omzet. */
+    totalRevenue += total;
+
     if (isCancelled) {
+      /* Geannuleerde order: telt NIET mee in netto-omzet.
+         Shopify maakt bij annulering van betaalde orders automatisch een
+         refund-transactie. Als we die ook in refundedRevenue zetten ÉN
+         de cancelledRevenue aftrekken, tellen we dubbel.
+         Oplossing: annulering alleen via cancelledRevenue aftrekken;
+         de bijbehorende refund slaan we NIET op in refundedRevenue. */
       cancelledRevenue += total;
       cancelledCount += 1;
+    } else {
+      /* Actieve order: netto = bruto - eventuele partiële restitutie */
+      refundedRevenue += refunded;
+      netRevenue += (total - refunded);
+      orderCount++;
     }
 
-    totalRevenue += total;
-    refundedRevenue += refunded;
-    orderCount++;
-
+    /* Per-winkel altijd bruto tellen (geannuleerde orders ook, voor informatie) */
     const cur = storeMap.get(store) || { store, revenue: 0, orderCount: 0 };
-    cur.revenue += total;
-    cur.orderCount++;
+    if (!isCancelled) {
+      cur.revenue += (total - refunded);
+      cur.orderCount++;
+    }
     storeMap.set(store, cur);
 
     (o.line_items || []).forEach(li => {
+      if (isCancelled) return;
       const key = li.product_id || li.sku || li.title;
       const cur = productMap.get(key) || { title: li.title, sku: li.sku, quantity: 0, revenue: 0 };
       cur.quantity += Number(li.quantity || 0);
@@ -165,22 +176,21 @@ function aggregate(orders, storeFilter, range) {
 
     const day = String(o.created_at).slice(0, 10);
     const dayCur = dayMap.get(day) || { day, revenue: 0, orderCount: 0 };
-    dayCur.revenue += total;
-    dayCur.orderCount++;
+    if (!isCancelled) {
+      dayCur.revenue += (total - refunded);
+      dayCur.orderCount++;
+    }
     dayMap.set(day, dayCur);
   });
 
-  /* Webshop-omzet = bruto - retouren - geannuleerd (per business-regel) */
-  const netRevenue = totalRevenue - refundedRevenue - cancelledRevenue;
-
   return {
     totalRevenue: Number(totalRevenue.toFixed(2)),
-    refundedRevenue: Number(refundedRevenue.toFixed(2)),
-    cancelledRevenue: Number(cancelledRevenue.toFixed(2)),
+    refundedRevenue: Number(refundedRevenue.toFixed(2)),   /* restitutie op actieve orders */
+    cancelledRevenue: Number(cancelledRevenue.toFixed(2)), /* bruto waarde geannuleerd */
     cancelledCount,
-    netRevenue: Number(netRevenue.toFixed(2)),
+    netRevenue: Number(netRevenue.toFixed(2)),             /* = actieve orders − restitutie */
     orderCount,
-    avgOrderValue: orderCount ? Number((totalRevenue / orderCount).toFixed(2)) : 0,
+    avgOrderValue: orderCount ? Number((netRevenue / orderCount).toFixed(2)) : 0,
     perStore: [...storeMap.values()].sort((a, b) => b.revenue - a.revenue),
     topProducts: [...productMap.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
     byDay: [...dayMap.values()].sort((a, b) => a.day.localeCompare(b.day)),

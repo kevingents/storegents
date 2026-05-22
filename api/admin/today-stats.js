@@ -60,17 +60,21 @@ export default async function handler(req, res) {
           const created = new Date(o.created_at);
           const total = Number(o.total_price || 0);
           const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);
-          const cancelled = o.cancelled_at ? total : 0;
+          /* Fix dubbelaftrek: bij betaalde annuleringen maakt Shopify een automatische
+             refund-transactie. Als we zowel cancelledRevenue als refundedRevenue optellen
+             wordt het bedrag twee keer afgetrokken. Oplossing: per order kiezen:
+             geannuleerd → cancelledRevenue; actief → refundedRevenue. */
+          const isCancelled = Boolean(o.cancelled_at);
           if (created >= today) {
             webshopOrders++;
             webshopRevenue += total;
-            webshopRefunded += refunded;
-            webshopCancelled += cancelled;
+            if (isCancelled) { webshopCancelled += total; }
+            else              { webshopRefunded += refunded; }
           } else if (created >= yesterday) {
             webshopOrdersY++;
             webshopRevenueY += total;
-            webshopRefundedY += refunded;
-            webshopCancelledY += cancelled;
+            if (isCancelled) { webshopCancelledY += total; }
+            else              { webshopRefundedY += refunded; }
           }
           if ((o.refunds || []).some(rf => new Date(rf.created_at) >= today)) refunds++;
         });
