@@ -42,7 +42,8 @@ export default async function handler(req, res) {
         success: true,
         flags,
         known: [
-          { key: 'suitconcer', label: 'Suitconcer B2B', description: 'B2B verkoop-filiaal 702 + magazijn 704. Eigen voorraad, artikelen en orders.' }
+          { key: 'suitconcer', label: 'Suitconcer B2B', description: 'B2B verkoop-filiaal 702 + magazijn 704. Eigen voorraad, artikelen en orders.' },
+          { key: 'reserveringen', label: 'Reserveringen', description: 'Winkelmedewerkers kunnen nieuwe reserveringen aanmaken. GET + statusbeheer blijft altijd werken.' }
         ]
       });
     } catch (error) {

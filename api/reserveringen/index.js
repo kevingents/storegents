@@ -10,6 +10,7 @@
  */
 
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { isFeatureEnabled } from '../../lib/feature-flags-store.js';
 import {
   createReservering,
   getReserveringen,
@@ -71,11 +72,10 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    /* Feature-flag: reserveringen tijdelijk uitgeschakeld i.v.m. SRS-
-       routing/voorraad-issues. Re-enablen door RESERVERINGEN_ENABLED=true
-       in Vercel env te zetten. Bestaande reserveringen blijven beheerbaar
-       (GET + status-updates blijven werken). */
-    if (process.env.RESERVERINGEN_ENABLED !== 'true') {
+    /* Feature-flag: reserveringen aan/uit via admin-portal Instellingen →
+       Feature flags. Bestaande reserveringen blijven beheerbaar (GET +
+       status-updates blijven werken). */
+    if (!(await isFeatureEnabled('reserveringen'))) {
       return res.status(503).json({
         success: false,
         disabled: true,
