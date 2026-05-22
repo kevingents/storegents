@@ -44,7 +44,15 @@ export default async function handler(req, res) {
     const baseUrl = `${proto}://${host}`;
     const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
 
-    const url = `${baseUrl}/api/cron/${encodeURIComponent(key)}?force=true&adminToken=${encodeURIComponent(adminToken)}`;
+    /* Extra query-params die de caller meegeeft (bv. daysBack, maxCustomers) */
+    const extraParams = typeof body.params === 'object' && body.params !== null ? body.params : {};
+    const qs = new URLSearchParams({
+      force: 'true',
+      adminToken,
+      ...Object.fromEntries(Object.entries(extraParams).map(([k, v]) => [k, String(v)]))
+    }).toString();
+
+    const url = `${baseUrl}/api/cron/${encodeURIComponent(key)}?${qs}`;
 
     const r = await fetch(url, {
       method: 'GET',
