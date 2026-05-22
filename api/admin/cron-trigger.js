@@ -38,17 +38,23 @@ export default async function handler(req, res) {
   const startedAt = Date.now();
 
   try {
-    /* Self-call naar de cron-endpoint met ?force=true en admin-token */
+    /* Self-call naar de cron-endpoint met ?force=true en alle token-varianten.
+       Verschillende crons gebruiken verschillende auth-methoden:
+         - requireCronSecret()  → ?secret= / x-cron-secret / Authorization: Bearer
+         - isAdminRequest()     → x-admin-token / ?adminToken=
+       We sturen alles mee zodat elke cron zijn eigen check laat slagen. */
     const proto = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers.host;
     const baseUrl = `${proto}://${host}`;
     const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+    const cronSecret = String(process.env.CRON_SECRET || '').trim();
 
     /* Extra query-params die de caller meegeeft (bv. daysBack, maxCustomers) */
     const extraParams = typeof body.params === 'object' && body.params !== null ? body.params : {};
     const qs = new URLSearchParams({
       force: 'true',
       adminToken,
+      ...(cronSecret ? { secret: cronSecret, token: cronSecret } : {}),
       ...Object.fromEntries(Object.entries(extraParams).map(([k, v]) => [k, String(v)]))
     }).toString();
 
@@ -58,6 +64,11 @@ export default async function handler(req, res) {
       method: 'GET',
       headers: {
         'x-admin-token': adminToken,
+        ...(cronSecret ? {
+          'Authorization': `Bearer ${cronSecret}`,
+          'x-cron-secret': cronSecret,
+          'x-mail-secret': cronSecret
+        } : {}),
         'Accept': 'application/json'
       }
     });
