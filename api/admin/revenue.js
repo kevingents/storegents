@@ -132,6 +132,11 @@ function aggregate(orders, storeFilter, range) {
   const dayMap = new Map();
 
   orders.forEach(o => {
+    /* Offline winkel-bonnen zijn al via SRS storeRevenue meegeteld —
+       haal ze hier weg zodat ze niet dubbel in de Shopify-omzet zitten. */
+    const orderTags = String(o.tags || '').split(',').map(t => t.trim());
+    if (orderTags.includes('gents-offline')) return;
+
     const store = inferStore(o);
     if (storeFilter && store !== storeFilter) return;
 

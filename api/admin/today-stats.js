@@ -57,6 +57,10 @@ export default async function handler(req, res) {
         const d = await r.json();
         const orders = d.orders || [];
         orders.forEach(o => {
+          /* Offline winkel-bonnen via SRS storeRevenue al meegeteld — niet dubbel tellen */
+          const oTags = String(o.tags || '').split(',').map(t => t.trim());
+          if (oTags.includes('gents-offline')) return;
+
           const created = new Date(o.created_at);
           const total = Number(o.total_price || 0);
           const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);
