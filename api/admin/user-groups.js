@@ -7,6 +7,7 @@ import {
   addMember,
   removeMember
 } from '../../lib/user-groups-store.js';
+import { getUserPermissions, upsertUserPermissions } from '../../lib/user-permissions-store.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 
 /**
@@ -73,6 +74,57 @@ export default async function handler(req, res) {
           note: `Verwijderd uit group "${before?.name || key}"`, request: req
         }).catch(() => {});
         return res.status(200).json({ success: true, group: updated });
+      }
+
+      if (action === 'apply-access') {
+        /* Past de accessConfig van een groep toe op één lid (userId)
+           of alle leden (applyToAll: true). Bestaande stores/afdelingen/perms
+           worden uitgebreid — er wordt niets verwijderd tenzij revokedPermissions
+           expliciet ingesteld is in de groep. */
+        const { key, userId, applyToAll } = body;
+        if (!key) return res.status(400).json({ success: false, message: 'key verplicht.' });
+        const group = await getGroup(key);
+        if (!group) return res.status(404).json({ success: false, message: 'Groep niet gevonden.' });
+        if (!group.accessConfig?.enabled) {
+          return res.status(400).json({ success: false, message: 'Groep heeft geen actieve toegangsconfiguratie. Zet "Actief" aan in de groep-editor.' });
+        }
+        const { role, stores, afdelingen, extraPermissions, revokedPermissions } = group.accessConfig;
+        const targets = applyToAll
+          ? (group.memberIds || [])
+          : (userId ? [clean(userId)] : []);
+        if (!targets.length) return res.status(400).json({ success: false, message: 'Geen leden om op toe te passen.' });
+
+        let applied = 0;
+        for (const uid of targets) {
+          try {
+            const cur = await getUserPermissions(uid);
+            const mergedStores = [...new Set([...(cur?.allowedStoresOverride || []), ...(stores || [])])];
+            const mergedAfds = [...new Set([...(cur?.afdelingen || []), ...(afdelingen || [])])];
+            /* afdeling (single) = eerste uit merged array voor backward-compat */
+            const mergedExtra = [...new Set([...(cur?.extraPermissions || []), ...(extraPermissions || [])])];
+            await upsertUserPermissions(uid, {
+              ...(role ? { role } : {}),
+              allowedStoresOverride: mergedStores,
+              afdelingen: mergedAfds,
+              afdeling: mergedAfds[0] || (cur?.afdeling || ''),
+              extraPermissions: mergedExtra,
+              ...(Array.isArray(revokedPermissions) && revokedPermissions.length ? { revokedPermissions } : {})
+            }, actor);
+            applied++;
+          } catch (e) {
+            console.warn(`[user-groups apply-access] uid ${uid} overgeslagen:`, e.message);
+          }
+        }
+
+        await appendAuditEntry({
+          actor, action: 'group-apply-access',
+          targetUserId: applyToAll ? `*${key}` : targets[0],
+          targetName: group.name,
+          note: `accessConfig toegepast op ${applied}/${targets.length} leden`,
+          request: req
+        }).catch(() => {});
+
+        return res.status(200).json({ success: true, applied, total: targets.length });
       }
 
       /* Upsert */
