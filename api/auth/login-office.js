@@ -8,6 +8,7 @@ import { getUserPermissions } from '../../lib/user-permissions-store.js';
 import { resolveAfdelingForDepartment } from '../../lib/department-afdeling-map.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
+import { getPersonnel } from '../../lib/srs-personnel-client.js';
 
 /**
  * POST /api/auth/login-office
@@ -109,7 +110,29 @@ export default async function handler(req, res) {
     /* Lees user-permissions voor allowedStoresOverride + bepaal defaultAfdeling.
        Voorrang: expliciete afdelingen-array > afdeling-veld > department-mapping. */
     const perm = await getUserPermissions(user.userId).catch(() => null);
-    const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+    const override = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+
+    /* Haal ook SRS-winkels op voor medewerkers met een numeriek personeelsnummer.
+       Dit zorgt dat SRS-winkelwijzigingen (bv. extra filiaal toevoegen in SRS)
+       automatisch in de portal-sessie verschijnen zonder handmatige override.
+       Falen van de SRS-call is niet-fataal: we vallen terug op alleen de override. */
+    let srsStores = [];
+    const numericId = /^\d+$/.test(String(user.userId || ''));
+    if (numericId) {
+      try {
+        const persons = await getPersonnel({ personnelId: String(user.userId) });
+        const person = persons.find((p) => String(p.personnelId) === String(user.userId));
+        srsStores = person?.stores || [];
+      } catch (srsErr) {
+        console.warn('[login-office] SRS personnel lookup failed (non-fatal):', srsErr.message);
+      }
+    }
+
+    /* Effectieve winkels = unie van SRS-stores + override (zelfde logica als list.js) */
+    const storeSet = new Set();
+    srsStores.forEach((s) => { if (s) storeSet.add(String(s).trim()); });
+    override.forEach((s) => { if (s) storeSet.add(String(s).trim()); });
+    const allowedStores = [...storeSet].sort((a, b) => a.localeCompare(b, 'nl'));
     const department = perm?.department || user.department || '';
     /* Multi-afdelingen: array van virtuele winkels + 'Admin' waar deze user
        toegang toe heeft. Eerste = login-default. Fallback voor oude data:

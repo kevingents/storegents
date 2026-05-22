@@ -3,6 +3,7 @@ import { verifyTwoFactorCode } from '../../lib/office-users-store.js';
 import { getUserPermissions } from '../../lib/user-permissions-store.js';
 import { resolveAfdelingForDepartment } from '../../lib/department-afdeling-map.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
+import { getPersonnel } from '../../lib/srs-personnel-client.js';
 
 /**
  * POST /api/auth/verify-2fa
@@ -79,7 +80,25 @@ export default async function handler(req, res) {
 
     /* Lees user-permissions + bepaal afdelingen-array + defaultAfdeling. */
     const perm = await getUserPermissions(user.userId).catch(() => null);
-    const allowedStores = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+    const override = Array.isArray(perm?.allowedStoresOverride) ? perm.allowedStoresOverride : [];
+
+    /* Haal SRS-winkels op voor medewerkers met numeriek personeelsnummer (niet-fataal). */
+    let srsStores = [];
+    const numericId = /^\d+$/.test(String(user.userId || ''));
+    if (numericId) {
+      try {
+        const persons = await getPersonnel({ personnelId: String(user.userId) });
+        const person = persons.find((p) => String(p.personnelId) === String(user.userId));
+        srsStores = person?.stores || [];
+      } catch (srsErr) {
+        console.warn('[verify-2fa] SRS personnel lookup failed (non-fatal):', srsErr.message);
+      }
+    }
+
+    const storeSet = new Set();
+    srsStores.forEach((s) => { if (s) storeSet.add(String(s).trim()); });
+    override.forEach((s) => { if (s) storeSet.add(String(s).trim()); });
+    const allowedStores = [...storeSet].sort((a, b) => a.localeCompare(b, 'nl'));
     const department = perm?.department || user.department || '';
     const afdelingen = Array.isArray(perm?.afdelingen) && perm.afdelingen.length
       ? perm.afdelingen
