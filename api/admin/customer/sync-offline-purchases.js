@@ -1,6 +1,6 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../../lib/cors.js';
 import { getTransactions } from '../../../lib/srs-customers-client.js';
-import { getStoreNameByBranchId } from '../../../lib/srs-branch-names.js';
+import { getStoreNameByBranchId } from '../../../lib/branch-metrics.js';
 import {
   findShopifyCustomerByEmail,
   isTransactionAlreadySynced,

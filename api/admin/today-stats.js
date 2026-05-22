@@ -1,5 +1,5 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { getMailLogs } from '../../lib/mail-log-store.js';
+import { getMailLog } from '../../lib/gents-mail-log-store.js';
 import { getTransactions } from '../../lib/srs-customers-client.js';
 
 /**
@@ -120,7 +120,7 @@ export default async function handler(req, res) {
   /* New customers — uit mail-log heuristisch (welcome mails) of niet vulbaar zonder Shopify Customers API */
   let newCustomers = 0;
   try {
-    const logs = await getMailLogs();
+    const logs = await getMailLog();
     newCustomers = logs.filter(l => {
       const dt = new Date(l.createdAt || 0);
       const isToday = dt >= today;
