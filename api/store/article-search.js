@@ -18,6 +18,9 @@ import { readProductsCache } from '../../lib/shopify-products-cache.js';
  *   ?store=GENTS Amsterdam → highlight eigen winkel + sorteer eerst
  *   ?limit=24              → default 24, max 100
  *   ?available=1           → alleen artikelen met >0 voorraad ergens
+ *   ?withStock=0           → SKIP branch-snapshot fetch (instant search, geen stock).
+ *                            Frontend belt daarna /api/store/article-stock voor
+ *                            realtime stock per variant. Aanbevolen voor UI.
  *
  * Response:
  *   {
@@ -129,6 +132,41 @@ function rowMatchesAllWords(article, words) {
 }
 
 /**
+ * Bouw een uniforme result-entry uit een SRS-snapshot row + Shopify match
+ * (of alleen Shopify variant in stockless modus).
+ */
+function buildEntry(srsRow, shopifyMatch) {
+  return {
+    articleNumber: clean(srsRow?.articleNumber || shopifyMatch?.articleNumber || ''),
+    barcode: clean(srsRow?.barcode || shopifyMatch?.barcode || ''),
+    sku: clean(srsRow?.sku || shopifyMatch?.sku || srsRow?.barcode || ''),
+    /* variantId — Shopify GraphQL ID. Frontend gebruikt dit om realtime stock
+       op te halen via /api/store/article-stock. */
+    variantId: clean(shopifyMatch?.variantId || ''),
+    productId: clean(shopifyMatch?.productId || ''),
+    title: clean(shopifyMatch?.title || srsRow?.title || ''),
+    descriptionPlain: shopifyMatch?.descriptionPlain || '',
+    description: shopifyMatch?.description || '',
+    color: clean(srsRow?.color || shopifyMatch?.color || ''),
+    size: clean(srsRow?.size || shopifyMatch?.size || ''),
+    image: shopifyMatch?.image || '',
+    images: shopifyMatch?.images || [],
+    productUrl: shopifyMatch?.productUrl || '',
+    vendor: clean(shopifyMatch?.vendor || ''),
+    productType: clean(shopifyMatch?.productType || ''),
+    price: clean(shopifyMatch?.price || ''),
+    srsArtikelId: clean(shopifyMatch?.srsArtikelId || ''),
+    srsRveArtikelnummer: clean(shopifyMatch?.srsRveArtikelnummer || ''),
+    subgroep: clean(shopifyMatch?.subgroep || ''),
+    hoofdgroep: clean(shopifyMatch?.hoofdgroep || ''),
+    hoofdgroepOmschrijving: clean(shopifyMatch?.hoofdgroepOmschrijving || ''),
+    totalPieces: 0,
+    branchCount: 0,
+    branches: []
+  };
+}
+
+/**
  * Combineer alle match-strategieën o.b.v. query-kind.
  */
 function matchesQuery(article, q, kind, searchWords) {
@@ -166,6 +204,10 @@ export default async function handler(req, res) {
   const ownStore = clean(req.query.store);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit || 24)));
   const onlyAvailable = String(req.query.available || '') === '1';
+  /* withStock=0 → skip branch-snapshot fetch, return resultaten zonder stock-info.
+     Frontend belt daarna /api/store/article-stock voor realtime Shopify stock
+     per variant. Aanbevolen voor UI (instant search). */
+  const withStock = String(req.query.withStock || '1') !== '0';
 
   const queryKind = detectQueryKind(q);
   const searchWords = q ? q.toLowerCase().split(/\s+/).filter((w) => w.length >= 2) : [];
@@ -178,87 +220,85 @@ export default async function handler(req, res) {
   }
 
   try {
-    /* Parallel: alle branch-snapshots + Shopify product cache */
-    const allBranches = listAllBranches();
-    const branchIds = allBranches.map((b) => b.branchId).filter(Boolean);
+    let productMap = new Map();
+    let productsCache;
 
-    const [snapshots, productsCache] = await Promise.all([
-      Promise.all(branchIds.map(async (bid) => {
-        try {
-          const snap = await readBranchSnapshot(bid);
-          return { branchId: bid, snap };
-        } catch {
-          return { branchId: bid, snap: null };
+    if (withStock) {
+      /* === Volle modus: aggregeer per articleNumber/barcode over branch-snapshots. === */
+      const allBranches = listAllBranches();
+      const branchIds = allBranches.map((b) => b.branchId).filter(Boolean);
+      let snapshots;
+      [snapshots, productsCache] = await Promise.all([
+        Promise.all(branchIds.map(async (bid) => {
+          try {
+            const snap = await readBranchSnapshot(bid);
+            return { branchId: bid, snap };
+          } catch {
+            return { branchId: bid, snap: null };
+          }
+        })),
+        readProductsCache()
+      ]);
+
+      for (const { branchId, snap } of snapshots) {
+        if (!snap || !Array.isArray(snap.rows)) continue;
+        const branchName = getStoreNameByBranchId(branchId);
+
+        for (const r of snap.rows) {
+          const key = lower(r.articleNumber || r.sku || r.barcode);
+          if (!key) continue;
+
+          const shopifyMatch = productsCache.byBarcode?.[lower(r.barcode)]
+            || productsCache.bySku?.[lower(r.sku)]
+            || productsCache.bySrsArticleNumber?.[lower(r.articleNumber)]
+            || productsCache.bySrsArtikelId?.[lower(r.articleNumber)]
+            || productsCache.bySrsRveArtikelnummer?.[lower(r.articleNumber)]
+            || null;
+
+          let entry = productMap.get(key);
+          if (!entry) {
+            entry = buildEntry(r, shopifyMatch);
+            productMap.set(key, entry);
+          }
+
+          const pieces = Number(r.pieces || 0);
+          entry.totalPieces += pieces;
+          entry.branches.push({
+            branchId,
+            store: branchName,
+            pieces,
+            isOwn: ownStore && branchName === ownStore,
+            type: isWarehouseStore(branchName) ? 'warehouse' : 'retail'
+          });
+          if (pieces > 0) entry.branchCount += 1;
         }
-      })),
-      readProductsCache()
-    ]);
-
-    /* Aggregeer per articleNumber/barcode over alle branches */
-    const productMap = new Map();
-
-    for (const { branchId, snap } of snapshots) {
-      if (!snap || !Array.isArray(snap.rows)) continue;
-      const branchName = getStoreNameByBranchId(branchId);
-
-      for (const r of snap.rows) {
-        const key = lower(r.articleNumber || r.sku || r.barcode);
-        if (!key) continue;
-
-        /* Join met Shopify cache voor foto + omschrijving + SRSERP metafields */
-        const shopifyMatch = productsCache.byBarcode?.[lower(r.barcode)]
-          || productsCache.bySku?.[lower(r.sku)]
-          || productsCache.bySrsArticleNumber?.[lower(r.articleNumber)]
-          || productsCache.bySrsArtikelId?.[lower(r.articleNumber)]
-          || productsCache.bySrsRveArtikelnummer?.[lower(r.articleNumber)]
-          || null;
-
-        let entry = productMap.get(key);
-        if (!entry) {
-          entry = {
-            articleNumber: clean(r.articleNumber || ''),
-            barcode: clean(r.barcode || ''),
-            sku: clean(r.sku || r.barcode || ''),
-            title: clean(shopifyMatch?.title || r.title || ''),
-            descriptionPlain: shopifyMatch?.descriptionPlain || '',
-            description: shopifyMatch?.description || '',
-            color: clean(r.color || shopifyMatch?.color || ''),
-            size: clean(r.size || shopifyMatch?.size || ''),
-            image: shopifyMatch?.image || '',
-            images: shopifyMatch?.images || [],
-            productUrl: shopifyMatch?.productUrl || '',
-            vendor: clean(shopifyMatch?.vendor || ''),
-            productType: clean(shopifyMatch?.productType || ''),
-            price: clean(shopifyMatch?.price || ''),
-            /* SRSERP metafields uit Shopify (gedeeld door alle varianten) */
-            srsArtikelId: clean(shopifyMatch?.srsArtikelId || ''),
-            srsRveArtikelnummer: clean(shopifyMatch?.srsRveArtikelnummer || ''),
-            subgroep: clean(shopifyMatch?.subgroep || ''),
-            hoofdgroep: clean(shopifyMatch?.hoofdgroep || ''),
-            hoofdgroepOmschrijving: clean(shopifyMatch?.hoofdgroepOmschrijving || ''),
-            totalPieces: 0,
-            branchCount: 0,
-            branches: []
-          };
-          productMap.set(key, entry);
-        }
-
-        const pieces = Number(r.pieces || 0);
-        entry.totalPieces += pieces;
-        entry.branches.push({
-          branchId,
-          store: branchName,
-          pieces,
-          isOwn: ownStore && branchName === ownStore,
-          type: isWarehouseStore(branchName) ? 'warehouse' : 'retail'
-        });
-        if (pieces > 0) entry.branchCount += 1;
+      }
+    } else {
+      /* === Stockless modus: itereer Shopify products cache direct.
+            Ultra-snel (<100ms), geen branch-snapshot reads. Frontend lazy-loadt
+            de stock per zichtbare kaart via /api/store/article-stock. */
+      productsCache = await readProductsCache();
+      const seen = new Set();
+      const allVariants = Object.values(productsCache.byBarcode || {});
+      for (const v of allVariants) {
+        const key = lower(v.barcode || v.sku || v.articleNumber);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        productMap.set(key, buildEntry(v, v));
       }
     }
 
     let articles = Array.from(productMap.values());
 
-    /* Facets bouwen (vóór filtering — zo zien gebruikers welke filters er zijn) */
+    /* Filters toepassen — gebruik query-kind specifieke matcher */
+    if (q) {
+      articles = articles.filter((a) => matchesQuery(a, q, queryKind, searchWords));
+    }
+
+    /* Facets bouwen ná q-filter zodat counts kloppen met wat de gebruiker
+       ziet zodra hij een facet aanklikt. Color/size/hoofdgroep filters worden
+       hieronder pas toegepast — zo zien gebruikers nog wel welke kleuren/maten
+       beschikbaar zijn bij hun naam-zoek. */
     const facetMap = (key) => {
       const m = new Map();
       for (const a of articles) {
@@ -278,10 +318,6 @@ export default async function handler(req, res) {
       subgroepen: facetMap('subgroep')
     };
 
-    /* Filters toepassen — gebruik query-kind specifieke matcher */
-    if (q) {
-      articles = articles.filter((a) => matchesQuery(a, q, queryKind, searchWords));
-    }
     if (colorFilter) {
       articles = articles.filter((a) => lower(a.color) === colorFilter);
     }
@@ -289,7 +325,6 @@ export default async function handler(req, res) {
       articles = articles.filter((a) => lower(a.size) === sizeFilter);
     }
     if (hoofdgroepFilter) {
-      /* Match op SRSERP-hoofdgroep_omschrijving (prio) of Shopify productType (fallback) */
       articles = articles.filter((a) =>
         lower(a.hoofdgroepOmschrijving) === hoofdgroepFilter
         || lower(a.productType) === hoofdgroepFilter
@@ -298,19 +333,23 @@ export default async function handler(req, res) {
     if (subgroepFilter) {
       articles = articles.filter((a) => lower(a.subgroep) === subgroepFilter);
     }
-    if (onlyAvailable) {
+    if (onlyAvailable && withStock) {
+      /* In stockless modus is dit filter zinloos — laat alles door. Frontend kan
+         na lazy-stock-load zelf nog filteren. */
       articles = articles.filter((a) => a.totalPieces > 0);
     }
 
     /* Sorteer:
-       1. Artikelen met eigen-winkel voorraad eerst
-       2. Daarna totaal aantal stuks aflopend
+       1. (alleen volle modus) Artikelen met eigen-winkel voorraad eerst
+       2. (alleen volle modus) Daarna totaal aantal stuks aflopend
        3. Daarna alfabetisch op titel */
     articles.sort((a, b) => {
-      const ownA = ownStore ? a.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
-      const ownB = ownStore ? b.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
-      if (ownA !== ownB) return ownA ? -1 : 1;
-      if (a.totalPieces !== b.totalPieces) return b.totalPieces - a.totalPieces;
+      if (withStock) {
+        const ownA = ownStore ? a.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
+        const ownB = ownStore ? b.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
+        if (ownA !== ownB) return ownA ? -1 : 1;
+        if (a.totalPieces !== b.totalPieces) return b.totalPieces - a.totalPieces;
+      }
       return String(a.title || '').localeCompare(String(b.title || ''));
     });
 
