@@ -136,6 +136,8 @@ function rowMatchesAllWords(article, words) {
  * (of alleen Shopify variant in stockless modus).
  */
 function buildEntry(srsRow, shopifyMatch) {
+  const productId = clean(shopifyMatch?.productId || '');
+  const colorLower = lower(srsRow?.color || shopifyMatch?.color || '');
   return {
     articleNumber: clean(srsRow?.articleNumber || shopifyMatch?.articleNumber || ''),
     barcode: clean(srsRow?.barcode || shopifyMatch?.barcode || ''),
@@ -143,7 +145,12 @@ function buildEntry(srsRow, shopifyMatch) {
     /* variantId — Shopify GraphQL ID. Frontend gebruikt dit om realtime stock
        op te halen via /api/store/article-stock. */
     variantId: clean(shopifyMatch?.variantId || ''),
-    productId: clean(shopifyMatch?.productId || ''),
+    productId,
+    /* articleKey — unieke identifier per artikel+kleur (gedeeld over maten).
+       Frontend groepeert hier op zodat 1 kaartje per artikel toont, met alle
+       maten als chips eronder. Fallback srsRveArtikelnummer als productId leeg
+       (variant nog niet in Shopify). */
+    articleKey: (productId ? productId + '||' + colorLower : (clean(shopifyMatch?.srsRveArtikelnummer || '') + '||' + colorLower)),
     title: clean(shopifyMatch?.title || srsRow?.title || ''),
     descriptionPlain: shopifyMatch?.descriptionPlain || '',
     description: shopifyMatch?.description || '',
