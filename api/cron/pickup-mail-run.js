@@ -1,7 +1,7 @@
 import { appendMailLog, getMailLog, wasSentRecently } from '../../lib/gents-mail-log-store.js';
 import { ageLabel, operationalDaysBetween } from '../../lib/gents-business-deadline.js';
 import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
-import { getAdminToken, getApiBaseUrl, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { getAdminToken, getApiBaseUrl, getProtectionBypassSecret, getStoreMail, getStoreMailAsync, getStoreNames, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getGroupMailRecipients } from '../../lib/mail-recipient-resolver.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
@@ -46,15 +46,29 @@ async function fetchPickupOrders(req, store) {
   if (!baseUrl) throw new Error('GENTS_API_BASE_URL ontbreekt.');
 
   const url = `${baseUrl}/api/pickup-orders?store=${encodeURIComponent(store)}&status=open&days=14&t=${Date.now()}`;
+  /* Vercel Deployment Protection bypass — zet VERCEL_AUTOMATION_BYPASS_SECRET
+     env-var om interne crons langs deployment protection te laten komen. */
+  const bypass = getProtectionBypassSecret();
+  const headers = {
+    Accept: 'application/json',
+    'x-admin-token': getAdminToken()
+  };
+  if (bypass) {
+    headers['x-vercel-protection-bypass'] = bypass;
+    headers['x-vercel-set-bypass-cookie'] = 'true';
+  }
   const response = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-      'x-admin-token': getAdminToken()
-    },
+    headers,
     signal: AbortSignal.timeout(30000)
   });
 
   const text = await response.text();
+  if (/^\s*<(!doctype|html)/i.test(text)) {
+    const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : 'onbekend';
+    const hint = bypass ? '' : ' — zet VERCEL_AUTOMATION_BYPASS_SECRET env-var';
+    throw new Error(`Endpoint gaf HTML terug (${title} · HTTP ${response.status})${hint}`);
+  }
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (_error) { data = { message: text }; }
 
