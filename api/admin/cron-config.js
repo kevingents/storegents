@@ -2,6 +2,7 @@ import { handleCors, setCorsHeaders, isAdminRequest } from '../../lib/cors.js';
 import {
   KNOWN_CRONS,
   getAllCronConfigs,
+  getAllCronRunStates,
   setCronConfig,
   resetCronConfig,
   getEffectiveCronConfig
@@ -42,22 +43,32 @@ export default async function handler(req, res) {
 
   if (req.method === 'GET') {
     try {
-      const overrides = await getAllCronConfigs();
+      /* Parallel: admin-overrides + per-cron run-states. Run-states zitten in
+         aparte blobs (config/cron-runs/<key>.json) om race-conditions te
+         voorkomen wanneer meerdere crons tegelijk eindigen. */
+      const [overrides, runStates] = await Promise.all([
+        getAllCronConfigs(),
+        getAllCronRunStates()
+      ]);
       const crons = KNOWN_CRONS.map((c) => {
-        const eff = getEffectiveCronConfig(c.key, overrides[c.key]);
-        return eff;
+        return getEffectiveCronConfig(c.key, overrides[c.key], runStates[c.key]);
       });
-      /* Ook crons die wel een override hebben maar niet in KNOWN_CRONS lijst staan */
-      for (const [key, override] of Object.entries(overrides || {})) {
+      /* Ook crons die override of run-state hebben maar niet in KNOWN_CRONS staan */
+      const extraKeys = new Set([
+        ...Object.keys(overrides || {}),
+        ...Object.keys(runStates || {})
+      ]);
+      for (const key of extraKeys) {
         if (!KNOWN_CRONS.find((c) => c.key === key)) {
-          crons.push(getEffectiveCronConfig(key, override));
+          crons.push(getEffectiveCronConfig(key, overrides[key], runStates[key]));
         }
       }
       return res.status(200).json({
         success: true,
         crons,
         knownCount: KNOWN_CRONS.length,
-        overrideCount: Object.keys(overrides).length
+        overrideCount: Object.keys(overrides).length,
+        runStateCount: Object.keys(runStates).length
       });
     } catch (error) {
       console.error('[admin/cron-config] GET error:', error);
