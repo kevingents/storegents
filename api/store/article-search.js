@@ -83,21 +83,42 @@ function stripLeadingZeros(v) {
 }
 
 /**
- * Match een article tegen een artikelcode-query (korte numeriek).
+ * Match een article tegen een artikelcode-query (korte numeriek). Returnt een
+ * match-score:
+ *   100 = exact match
+ *    80 = match na strippen van leading zeros (00002038 ≡ 2038)
+ *    60 = endsWith (val eindigt op target — handig voor partial codes)
+ *    30 = includes substring (alleen voor target ≥ 6 chars want anders matched
+ *         elke SKU die toevallig die cijfers bevat — was de bug)
+ *     0 = geen match
+ *
  * Match alleen op articleNumber / sku / srsArtikelId / srsRveArtikelnummer.
  * EXPLICIET NIET op barcode — gebruiker wil dat niet.
  */
 function matchesArtikelcode(article, q) {
-  const target = lower(stripLeadingZeros(q));
+  const targetRaw = lower(q);
+  const targetStripped = stripLeadingZeros(targetRaw);
   const candidates = [article.articleNumber, article.sku, article.srsArtikelId, article.srsRveArtikelnummer];
+  let best = 0;
   for (const c of candidates) {
-    const val = lower(stripLeadingZeros(c));
-    if (!val) continue;
-    if (val === target) return true;                  /* exact match */
-    if (val.endsWith(target) && target.length >= 3) return true; /* trailing match (handig voor leading-zero variaties) */
-    if (val.includes(target) && target.length >= 4) return true; /* contains, min 4 cijfers anders te losse match */
+    const valRaw = lower(c);
+    if (!valRaw) continue;
+    const valStripped = stripLeadingZeros(valRaw);
+    if (!valStripped) continue;
+    /* Exact match — hoogste score (incl. leading-zero variaties) */
+    if (valRaw === targetRaw) return 100;
+    if (valStripped === targetStripped) best = Math.max(best, 90);
+    /* Voor korte queries (≤4 chars na strip): alleen exact toegestaan, geen
+       partial. Anders matched '2038' elke SKU die toevallig op 2038 eindigt
+       wat tientallen ongerelateerde items kan opleveren. */
+    if (targetStripped.length < 5) continue;
+    /* Voor langere queries: endsWith + includes wel toegestaan */
+    if (valStripped.endsWith(targetStripped)) best = Math.max(best, 70);
+    else if (valStripped.includes(targetStripped) && targetStripped.length >= 6) {
+      best = Math.max(best, 40);
+    }
   }
-  return false;
+  return best;
 }
 
 /**
@@ -174,23 +195,24 @@ function buildEntry(srsRow, shopifyMatch) {
 }
 
 /**
- * Combineer alle match-strategieën o.b.v. query-kind.
+ * Combineer alle match-strategieën o.b.v. query-kind. Returnt een score
+ * (0-100). 0 = geen match. Wordt gebruikt voor zowel filteren als rangschikken.
  */
-function matchesQuery(article, q, kind, searchWords) {
-  if (!q) return true;
+function matchQueryScore(article, q, kind, searchWords) {
+  if (!q) return 50; /* geen query → alles meegeven met neutrale score */
   switch (kind) {
     case 'artikelcode':
-      /* Korte numeriek → alleen artikelcode-velden, NIET barcode */
       return matchesArtikelcode(article, q);
     case 'barcode':
-      /* Lange numeriek → alleen barcode */
-      return matchesBarcode(article, q);
-    case 'identifier':
-      /* Alphanumeriek zonder spaties → eerst artikelcode-velden, fallback name-search */
-      return matchesArtikelcode(article, q) || rowMatchesAllWords(article, searchWords);
+      return matchesBarcode(article, q) ? 100 : 0;
+    case 'identifier': {
+      const code = matchesArtikelcode(article, q);
+      if (code > 0) return code;
+      return rowMatchesAllWords(article, searchWords) ? 40 : 0;
+    }
     case 'name':
     default:
-      return rowMatchesAllWords(article, searchWords);
+      return rowMatchesAllWords(article, searchWords) ? 50 : 0;
   }
 }
 
@@ -297,9 +319,20 @@ export default async function handler(req, res) {
 
     let articles = Array.from(productMap.values());
 
-    /* Filters toepassen — gebruik query-kind specifieke matcher */
+    /* Filters toepassen — gebruik query-kind specifieke matcher met score.
+       Bij query: bereken score per article, filter score>0, behoud score voor
+       latere sort. Bij EXACT match (score 100) onderdrukken we lagere matches
+       want de gebruiker wil 'precies dit artikel' niet 'iets dat erop lijkt'. */
     if (q) {
-      articles = articles.filter((a) => matchesQuery(a, q, queryKind, searchWords));
+      const scored = articles.map((a) => ({ a, score: matchQueryScore(a, q, queryKind, searchWords) }))
+        .filter((x) => x.score > 0);
+      const topScore = scored.reduce((m, x) => Math.max(m, x.score), 0);
+      /* Als er minstens 1 exact match is, toon alleen artikelen met score
+         dichtbij dat (>= 80). Voor 4-cijfer artikelcode 'rokjas' typo → we
+         willen de exacte match en mogelijke leading-zero-varianten, niet alle
+         items met 4 cijfers ergens. */
+      const minScore = topScore >= 100 ? 80 : 1;
+      articles = scored.filter((x) => x.score >= minScore).map((x) => Object.assign(x.a, { _matchScore: x.score }));
     }
 
     /* Facets bouwen ná q-filter zodat counts kloppen met wat de gebruiker
@@ -347,10 +380,14 @@ export default async function handler(req, res) {
     }
 
     /* Sorteer:
-       1. (alleen volle modus) Artikelen met eigen-winkel voorraad eerst
-       2. (alleen volle modus) Daarna totaal aantal stuks aflopend
-       3. Daarna alfabetisch op titel */
+       1. Match-score aflopend (exact matches eerst)
+       2. (alleen volle modus) Artikelen met eigen-winkel voorraad eerst
+       3. (alleen volle modus) Daarna totaal aantal stuks aflopend
+       4. Daarna alfabetisch op titel */
     articles.sort((a, b) => {
+      const sa = Number(a._matchScore || 0);
+      const sb = Number(b._matchScore || 0);
+      if (sa !== sb) return sb - sa;
       if (withStock) {
         const ownA = ownStore ? a.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
         const ownB = ownStore ? b.branches.some((b2) => b2.isOwn && b2.pieces > 0) : false;
