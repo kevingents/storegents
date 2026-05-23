@@ -98,15 +98,22 @@ function stripLeadingZeros(v) {
 function matchesArtikelcode(article, q) {
   const targetRaw = lower(q);
   const targetStripped = stripLeadingZeros(targetRaw);
-  /* SRS-padded code? '00002038' met leading zeros is typische SRS POS notatie
-     voor een SKU-fragment. Bij padded queries beperken we matching tot SKU /
-     articleNumber (=barcode-stijl) want SRS POS toont alleen daar de
-     bijbehorende code. srsArtikelId / srsRveArtikelnummer hebben eigen
-     formats die toevallig op 2038 kunnen eindigen — dat zijn geen relevante
-     matches voor een POS-medewerker.
+  /* Shopify `productType` bevat de SRS Artikel NR (kort, zonder leading
+     zeros) — dat is wat de SRS-POS gebruikt en wat Shopify naar SRS pusht.
+     bv. '00002038' (POS-input) ↔ productType '2038' ↔ Rokjas polywol.
+     Eerst checken op exact-match daar — hoogste prioriteit. */
+  const productTypeRaw = lower(article.productType);
+  if (productTypeRaw && /^\d+$/.test(productTypeRaw)) {
+    if (productTypeRaw === targetRaw) return 100;
+    if (productTypeRaw === targetStripped) return 95;
+  }
 
-     Bij niet-padded queries (bv. 'rokjas' of '912038') zoeken we breder
-     omdat de gebruiker dan typt vanuit context-info ipv POS-input. */
+  /* SRS-padded code? '00002038' met leading zeros is typische SRS POS notatie.
+     Bij padded queries beperken we matching tot SKU / articleNumber (=barcode
+     suffix-stijl) — srsArtikelId / srsRveArtikelnummer hebben eigen formats
+     die toevallig op 2038 kunnen eindigen wat geen relevante matches zijn.
+
+     Bij niet-padded queries (bv. '912038') zoeken we breder. */
   const hasLeadingZeros = /^0+\d/.test(targetRaw);
   const minPartialLen = hasLeadingZeros ? 3 : 5;
   const candidates = hasLeadingZeros
@@ -118,10 +125,8 @@ function matchesArtikelcode(article, q) {
     if (!valRaw) continue;
     const valStripped = stripLeadingZeros(valRaw);
     if (!valStripped) continue;
-    /* Exact match — hoogste score (incl. leading-zero variaties) */
     if (valRaw === targetRaw) return 100;
     if (valStripped === targetStripped) best = Math.max(best, 90);
-    /* EndsWith — toegestaan vanaf minPartialLen (3 bij padded query, 5 anders) */
     if (targetStripped.length < minPartialLen) continue;
     if (valStripped.endsWith(targetStripped)) best = Math.max(best, 70);
     else if (valStripped.includes(targetStripped) && targetStripped.length >= 6) {
@@ -337,11 +342,11 @@ export default async function handler(req, res) {
       const scored = articles.map((a) => ({ a, score: matchQueryScore(a, q, queryKind, searchWords) }))
         .filter((x) => x.score > 0);
       const topScore = scored.reduce((m, x) => Math.max(m, x.score), 0);
-      /* Als er minstens 1 exact match is, toon alleen artikelen met score
-         dichtbij dat (>= 80). Voor 4-cijfer artikelcode 'rokjas' typo → we
-         willen de exacte match en mogelijke leading-zero-varianten, niet alle
-         items met 4 cijfers ergens. */
-      const minScore = topScore >= 100 ? 80 : 1;
+      /* Als er minstens 1 sterke match is (≥90: exact of productType match),
+         toon alleen artikelen in die top-klasse — vermijd dat zwakke suffix-
+         matches het echte artikel uit de POS-code wegdrukken. Voor zwakkere
+         beste scores houden we alles want dan is er sowieso geen sterke hit. */
+      const minScore = topScore >= 90 ? 80 : 1;
       articles = scored.filter((x) => x.score >= minScore).map((x) => Object.assign(x.a, { _matchScore: x.score }));
     }
 
