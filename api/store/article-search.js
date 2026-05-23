@@ -98,7 +98,20 @@ function stripLeadingZeros(v) {
 function matchesArtikelcode(article, q) {
   const targetRaw = lower(q);
   const targetStripped = stripLeadingZeros(targetRaw);
-  const candidates = [article.articleNumber, article.sku, article.srsArtikelId, article.srsRveArtikelnummer];
+  /* SRS-padded code? '00002038' met leading zeros is typische SRS POS notatie
+     voor een SKU-fragment. Bij padded queries beperken we matching tot SKU /
+     articleNumber (=barcode-stijl) want SRS POS toont alleen daar de
+     bijbehorende code. srsArtikelId / srsRveArtikelnummer hebben eigen
+     formats die toevallig op 2038 kunnen eindigen — dat zijn geen relevante
+     matches voor een POS-medewerker.
+
+     Bij niet-padded queries (bv. 'rokjas' of '912038') zoeken we breder
+     omdat de gebruiker dan typt vanuit context-info ipv POS-input. */
+  const hasLeadingZeros = /^0+\d/.test(targetRaw);
+  const minPartialLen = hasLeadingZeros ? 3 : 5;
+  const candidates = hasLeadingZeros
+    ? [article.articleNumber, article.sku]
+    : [article.articleNumber, article.sku, article.srsArtikelId, article.srsRveArtikelnummer];
   let best = 0;
   for (const c of candidates) {
     const valRaw = lower(c);
@@ -108,11 +121,8 @@ function matchesArtikelcode(article, q) {
     /* Exact match — hoogste score (incl. leading-zero variaties) */
     if (valRaw === targetRaw) return 100;
     if (valStripped === targetStripped) best = Math.max(best, 90);
-    /* Voor korte queries (≤4 chars na strip): alleen exact toegestaan, geen
-       partial. Anders matched '2038' elke SKU die toevallig op 2038 eindigt
-       wat tientallen ongerelateerde items kan opleveren. */
-    if (targetStripped.length < 5) continue;
-    /* Voor langere queries: endsWith + includes wel toegestaan */
+    /* EndsWith — toegestaan vanaf minPartialLen (3 bij padded query, 5 anders) */
+    if (targetStripped.length < minPartialLen) continue;
     if (valStripped.endsWith(targetStripped)) best = Math.max(best, 70);
     else if (valStripped.includes(targetStripped) && targetStripped.length >= 6) {
       best = Math.max(best, 40);
