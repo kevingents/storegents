@@ -43,6 +43,37 @@ import { readProductsCache } from '../../lib/shopify-products-cache.js';
 function clean(v) { return String(v || '').trim(); }
 function lower(v) { return clean(v).toLowerCase(); }
 
+/* Cache voor de SRS-snapshot pieces-map (5 min TTL) — voorkomt dat elke
+   'Alleen op voorraad' search opnieuw 20 branch-snapshots leest. */
+let __PIECES_CACHE__ = { at: 0, data: null };
+const PIECES_CACHE_TTL = 5 * 60 * 1000;
+
+async function loadPiecesFromSnapshots() {
+  if (__PIECES_CACHE__.data && (Date.now() - __PIECES_CACHE__.at) < PIECES_CACHE_TTL) {
+    return __PIECES_CACHE__.data;
+  }
+  const branches = listAllBranches();
+  const snapshots = await Promise.all(branches.map(async (b) => {
+    try { return await readBranchSnapshot(b.branchId); }
+    catch { return null; }
+  }));
+  const piecesByKey = new Map();
+  for (const snap of snapshots) {
+    if (!snap?.rows?.length) continue;
+    for (const r of snap.rows) {
+      const pieces = Number(r.pieces || 0);
+      if (!pieces) continue;
+      /* Index op barcode, sku én articleNumber zodat elke lookup-vorm matched */
+      const keys = [lower(r.barcode), lower(r.sku), lower(r.articleNumber)].filter(Boolean);
+      for (const k of keys) {
+        piecesByKey.set(k, (piecesByKey.get(k) || 0) + pieces);
+      }
+    }
+  }
+  __PIECES_CACHE__ = { at: Date.now(), data: piecesByKey };
+  return piecesByKey;
+}
+
 /**
  * Detecteer wat voor soort zoekterm de gebruiker heeft ingegeven.
  *  - artikelcode  → korte numeriek, 3-7 cijfers (bv. "12345", "8", "0008")
@@ -353,12 +384,17 @@ export default async function handler(req, res) {
     /* Facets bouwen ná q-filter zodat counts kloppen met wat de gebruiker
        ziet zodra hij een facet aanklikt. Color/size/hoofdgroep filters worden
        hieronder pas toegepast — zo zien gebruikers nog wel welke kleuren/maten
-       beschikbaar zijn bij hun naam-zoek. */
+       beschikbaar zijn bij hun naam-zoek.
+
+       Filter placeholder-waarden (Default Title / Onbekend / —) uit zodat ze
+       niet als kleur/maat-optie verschijnen — die geven 0 results bij click. */
+    const PLACEHOLDER_VALUES = new Set(['default title', 'onbekend', '—', '-', '']);
     const facetMap = (key) => {
       const m = new Map();
       for (const a of articles) {
         const v = clean(a[key]);
         if (!v) continue;
+        if (PLACEHOLDER_VALUES.has(v.toLowerCase())) continue;
         m.set(v, (m.get(v) || 0) + 1);
       }
       return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 50).map(([value, count]) => ({ value, count }));
@@ -388,10 +424,22 @@ export default async function handler(req, res) {
     if (subgroepFilter) {
       articles = articles.filter((a) => lower(a.subgroep) === subgroepFilter);
     }
-    if (onlyAvailable && withStock) {
-      /* In stockless modus is dit filter zinloos — laat alles door. Frontend kan
-         na lazy-stock-load zelf nog filteren. */
-      articles = articles.filter((a) => a.totalPieces > 0);
+    if (onlyAvailable) {
+      if (withStock) {
+        articles = articles.filter((a) => a.totalPieces > 0);
+      } else {
+        /* Stockless modus + available filter: doe een lichtgewicht SRS-snapshot
+           scan om totalPieces te bepalen per artikel. Voorkomt 'X van Y' bug
+           waarbij gebruiker 4 op voorraad zag van 545 omdat alleen de eerste
+           30 client-side gefilterd werden (BUG-1 uit audit). */
+        const piecesByKey = await loadPiecesFromSnapshots();
+        articles = articles.filter((a) => {
+          const k1 = lower(a.barcode);
+          const k2 = lower(a.sku);
+          const k3 = lower(a.articleNumber);
+          return (piecesByKey.get(k1) || piecesByKey.get(k2) || piecesByKey.get(k3) || 0) > 0;
+        });
+      }
     }
 
     /* Sorteer:
