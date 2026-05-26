@@ -143,7 +143,14 @@ function matchesArtikelcode(article, q) {
      komt overeen met POS-input '00002039'. Check op exact match (raw of
      stripped) — geen endsWith/substring want die formats kunnen toevallig
      op een ander artikel-cijfer eindigen. */
-  for (const meta of [article.srsArtikelId, article.srsRveArtikelnummer]) {
+  const metaCandidates = [
+    article.srsArtikelId,
+    article.srsRveArtikelnummer,
+    /* Plus alle overige numerieke metafields ('Artikel nummer'-veld dat
+       buiten onze vaste keys staat — uit cache.numericMetafields). */
+    ...(Array.isArray(article.numericMetafields) ? article.numericMetafields : [])
+  ];
+  for (const meta of metaCandidates) {
     const m = lower(meta);
     if (!m) continue;
     if (m === targetRaw) return 100;
@@ -243,6 +250,9 @@ function buildEntry(srsRow, shopifyMatch) {
     price: clean(shopifyMatch?.price || ''),
     srsArtikelId: clean(shopifyMatch?.srsArtikelId || ''),
     srsRveArtikelnummer: clean(shopifyMatch?.srsRveArtikelnummer || ''),
+    /* Pass-through alle numerieke metafields voor wide-match (bv. POS
+       "Artikel nummer"-veld). */
+    numericMetafields: Array.isArray(shopifyMatch?.numericMetafields) ? shopifyMatch.numericMetafields : [],
     subgroep: clean(shopifyMatch?.subgroep || ''),
     hoofdgroep: clean(shopifyMatch?.hoofdgroep || ''),
     hoofdgroepOmschrijving: clean(shopifyMatch?.hoofdgroepOmschrijving || ''),
@@ -353,7 +363,8 @@ export default async function handler(req, res) {
           /* Lookup probeert eerst exact, daarna gestripped (leading zeros weg).
              SRS-snapshot kan '00002039' leveren terwijl Shopify metafield
              artikel_id alleen '2039' heeft opgeslagen — zonder strip-match
-             missen we de koppeling. */
+             missen we de koppeling. byNumericMetafield vangt extra Shopify-
+             velden zoals "Artikel nummer" die buiten onze vaste keys staan. */
           const artNoLower = lower(r.articleNumber);
           const artNoStripped = artNoLower.replace(/^0+(?=\d)/, '');
           const shopifyMatch = productsCache.byBarcode?.[lower(r.barcode)]
@@ -361,10 +372,12 @@ export default async function handler(req, res) {
             || productsCache.bySrsArticleNumber?.[artNoLower]
             || productsCache.bySrsArtikelId?.[artNoLower]
             || productsCache.bySrsRveArtikelnummer?.[artNoLower]
+            || productsCache.byNumericMetafield?.[artNoLower]
             || (artNoStripped !== artNoLower ? (
                  productsCache.bySrsArticleNumber?.[artNoStripped]
               || productsCache.bySrsArtikelId?.[artNoStripped]
               || productsCache.bySrsRveArtikelnummer?.[artNoStripped]
+              || productsCache.byNumericMetafield?.[artNoStripped]
             ) : null)
             || null;
 
@@ -384,6 +397,31 @@ export default async function handler(req, res) {
             type: isWarehouseStore(branchName) ? 'warehouse' : 'retail'
           });
           if (pieces > 0) entry.branchCount += 1;
+        }
+      }
+
+      /* Bij specifieke code-queries: vul productMap aan met Shopify-varianten
+         die GEEN snapshot-rij hebben (bv. nieuwe producten of producten die
+         in een andere SKU/barcode-vorm in SRS staan). Zonder dit blijven
+         producten die alleen in Shopify staan onvindbaar. */
+      if (q && (queryKind === 'artikelcode' || queryKind === 'barcode' || queryKind === 'identifier')) {
+        const variantSeen = new Set([...productMap.values()].map((e) => e.variantId).filter(Boolean));
+        const allVariants = new Set();
+        const collect = (obj) => { if (obj) Object.values(obj).forEach((v) => v && allVariants.add(v)); };
+        collect(productsCache.byBarcode);
+        collect(productsCache.bySku);
+        collect(productsCache.bySrsArtikelId);
+        collect(productsCache.bySrsRveArtikelnummer);
+        collect(productsCache.byNumericMetafield);
+        for (const v of allVariants) {
+          if (variantSeen.has(v.variantId)) continue;
+          /* Quick filter: alleen toevoegen als de query matched op deze variant.
+             Anders blazen we de productMap op met irrelevante items. */
+          const score = matchQueryScore(v, q, queryKind, searchWords);
+          if (score <= 0) continue;
+          const key = lower(v.barcode || v.sku || v.articleNumber || v.variantId);
+          if (!key || productMap.has(key)) continue;
+          productMap.set(key, buildEntry(v, v));
         }
       }
     } else {
