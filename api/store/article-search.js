@@ -129,9 +129,8 @@ function stripLeadingZeros(v) {
 function matchesArtikelcode(article, q) {
   const targetRaw = lower(q);
   const targetStripped = stripLeadingZeros(targetRaw);
-  /* Shopify `productType` bevat de SRS Artikel NR (kort, zonder leading
-     zeros) — dat is wat de SRS-POS gebruikt en wat Shopify naar SRS pusht.
-     bv. '00002038' (POS-input) ↔ productType '2038' ↔ Rokjas polywol.
+  /* Shopify `productType` bevat soms de SRS Artikel NR (kort, zonder leading
+     zeros). bv. '00002038' (POS-input) ↔ productType '2038' ↔ Rokjas polywol.
      Eerst checken op exact-match daar — hoogste prioriteit. */
   const productTypeRaw = lower(article.productType);
   if (productTypeRaw && /^\d+$/.test(productTypeRaw)) {
@@ -139,10 +138,23 @@ function matchesArtikelcode(article, q) {
     if (productTypeRaw === targetStripped) return 95;
   }
 
+  /* SRSERP metafields (artikel_id / rve_artikelnummer) bevatten ook de
+     SRS-koppeling. Voorbeeld: product met metafield artikel_id = '2039'
+     komt overeen met POS-input '00002039'. Check op exact match (raw of
+     stripped) — geen endsWith/substring want die formats kunnen toevallig
+     op een ander artikel-cijfer eindigen. */
+  for (const meta of [article.srsArtikelId, article.srsRveArtikelnummer]) {
+    const m = lower(meta);
+    if (!m) continue;
+    if (m === targetRaw) return 100;
+    if (m === targetStripped) return 95;
+    if (stripLeadingZeros(m) === targetStripped) return 92;
+  }
+
   /* SRS-padded code? '00002038' met leading zeros is typische SRS POS notatie.
-     Bij padded queries beperken we matching tot SKU / articleNumber (=barcode
-     suffix-stijl) — srsArtikelId / srsRveArtikelnummer hebben eigen formats
-     die toevallig op 2038 kunnen eindigen wat geen relevante matches zijn.
+     Bij padded queries beperken we suffix/substring matching tot SKU /
+     articleNumber — die zijn predictable. Voor srsArtikelId / rveArtikelnummer
+     hebben we hierboven al exact-match check gedaan.
 
      Bij niet-padded queries (bv. '912038') zoeken we breder. */
   const hasLeadingZeros = /^0+\d/.test(targetRaw);
@@ -338,11 +350,22 @@ export default async function handler(req, res) {
           const key = lower(r.articleNumber || r.sku || r.barcode);
           if (!key) continue;
 
+          /* Lookup probeert eerst exact, daarna gestripped (leading zeros weg).
+             SRS-snapshot kan '00002039' leveren terwijl Shopify metafield
+             artikel_id alleen '2039' heeft opgeslagen — zonder strip-match
+             missen we de koppeling. */
+          const artNoLower = lower(r.articleNumber);
+          const artNoStripped = artNoLower.replace(/^0+(?=\d)/, '');
           const shopifyMatch = productsCache.byBarcode?.[lower(r.barcode)]
             || productsCache.bySku?.[lower(r.sku)]
-            || productsCache.bySrsArticleNumber?.[lower(r.articleNumber)]
-            || productsCache.bySrsArtikelId?.[lower(r.articleNumber)]
-            || productsCache.bySrsRveArtikelnummer?.[lower(r.articleNumber)]
+            || productsCache.bySrsArticleNumber?.[artNoLower]
+            || productsCache.bySrsArtikelId?.[artNoLower]
+            || productsCache.bySrsRveArtikelnummer?.[artNoLower]
+            || (artNoStripped !== artNoLower ? (
+                 productsCache.bySrsArticleNumber?.[artNoStripped]
+              || productsCache.bySrsArtikelId?.[artNoStripped]
+              || productsCache.bySrsRveArtikelnummer?.[artNoStripped]
+            ) : null)
             || null;
 
           let entry = productMap.get(key);
