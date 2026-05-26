@@ -88,11 +88,17 @@ export default async function handler(req, res) {
     } catch (e) { shopifyError = e.message || 'fetch failed'; }
   }
 
-  /* Winkel-bonnen (SRS): pure POS-aankopen vandaag + gisteren */
+  /* Winkel-bonnen (SRS): pure POS-aankopen vandaag + gisteren — split
+     in bruto + retour zodat dashboard-KPI consistent is met de omzet-
+     detailpagina (revenue-srs splitst ook). */
   let storeOrders = 0;
-  let storeRevenue = 0;
+  let storeRevenue = 0;        /* netto = bruto − retour */
+  let storeGross = 0;          /* alleen positieve items */
+  let storeRefunded = 0;       /* absolute waarde negatieve items */
   let storeOrdersY = 0;
   let storeRevenueY = 0;
+  let storeGrossY = 0;
+  let storeRefundedY = 0;
   let srsError = '';
 
   try {
@@ -108,8 +114,28 @@ export default async function handler(req, res) {
       if (!hasReceipt || hasOrderNr) continue;
       const ts = new Date(tx.dateTime || tx.date || 0);
       const total = Number(tx.total || 0);
-      if (ts >= today) { storeOrders++; storeRevenue += total; }
-      else if (ts >= yesterday) { storeOrdersY++; storeRevenueY += total; }
+      /* Bruto/refund per item — zie revenue-srs.js voor toelichting:
+         SRS Charged is NEGATIEF voor retour-lijnen. Split daarom op
+         item-niveau zodat gemengde bonnen (verkoop + retour) kloppen. */
+      let txGross = 0;
+      let txRefund = 0;
+      (tx.items || []).forEach((it) => {
+        const charged = Number(it.charged || 0);
+        if (charged >= 0) txGross += charged;
+        else txRefund += Math.abs(charged);
+      });
+
+      if (ts >= today) {
+        storeOrders++;
+        storeRevenue += total;
+        storeGross += txGross;
+        storeRefunded += txRefund;
+      } else if (ts >= yesterday) {
+        storeOrdersY++;
+        storeRevenueY += total;
+        storeGrossY += txGross;
+        storeRefundedY += txRefund;
+      }
     }
   } catch (e) { srsError = e.message || 'SRS fetch failed'; }
 
@@ -153,7 +179,14 @@ export default async function handler(req, res) {
     metrics: {
       newOrders: { value: newOrders, prev: yesterdayOrders, trendPct: trend(newOrders, yesterdayOrders) },
       revenue:   { value: Number(revenue.toFixed(2)), prev: Number(yesterdayRevenue.toFixed(2)), trendPct: trend(revenue, yesterdayRevenue) },
-      storeRevenue:   { value: Number(storeRevenue.toFixed(2)), prev: Number(storeRevenueY.toFixed(2)), trendPct: trend(storeRevenue, storeRevenueY), orders: storeOrders },
+      storeRevenue:   {
+        value: Number(storeRevenue.toFixed(2)),
+        prev: Number(storeRevenueY.toFixed(2)),
+        trendPct: trend(storeRevenue, storeRevenueY),
+        orders: storeOrders,
+        gross: Number(storeGross.toFixed(2)),
+        refunded: Number(storeRefunded.toFixed(2))
+      },
       webshopRevenue: { value: Number(webshopNet.toFixed(2)), prev: Number(webshopNetY.toFixed(2)), trendPct: trend(webshopNet, webshopNetY), orders: webshopOrders, refunded: Number(webshopRefunded.toFixed(2)), cancelled: Number(webshopCancelled.toFixed(2)) },
       newCustomers: { value: newCustomers, prev: null, trendPct: null },
       refunds:   { value: refunds, prev: null, trendPct: null }
