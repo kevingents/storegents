@@ -68,9 +68,23 @@ function computeRange(period, now = new Date()) {
 }
 
 function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders = true } = {}) {
-  let totalRevenue = 0;
-  let itemsSold = 0;
-  let orderCount = 0;
+  /* Splitsing bruto vs retour:
+     - SRS levert item.charged als NEGATIEF voor retour-lijnen.
+     - Een transactie met netto negative tx.total = puur retour-bon.
+     - We splitsen op item-niveau zodat een gemengde bon (verkoop + retour
+       op één bon) ook correct optelt.
+     - grossRevenue   = som positieve item.charged (verkoop)
+     - refundedRevenue = som absolute negatieve item.charged (retour)
+     - netRevenue     = grossRevenue − refundedRevenue
+  */
+  let grossRevenue = 0;       /* positieve verkoop */
+  let refundedRevenue = 0;    /* absolute waarde retours */
+  let itemsSold = 0;          /* netto stuks (kan negatief zijn) */
+  let grossItems = 0;         /* alleen verkoop-stuks */
+  let refundedItems = 0;      /* alleen retour-stuks (absoluut) */
+  let orderCount = 0;         /* aantal bonnen (verkoop + retour) */
+  let salesReceiptCount = 0;  /* bonnen netto > 0 */
+  let refundReceiptCount = 0; /* bonnen netto < 0 (puur retour) */
   let skippedWeborders = 0;
   let skippedWeborderRevenue = 0;
   const storeMap = new Map();
@@ -100,26 +114,50 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
       continue;
     }
 
-    const total = Number(tx.total || 0);
-    totalRevenue += total;
-    orderCount += 1;
-
-    const cur = storeMap.get(storeName) || { store: storeName, branchId, revenue: 0, orderCount: 0, items: 0 };
-    cur.revenue += total;
-    cur.orderCount += 1;
-    cur.items += (tx.items || []).reduce((s, i) => s + Number(i.pieces || 0), 0);
-    storeMap.set(storeName, cur);
+    /* Bereken bruto + retour per item op deze bon */
+    let txGross = 0;
+    let txRefund = 0;
+    let txGrossPieces = 0;
+    let txRefundPieces = 0;
 
     (tx.items || []).forEach((it) => {
       const pieces = Number(it.pieces || 0);
       const charged = Number(it.charged || 0);
-      itemsSold += pieces;
+      if (charged >= 0) {
+        txGross += charged;
+        txGrossPieces += pieces;
+      } else {
+        txRefund += Math.abs(charged);
+        txRefundPieces += Math.abs(pieces);
+      }
+      itemsSold += pieces; /* netto stuks per bon */
       const key = it.sku || it.lineNr || `line-${tx.receiptNr}`;
       const p = productMap.get(key) || { title: it.sku || '-', sku: it.sku || '', quantity: 0, revenue: 0 };
       p.quantity += pieces;
       p.revenue += charged;
       productMap.set(key, p);
     });
+
+    const total = Number(tx.total || 0);
+    grossRevenue += txGross;
+    refundedRevenue += txRefund;
+    grossItems += txGrossPieces;
+    refundedItems += txRefundPieces;
+    orderCount += 1;
+    if (total < 0) refundReceiptCount += 1;
+    else salesReceiptCount += 1;
+
+    const cur = storeMap.get(storeName) || {
+      store: storeName, branchId,
+      revenue: 0, grossRevenue: 0, refundedRevenue: 0,
+      orderCount: 0, items: 0
+    };
+    cur.revenue += total;       /* netto */
+    cur.grossRevenue += txGross;
+    cur.refundedRevenue += txRefund;
+    cur.orderCount += 1;
+    cur.items += (tx.items || []).reduce((s, i) => s + Number(i.pieces || 0), 0);
+    storeMap.set(storeName, cur);
 
     const day = String(tx.dateTime || '').slice(0, 10);
     if (day) {
@@ -130,20 +168,33 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
     }
   }
 
+  const netRevenue = grossRevenue - refundedRevenue;
+
   return {
-    totalRevenue: Number(totalRevenue.toFixed(2)),
-    refundedRevenue: 0,
-    netRevenue: Number(totalRevenue.toFixed(2)),
+    /* totalRevenue blijft voor backwards-compat = netto bedrag */
+    totalRevenue: Number(netRevenue.toFixed(2)),
+    grossRevenue: Number(grossRevenue.toFixed(2)),
+    refundedRevenue: Number(refundedRevenue.toFixed(2)),
+    netRevenue: Number(netRevenue.toFixed(2)),
     orderCount,
-    avgOrderValue: orderCount ? Number((totalRevenue / orderCount).toFixed(2)) : 0,
+    salesReceiptCount,
+    refundReceiptCount,
+    avgOrderValue: orderCount ? Number((netRevenue / orderCount).toFixed(2)) : 0,
     itemsSold,
+    grossItems,
+    refundedItems,
     /* Diagnostiek: hoeveel weborder-omzet werd uitgesloten (excludeWeborders=true)
        Dit is webshop-omzet en moet apart worden geboekt (zie /api/admin/webshop-revenue). */
     excludedWeborderCount: skippedWeborders,
     excludedWeborderRevenue: Number(skippedWeborderRevenue.toFixed(2)),
     revenueSourceLabel: 'Winkel-bonnen (pure POS-aankopen, excl. alle weborders)',
     perStore: [...storeMap.values()]
-      .map((s) => ({ ...s, revenue: Number(s.revenue.toFixed(2)) }))
+      .map((s) => ({
+        ...s,
+        revenue: Number(s.revenue.toFixed(2)),
+        grossRevenue: Number(s.grossRevenue.toFixed(2)),
+        refundedRevenue: Number(s.refundedRevenue.toFixed(2))
+      }))
       .sort((a, b) => b.revenue - a.revenue),
     topProducts: [...productMap.values()]
       .map((p) => ({ ...p, revenue: Number(p.revenue.toFixed(2)) }))
