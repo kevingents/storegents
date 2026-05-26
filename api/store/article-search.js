@@ -234,6 +234,8 @@ function buildEntry(srsRow, shopifyMatch) {
     subgroep: clean(shopifyMatch?.subgroep || ''),
     hoofdgroep: clean(shopifyMatch?.hoofdgroep || ''),
     hoofdgroepOmschrijving: clean(shopifyMatch?.hoofdgroepOmschrijving || ''),
+    jaar: clean(shopifyMatch?.jaar || ''),
+    seizoen: clean(shopifyMatch?.seizoen || ''),
     totalPieces: 0,
     branchCount: 0,
     branches: []
@@ -276,6 +278,8 @@ export default async function handler(req, res) {
   const sizeFilter = lower(req.query.size);
   const hoofdgroepFilter = lower(req.query.hoofdgroep);
   const subgroepFilter = lower(req.query.subgroep);
+  const jaarFilter = lower(req.query.jaar);
+  const seizoenFilter = lower(req.query.seizoen);
   const ownStore = clean(req.query.store);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit || 24)));
   const onlyAvailable = String(req.query.available || '') === '1';
@@ -406,7 +410,9 @@ export default async function handler(req, res) {
       hoofdgroepen: facetMap('hoofdgroepOmschrijving').length
         ? facetMap('hoofdgroepOmschrijving')
         : facetMap('productType'),
-      subgroepen: facetMap('subgroep')
+      subgroepen: facetMap('subgroep'),
+      jaren: facetMap('jaar'),
+      seizoenen: facetMap('seizoen')
     };
 
     if (colorFilter) {
@@ -423,6 +429,12 @@ export default async function handler(req, res) {
     }
     if (subgroepFilter) {
       articles = articles.filter((a) => lower(a.subgroep) === subgroepFilter);
+    }
+    if (jaarFilter) {
+      articles = articles.filter((a) => lower(a.jaar) === jaarFilter);
+    }
+    if (seizoenFilter) {
+      articles = articles.filter((a) => lower(a.seizoen) === seizoenFilter);
     }
     if (onlyAvailable) {
       if (withStock) {
@@ -482,6 +494,8 @@ export default async function handler(req, res) {
         size: req.query.size || '',
         hoofdgroep: req.query.hoofdgroep || '',
         subgroep: req.query.subgroep || '',
+        jaar: req.query.jaar || '',
+        seizoen: req.query.seizoen || '',
         store: ownStore,
         available: onlyAvailable
       },
