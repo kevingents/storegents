@@ -286,10 +286,21 @@ export default async function handler(req, res) {
   /* withStock=0 → skip branch-snapshot fetch, return resultaten zonder stock-info.
      Frontend belt daarna /api/store/article-stock voor realtime Shopify stock
      per variant. Aanbevolen voor UI (instant search). */
-  const withStock = String(req.query.withStock || '1') !== '0';
+  let withStock = String(req.query.withStock || '1') !== '0';
 
   const queryKind = detectQueryKind(q);
   const searchWords = q ? q.toLowerCase().split(/\s+/).filter((w) => w.length >= 2) : [];
+
+  /* Force-fallback naar volle modus bij specifieke code-queries.
+     Stockless modus itereert alleen door de Shopify products cache, waardoor
+     artikelen die WEL in SRS staan maar niet (meer) in Shopify gevonden zijn,
+     gemist worden. Bij artikelcode/barcode/identifier-zoek wil de gebruiker
+     juist het echte artikel terugzien — dus pak dan de SRS-branch-snapshots
+     erbij ook al duurt de call iets langer (~300-600ms ipv ~80ms).
+     Fixt o.a.: '00002039' niet vindbaar terwijl het wel op voorraad ligt. */
+  if (!withStock && (queryKind === 'artikelcode' || queryKind === 'barcode' || queryKind === 'identifier')) {
+    withStock = true;
+  }
 
   if (queryKind === 'short') {
     return res.status(400).json({
