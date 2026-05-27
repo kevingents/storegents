@@ -16,8 +16,8 @@ Frontend ligt in zuster-repo [shopifystore](../shopifystore).
 | Document | Wat staat erin |
 |---|---|
 | 📘 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Welke knoppen kun je draaien zonder developer — env-vars, business-config, admin-UI |
+| 📕 [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | SRS, RVE, weborder, drager, supplychain — wat betekent alles |
 | 📗 `docs/ARCHITECTURE.md` | High-level systeem-diagram en data-flow (TODO) |
-| 📕 `docs/GLOSSARY.md` | SRS, RVE, weborder, drager, supplychain — wat betekent alles (TODO) |
 | 📙 `docs/RUNBOOKS.md` | Top incidenten: pickup-mail faalt, voorraad onjuist, etc. (TODO) |
 | 📓 `docs/ONBOARDING.md` | Stap-voor-stap eerste week voor nieuwe dev (TODO) |
 
