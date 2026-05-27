@@ -351,8 +351,13 @@ Alle endpoints vereisen `Authorization: Bearer <ADMIN_TOKEN>`.
 
 Bestaande configs worden geleidelijk gemigreerd zonder breaking changes:
 
-- **Klanten-targets** (`admin/customer-targets.json`) — wordt sprint 2 onder
-  het KPI-systeem gehangen. Tot dan blijft `/api/admin/customer-targets` werken.
+- **Klanten-targets** (`admin/customer-targets.json`) — GEDAAN. Sinds mei 2026
+  leest `kpi-targets-store.getTarget()` automatisch via fallback uit de
+  oude store als een KPI-target nog niet in `admin/kpi-config.json` zit.
+  Mapping: `inschrijvingen → customers_new`, `metBon → customers_with_bon`,
+  `metEmail → customers_with_email`. Voor volledige eenmalige migratie:
+  `POST /api/admin/kpis/migrate-customer-targets` (idempotent, overschrijft
+  niets). `/api/admin/customer-targets` blijft werken voor backwards-compat.
 - **Omnichannel weights** (`lib/business-config.js`) — wordt sprint 2 als
   composite-KPI binnengehaald.
 - **Supplychain-metrics-config** — kan blijven; is conceptueel hetzelfde
