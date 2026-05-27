@@ -18,8 +18,8 @@ Frontend ligt in zuster-repo [shopifystore](../shopifystore).
 | 📘 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Welke knoppen kun je draaien zonder developer — env-vars, business-config, admin-UI |
 | 📕 [`docs/GLOSSARY.md`](docs/GLOSSARY.md) | SRS, RVE, weborder, drager, supplychain — wat betekent alles |
 | 📗 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level systeem-diagram + 5 belangrijkste data-flows |
-| 📙 `docs/RUNBOOKS.md` | Top incidenten: pickup-mail faalt, voorraad onjuist, etc. (TODO) |
-| 📓 `docs/ONBOARDING.md` | Stap-voor-stap eerste week voor nieuwe dev (TODO) |
+| 📙 [`docs/RUNBOOKS.md`](docs/RUNBOOKS.md) | Top 10 incidenten met stap-voor-stap fix |
+| 📓 [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Stap-voor-stap eerste week voor nieuwe dev |
 
 **Centrale config-bestand**: alle bedrijfsregels die je zonder code-deploy
 zou willen wijzigen, staan in [`lib/business-config.js`](lib/business-config.js).
