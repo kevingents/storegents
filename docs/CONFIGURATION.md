@@ -236,6 +236,152 @@ Of via Cron-beheer modal: zet schedule uit/aan zonder deploy.
 
 ---
 
+## KPI-systeem — `lib/kpi-registry.js`
+
+Sinds mei 2026 is er één centrale KPI-registry die alle eerder versnipperde
+KPI-configs vervangt (klanten-targets, omnichannel-weights, impact-score
+weights, supplychain-metrics). Eén plek, één UI, één schema.
+
+### Hybrid model — wat is code, wat is config
+
+| Onderdeel | Waar | Wie wijzigt |
+|---|---|---|
+| KPI-definitie (key, label, unit, scope, direction) | `lib/kpi-registry.js` → `DEFAULT_KPIS` | Developer |
+| Berekenings-logica (fetcher per KPI) | `lib/kpi-sources/<key>.js` | Developer |
+| Aan/uit per KPI | Admin-UI → "KPI-beheer" | Admin |
+| Drempel-waardes (warn/danger) | Admin-UI → "Registry" tab | Admin |
+| Targets per maand+winkel | Admin-UI → "Targets" tab | Admin |
+| Rapport-binding | Admin-UI → "Registry" tab (inReports) | Admin |
+
+### Een nieuwe KPI toevoegen (recept)
+
+1. **Definieer in code** — voeg entry toe aan `DEFAULT_KPIS` in `lib/kpi-registry.js`:
+   ```js
+   {
+     key: 'mijn_nieuwe_kpi',
+     label: 'Mijn nieuwe KPI',
+     description: 'Korte uitleg voor admin-UI tooltip',
+     category: 'service',          // financieel|volume|customer|service|kwaliteit|composite
+     unit: 'pct',                  // eur|count|pct|days|minutes|score
+     direction: 'higher-better',   // of 'lower-better'
+     scope: 'per-store',           // 'per-store' of 'global'
+     period: 'week',               // natuurlijke periode
+     icon: 'check-circle',         // svgIcon-key
+     source: { type: 'function', fetcher: 'mijn-nieuwe-kpi' },
+     thresholds: { warn: 90, danger: 80 },
+     hasTarget: true,              // toont in Targets-tab
+     inReports: ['region-weekly'], // welke rapportages standaard tonen
+     enabledByDefault: true,
+     tags: ['winkel']
+   }
+   ```
+
+2. **Schrijf de fetcher** — maak `lib/kpi-sources/mijn-nieuwe-kpi.js`:
+   ```js
+   export default async function compute({ store, fromDate, toDate }) {
+     // Hier fetch je uit SRS, Shopify, Blob, etc.
+     const value = await /* jouw logica */ ;
+     return {
+       value,                       // number, of null bij geen data
+       meta: { computedAt: new Date().toISOString() }
+     };
+   }
+   ```
+
+3. **Registreer in source-loader** — voeg toe aan `SOURCE_MAP` in
+   `lib/kpi-sources/index.js`:
+   ```js
+   'mijn-nieuwe-kpi': () => import('./mijn-nieuwe-kpi.js'),
+   ```
+
+4. **Deploy.** Admin-UI pikt de nieuwe KPI automatisch op — geen UI-wijzigingen nodig.
+
+### KPI-bron in code, rest in config
+
+Waarom is de fetcher code? Een non-dev kan geen formules schrijven die
+veilig + performant tegen SRS/Shopify praten. Dit voorkomt:
+- SQL-injecties via UI-input
+- N+1 query problemen
+- Cache-omzeiling
+- Verkeerde periode-aggregatie
+
+Maar **alles eromheen** (welke winkels, welke targets, welke drempels,
+in welke rapporten) kan veranderen zonder deploy.
+
+### Storage
+
+Eén blob bevat zowel registry-overrides als targets:
+
+```
+admin/kpi-config.json
+{
+  "overrides": {
+    "sales_revenue": {
+      "enabled": true,
+      "thresholds": { "warn": 40000, "danger": 30000 },
+      "label": "Omzet (eur)",
+      "inReports": ["region-weekly", "omnichannel"]
+    }
+  },
+  "targets": {
+    "2026-05": {
+      "GENTS Arnhem": { "sales_revenue": 50000, "customers_new": 80 },
+      "GENTS Almere": { "sales_revenue": 65000 },
+      "_default":     { "sales_revenue": 30000, "customers_new": 50 }
+    }
+  },
+  "updatedAt": "2026-05-27T10:00:00Z",
+  "updatedBy": "admin@gents.nl"
+}
+```
+
+`_default` = fallback voor winkels zonder eigen target.
+
+### API endpoints
+
+| Endpoint | Wat | Methods |
+|---|---|---|
+| `/api/admin/kpis/registry` | KPI-definities + admin-overrides | GET, PATCH, DELETE |
+| `/api/admin/kpis/targets` | Targets per maand+winkel | GET, POST, DELETE |
+| `/api/admin/kpis/values` | Actuele waardes (matrix kpi×winkel) | GET |
+
+Alle endpoints vereisen `Authorization: Bearer <ADMIN_TOKEN>`.
+
+### Migratie van oude KPI-configs
+
+Bestaande configs worden geleidelijk gemigreerd zonder breaking changes:
+
+- **Klanten-targets** (`admin/customer-targets.json`) — wordt sprint 2 onder
+  het KPI-systeem gehangen. Tot dan blijft `/api/admin/customer-targets` werken.
+- **Omnichannel weights** (`lib/business-config.js`) — wordt sprint 2 als
+  composite-KPI binnengehaald.
+- **Supplychain-metrics-config** — kan blijven; is conceptueel hetzelfde
+  pattern (registry + blob-overrides) maar voor 1 specifiek dashboard.
+
+### Veelvoorkomende KPI-recepten
+
+**Target voor 1 winkel voor mei 2026 instellen:**
+1. Open admin-UI → "KPI-beheer" → "Targets" tab
+2. Kies maand mei 2026
+3. Vul cell in voor die winkel × KPI
+4. Toets "Bewaar rij"
+
+**Drempel-waardes aanpassen (warn/danger):**
+1. Open admin-UI → "KPI-beheer" → "Registry" tab
+2. Vul warn/danger in voor de KPI
+3. Toets "Opslaan"
+
+Effect is direct — alle rapporten + dashboards lezen de nieuwe drempels
+binnen 60 seconden (server-cache).
+
+**KPI uitschakelen (verschijnt niet meer in rapporten):**
+1. Registry-tab → toggle "Actief" uit
+2. Opslaan
+
+De KPI blijft in code bestaan maar wordt niet meer berekend of getoond.
+
+---
+
 ## Wat NIET hierin hoort
 
 - **Algoritmes & schema-versies** — die zijn implementatie, niet config.
