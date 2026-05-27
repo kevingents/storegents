@@ -20,7 +20,7 @@
  * Auth: admin-token vereist.
  */
 
-import { readKpiRegistry } from '../../../lib/kpi-registry.js';
+import { readKpiRegistry, listKpisForReport } from '../../../lib/kpi-registry.js';
 import { computeKpiValue, resolvePeriodRange } from '../../../lib/kpi-sources/index.js';
 import { getTargetsForStores } from '../../../lib/kpi-targets-store.js';
 import { listBranchesFromConfig, BUSINESS_CONFIG } from '../../../lib/business-config.js';
@@ -53,13 +53,28 @@ export default async function handler(req, res) {
 
     const requestedKpiKey = q.kpi ? String(q.kpi).trim() : null;
     const requestedStore = q.store ? String(q.store).trim() : null;
+    const requestedReportKey = q.reportKey ? String(q.reportKey).trim() : null;
 
-    /* Welke KPI's gaan we evalueren? */
-    const kpisToCompute = requestedKpiKey
-      ? allKpis.filter((k) => k.key === requestedKpiKey)
-      : allKpis;
+    /* Welke KPI's gaan we evalueren?
+       Filter-prioriteit: kpi > reportKey > alle enabled
+       - kpi=xxx       → exact 1 KPI
+       - reportKey=yyy → alleen KPI's gekoppeld aan dat rapport (via override of inReports[])
+       - geen filter   → alle enabled KPI's (huidige gedrag) */
+    let kpisToCompute;
+    if (requestedKpiKey) {
+      kpisToCompute = allKpis.filter((k) => k.key === requestedKpiKey);
+    } else if (requestedReportKey) {
+      kpisToCompute = await listKpisForReport(requestedReportKey);
+    } else {
+      kpisToCompute = allKpis;
+    }
     if (kpisToCompute.length === 0) {
-      return res.status(404).json({ success: false, message: 'Geen matchende KPI.' });
+      return res.status(404).json({
+        success: false,
+        message: requestedReportKey
+          ? `Geen KPI's gekoppeld aan rapport "${requestedReportKey}".`
+          : 'Geen matchende KPI.'
+      });
     }
 
     /* Welke winkels? */
