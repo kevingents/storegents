@@ -12,7 +12,18 @@
  */
 
 import { readVoorraadSummary, readVoorraadRows } from '../../lib/srs-voorraad-store.js';
+import { isExcludedFromVoorraadHealth } from '../../lib/business-config.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
+
+/* Tel de per-filiaal velden op tot nieuwe totals (na exclusie van filialen
+   die niet in voorraad-gezondheid horen, bv. webshop / Suitconcern). */
+function sumTotals(filialen) {
+  const keys = ['totalSkus', 'totalStock', 'skusUnderIdeal', 'skusOverIdeal', 'skusOutOfStock', 'skusNegative', 'negativeUnits', 'shortageUnits', 'overstockUnits'];
+  return filialen.reduce((acc, f) => {
+    keys.forEach((k) => { acc[k] = (acc[k] || 0) + (Number(f[k]) || 0); });
+    return acc;
+  }, {});
+}
 
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'OPTIONS'])) return;
@@ -28,10 +39,14 @@ export default async function handler(req, res) {
     const wantNegatief = String(req.query?.negatief || '') === '1';
     const wantTopTekorten = !wantNegatief && (String(req.query?.topTekorten || '') === '1' || Boolean(store));
 
+    /* Verberg niet-relevante filialen (webshop, Suitconcern magazijn, …) en
+       herbereken de totals over de zichtbare set. */
+    const filialen = (summary.filialen || []).filter((f) => !isExcludedFromVoorraadHealth(f.filiaalNummer));
+
     const payload = {
       success: true,
-      totals: summary.totals || {},
-      filialen: summary.filialen || [],
+      totals: filialen.length ? sumTotals(filialen) : (summary.totals || {}),
+      filialen,
       generatedAt: summary.generatedAt || null,
       sourceFile: summary.sourceFile || null,
       rowCount: summary.rowCount || 0
@@ -47,7 +62,8 @@ export default async function handler(req, res) {
 
     if (wantTopTekorten) {
       const rows = await readVoorraadRows();
-      const filtered = store ? rows.filter((r) => r.store === store) : rows;
+      const visible = rows.filter((r) => !isExcludedFromVoorraadHealth(r.filiaalNummer));
+      const filtered = store ? visible.filter((r) => r.store === store) : visible;
       const topTekorten = filtered
         .filter((r) => r.tekort > 0)
         .sort((a, b) => b.tekort - a.tekort)
@@ -59,7 +75,8 @@ export default async function handler(req, res) {
 
     if (wantNegatief) {
       const rows = await readVoorraadRows();
-      const filtered = (store ? rows.filter((r) => r.store === store) : rows)
+      const visible = rows.filter((r) => !isExcludedFromVoorraadHealth(r.filiaalNummer));
+      const filtered = (store ? visible.filter((r) => r.store === store) : visible)
         .filter((r) => r.voorraad < 0)
         .sort((a, b) => a.voorraad - b.voorraad) /* meest-negatief eerst */
         .slice(0, 500)
