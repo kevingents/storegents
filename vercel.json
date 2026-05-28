@@ -123,6 +123,10 @@
     {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/srs-voorraad-import",
+      "schedule": "0 5 * * *"
     }
   ]
 }
