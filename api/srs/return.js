@@ -1,6 +1,6 @@
-import { createSrsReturn } from '../lib/srs-client.js';
-import { getSrsBranchId } from '../lib/srs-branches.js';
-import { createSrsReturnLog } from '../lib/srs-return-log-store.js';
+import { createSrsReturn } from '../../lib/srs-client.js';
+import { getSrsBranchId } from '../../lib/srs-branches.js';
+import { createSrsReturnLog } from '../../lib/srs-return-log-store.js';
 
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;

@@ -8,8 +8,8 @@
  * Privacy: alleen admin-token. Privacy-statement noemt internal-only.
  */
 
-import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
-import { getAllCustomerNotes } from '../../../lib/customer-notes-store.js';
+import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { getAllCustomerNotes } from '../../lib/customer-notes-store.js';
 
 function isAuthorized(req) {
   const expected = String(process.env.ADMIN_TOKEN || '').trim();
