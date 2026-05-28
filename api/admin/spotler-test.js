@@ -48,9 +48,10 @@ export default async function handler(req, res) {
 
   /* Standaard: probeer een paar bekende resources (eerste die lukt bevestigt auth). */
   const fromIso = new Date(Date.now() - 180 * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const toIso = new Date(Date.now() + 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const probes = [
     ['templist', { pageSize: '1' }],
-    ['mailing', { fromDate: fromIso, pageSize: '1' }],
+    ['mailing', { fromDate: fromIso, toDate: toIso, pageSize: '1' }],
     ['contact', { pageSize: '1' }]
   ];
   const checks = {};
