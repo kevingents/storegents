@@ -145,6 +145,10 @@
       "schedule": "0 5 * * *"
     },
     {
+      "path": "/api/cron/srs-retail-import",
+      "schedule": "20 5 * * *"
+    },
+    {
       "path": "/api/cron/beeldbank-classify",
       "schedule": "30 6 * * *"
     }
