@@ -47,6 +47,7 @@ export default async function handler(req, res) {
       if (!pid) continue;
       if (!byProduct.has(pid)) {
         byProduct.set(pid, {
+          productId: v.productId || '',
           title: v.title || '—',
           handle: v.productHandle || '',
           url: v.productUrl || '',
@@ -75,7 +76,7 @@ export default async function handler(req, res) {
     const allProducts = Array.from(byProduct.values());
     const products = allProducts.filter((p) => inScope(p.seizoen));
     const slim = (p) => ({
-      title: p.title, handle: p.handle, url: p.url, seizoen: p.seizoen,
+      productId: p.productId, title: p.title, handle: p.handle, url: p.url, seizoen: p.seizoen,
       vendor: p.vendor, hoofdgroep: p.hoofdgroep, imagesCount: p.imagesCount, voorraad: p.voorraad
     });
 
