@@ -14,7 +14,11 @@ import {
   buildUiSections,
   setRolePermission,
   countActivePermissions,
-  resolveRolePermissions
+  resolveRolePermissions,
+  getAllRoles,
+  addCustomRole,
+  updateCustomRole,
+  deleteCustomRole
 } from '../../lib/role-permissions-store.js';
 import { ROLES, PERMISSIONS, ROLE_DEFAULT_PERMISSIONS } from '../../lib/user-roles.js';
 import { appendAuditEntry, getAuditLog } from '../../lib/permissions-audit-store.js';
@@ -48,7 +52,7 @@ export default async function handler(req, res) {
       const matrix = buildPermissionMatrix(state);
       const sections = buildUiSections();
 
-      const rolesWithCounts = ROLES.map((r) => {
+      const rolesWithCounts = getAllRoles(state).map((r) => {
         const counts = countActivePermissions(state, r.key);
         const isAdmin = r.key === 'admin';
         const riskLevel = state.riskLevels?.[r.key] || (isAdmin ? 'critical' : counts.total > 15 ? 'high' : counts.total > 8 ? 'medium' : 'low');
@@ -85,9 +89,41 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       const body = req.body || {};
       const actor = body.actor || { name: 'admin' };
+      const action = String(req.query.action || body.action || '').trim();
+
+      /* ── Custom-rol CRUD ─────────────────────────────────────────── */
+      if (action === 'create-role' || action === 'update-role' || action === 'delete-role') {
+        let state = await readRolePermissions({ refresh: true });
+        try {
+          if (action === 'create-role') {
+            const { state: ns, role } = addCustomRole(state, {
+              key: body.key, label: body.label, description: body.description,
+              color: body.color, copyFromRole: body.copyFromRole
+            });
+            const saved = await writeRolePermissions(ns, actor);
+            try { await appendAuditEntry({ type: 'role-created', roleKey: role.key, change: 'created', actor, timestamp: new Date().toISOString() }); } catch { /* audit best-effort */ }
+            return res.status(200).json({ success: true, role, savedAt: saved.updatedAt });
+          }
+          if (action === 'update-role') {
+            const { state: ns, role } = updateCustomRole(state, body.key, {
+              label: body.label, description: body.description, color: body.color
+            });
+            const saved = await writeRolePermissions(ns, actor);
+            return res.status(200).json({ success: true, role, savedAt: saved.updatedAt });
+          }
+          /* delete-role */
+          const { state: ns } = deleteCustomRole(state, body.key);
+          const saved = await writeRolePermissions(ns, actor);
+          try { await appendAuditEntry({ type: 'role-deleted', roleKey: body.key, change: 'deleted', actor, timestamp: new Date().toISOString() }); } catch { /* audit best-effort */ }
+          return res.status(200).json({ success: true, savedAt: saved.updatedAt });
+        } catch (e) {
+          return res.status(400).json({ success: false, message: e.message || 'Rol-bewerking mislukt.' });
+        }
+      }
+
       const isBulk = String(req.query.bulk || '0') === '1' || Array.isArray(body.changes);
 
-      let state = await readRolePermissions();
+      let state = await readRolePermissions({ refresh: true });
       const auditEntries = [];
 
       if (isBulk) {

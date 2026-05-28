@@ -14,6 +14,7 @@ import { getPersonnel } from '../../../lib/srs-personnel-client.js';
 import { getAllUserPermissions } from '../../../lib/user-permissions-store.js';
 import { getAllOfficeUsers } from '../../../lib/office-users-store.js';
 import { resolvePermissions, ROLES, DEPARTMENTS } from '../../../lib/user-roles.js';
+import { readRolePermissions, getAllRoles } from '../../../lib/role-permissions-store.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 function isAuthorized(req) {
@@ -212,10 +213,16 @@ export default async function handler(req, res) {
       }, {})
     };
 
+    /* Catalog-rollen incl. custom rollen (uit role-permissions store) zodat de
+       rol-dropdown in gebruikersbeheer ook eigen rollen toont. */
+    let catalogRoles = ROLES;
+    try { catalogRoles = getAllRoles(await readRolePermissions()); }
+    catch (e) { console.warn('[personnel/list] custom rollen niet leesbaar:', e.message); }
+
     return res.status(200).json({
       success: true,
       totals,
-      catalog: { roles: ROLES, departments: DEPARTMENTS },
+      catalog: { roles: catalogRoles, departments: DEPARTMENTS },
       rows
     });
   } catch (error) {
