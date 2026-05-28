@@ -55,6 +55,9 @@ export default async function handler(req, res) {
           hoofdgroep: v.hoofdgroepOmschrijving || v.hoofdgroep || '',
           imagesCount: 0,
           voorraad: 0,
+          createdAt: v.createdAt || '',
+          hasLongDescription: !!v.hasLongDescription,
+          hasComplementary: !!v.hasComplementary,
           _skus: new Set()
         });
       }
@@ -62,11 +65,15 @@ export default async function handler(req, res) {
       const ic = Array.isArray(v.images) ? v.images.length : (v.image ? 1 : 0);
       if (ic > p.imagesCount) p.imagesCount = ic;
       if (!p.seizoen && v.seizoen) p.seizoen = v.seizoen;
+      if (!p.createdAt && v.createdAt) p.createdAt = v.createdAt;
+      if (v.hasLongDescription) p.hasLongDescription = true;
+      if (v.hasComplementary) p.hasComplementary = true;
       const sku = String(v.sku || '');
       if (sku && !p._skus.has(sku)) { p._skus.add(sku); p.voorraad += (voorraadBySku.get(sku) || 0); }
     }
 
-    const products = Array.from(byProduct.values()).filter((p) => inScope(p.seizoen));
+    const allProducts = Array.from(byProduct.values());
+    const products = allProducts.filter((p) => inScope(p.seizoen));
     const slim = (p) => ({
       title: p.title, handle: p.handle, url: p.url, seizoen: p.seizoen,
       vendor: p.vendor, hoofdgroep: p.hoofdgroep, imagesCount: p.imagesCount, voorraad: p.voorraad
@@ -75,13 +82,31 @@ export default async function handler(req, res) {
     const noImage = products.filter((p) => p.imagesCount === 0 && p.voorraad > 0).sort((a, b) => b.voorraad - a.voorraad);
     const oneImage = products.filter((p) => p.imagesCount === 1).sort((a, b) => b.voorraad - a.voorraad);
 
+    /* Nieuw op Shopify (laatste 14 dagen) zonder afbeelding — over ALLE producten
+       (een vers product heeft soms nog geen seizoen-metafield). */
+    const cutoff = Date.now() - 14 * 86400000;
+    const newNoImage = allProducts
+      .filter((p) => p.imagesCount === 0 && p.createdAt && Date.parse(p.createdAt) >= cutoff)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .map((p) => ({ ...slim(p), createdAt: p.createdAt }));
+
+    /* long_description + complementary — alleen tonen als de metafield überhaupt
+       leesbaar is (anders zou álles "ontbreekt" tonen → misleidend). */
+    const longReadable = products.some((p) => p.hasLongDescription);
+    const compReadable = products.some((p) => p.hasComplementary);
+    const missingLong = longReadable ? products.filter((p) => !p.hasLongDescription).sort((a, b) => b.voorraad - a.voorraad) : [];
+    const missingComp = compReadable ? products.filter((p) => !p.hasComplementary).sort((a, b) => b.voorraad - a.voorraad) : [];
+
     return res.status(200).json({
       success: true,
       refreshedAt: cache.refreshedAt || null,
       seizoenScope: '2026 / NOS',
       productsInScope: products.length,
       noImage: { count: noImage.length, rows: noImage.slice(0, 250).map(slim), truncated: noImage.length > 250 },
-      oneImage: { count: oneImage.length, rows: oneImage.slice(0, 250).map(slim), truncated: oneImage.length > 250 }
+      oneImage: { count: oneImage.length, rows: oneImage.slice(0, 250).map(slim), truncated: oneImage.length > 250 },
+      newNoImage: { count: newNoImage.length, rows: newNoImage.slice(0, 100) },
+      longDescription: { available: longReadable, count: missingLong.length, rows: missingLong.slice(0, 250).map(slim), truncated: missingLong.length > 250 },
+      complementary: { available: compReadable, count: missingComp.length, rows: missingComp.slice(0, 250).map(slim), truncated: missingComp.length > 250 }
     });
   } catch (e) {
     console.error('[admin/content-checks]', e);
