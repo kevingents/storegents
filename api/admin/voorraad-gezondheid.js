@@ -4,6 +4,7 @@
  * GET                       → { success, totals, filialen: [...], generatedAt, sourceFile }
  * GET ?store=GENTS+Almere   → bovenstaande + topTekorten[] voor die winkel (top 50 SKU's met grootste tekort)
  * GET ?topTekorten=1        → globale top-50 tekort-SKU's over alle filialen
+ * GET ?negatief=1           → alle negatieve-voorraad rijen (data-integriteit), optioneel + &store=
  *
  * Leest snapshot uit srs-voorraad-store (gevuld door cron). Geen SFTP-call.
  *
@@ -24,7 +25,8 @@ export default async function handler(req, res) {
   try {
     const summary = await readVoorraadSummary();
     const store = String(req.query?.store || '').trim();
-    const wantTopTekorten = String(req.query?.topTekorten || '') === '1' || Boolean(store);
+    const wantNegatief = String(req.query?.negatief || '') === '1';
+    const wantTopTekorten = !wantNegatief && (String(req.query?.topTekorten || '') === '1' || Boolean(store));
 
     const payload = {
       success: true,
@@ -53,6 +55,17 @@ export default async function handler(req, res) {
         .map((r) => ({ store: r.store, sku: r.sku, voorraad: r.voorraad, ideaal: r.ideaal, tekort: r.tekort }));
       payload.topTekorten = topTekorten;
       payload.scopedStore = store || null;
+    }
+
+    if (wantNegatief) {
+      const rows = await readVoorraadRows();
+      const filtered = (store ? rows.filter((r) => r.store === store) : rows)
+        .filter((r) => r.voorraad < 0)
+        .sort((a, b) => a.voorraad - b.voorraad) /* meest-negatief eerst */
+        .slice(0, 500)
+        .map((r) => ({ store: r.store, filiaalNummer: r.filiaalNummer, sku: r.sku, voorraad: r.voorraad, ideaal: r.ideaal }));
+      payload.negatief = filtered;
+      payload.negatiefScopedStore = store || null;
     }
 
     return res.status(200).json(payload);
