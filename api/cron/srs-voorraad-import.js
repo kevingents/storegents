@@ -14,6 +14,7 @@
  */
 
 import { importVoorraad, importLocaties, importAll } from '../../lib/srs-voorraad-import.js';
+import { importDragers } from '../../lib/srs-dragers-import.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -46,6 +47,14 @@ async function handler(req, res) {
       result = await importAll({ remotePath });
     }
 
+    /* Dragers (verplaatsingen) — additief; mag de voorraad-import nooit laten
+       falen. Alleen bij de volledige run (geen ?only). */
+    let dragers = null;
+    if (!only) {
+      try { const d = await importDragers({ remotePath }); dragers = { sourceFile: d.sourceFile, open: d.totals?.dragers || 0 }; }
+      catch (e) { console.error('[cron/srs-voorraad-import] dragers-import faalde:', e.message); }
+    }
+
     const ok = (result.voorraad || result.locaties) && result.errors.length === 0;
     return res.status(ok ? 200 : 207).json({
       success: ok,
@@ -55,6 +64,7 @@ async function handler(req, res) {
       locaties: result.locaties
         ? { sourceFile: result.locaties.sourceFile, rows: result.locaties.rowCount }
         : null,
+      dragers,
       errors: result.errors.length ? result.errors : undefined,
       generatedAt: new Date().toISOString()
     });
