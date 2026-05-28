@@ -10,6 +10,10 @@
  * ECHTE uitlever-gaps — een winkel zou het moeten voeren, het magazijn heeft
  * het, maar de winkel staat leeg.
  *
+ * Elke rij krijgt ook `sinds` (datum) + `dagen` (hoe lang al onuitgeleverd),
+ * o.b.v. de dagelijks bijgehouden watermark. NB: telt vanaf de 1e import nadat
+ * deze feature live ging — niet met terugwerkende kracht.
+ *
  * GET                       → { success, totals, rows: top-100, generatedAt }
  * GET ?all=1                → alle rijen (max 1000)
  * GET ?onlyGap=1            → alleen SKU's met winkelsMetTarget > 0
@@ -17,7 +21,7 @@
  * Auth: admin-token vereist.
  */
 
-import { readVoorraadRows, computeMagazijnNietWinkel } from '../../lib/srs-voorraad-store.js';
+import { readVoorraadRows, computeMagazijnNietWinkel, readMagazijnNietWinkelWatermark } from '../../lib/srs-voorraad-store.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 export default async function handler(req, res) {
@@ -43,15 +47,20 @@ export default async function handler(req, res) {
     const onlyGap = String(req.query?.onlyGap || '') === '1';
     const all = String(req.query?.all || '') === '1';
 
-    /* Gedeelde cross-reference (zelfde definitie als rapport-bouwer-bron) */
-    let rows = computeMagazijnNietWinkel(voorraadRows);
+    /* Gedeelde cross-reference (zelfde definitie als rapport-bouwer-bron) +
+       leeftijd-watermark (sinds wanneer onuitgeleverd). */
+    const wm = await readMagazijnNietWinkelWatermark();
+    let rows = computeMagazijnNietWinkel(voorraadRows, { firstSeen: wm.firstSeen || {} });
     if (onlyGap) rows = rows.filter((r) => r.winkelsMetTarget > 0);
 
+    const gapRows = rows.filter((r) => r.winkelsMetTarget > 0);
     const totals = {
       skus: rows.length,
       stuks: rows.reduce((s, r) => s + r.magazijnVoorraad, 0),
-      metTarget: rows.filter((r) => r.winkelsMetTarget > 0).length,
-      metTargetStuks: rows.filter((r) => r.winkelsMetTarget > 0).reduce((s, r) => s + r.magazijnVoorraad, 0)
+      metTarget: gapRows.length,
+      metTargetStuks: gapRows.reduce((s, r) => s + r.magazijnVoorraad, 0),
+      langstDagen: rows.reduce((m, r) => Math.max(m, r.dagen || 0), 0),
+      watermarkSinds: wm.updatedAt || null
     };
 
     const limit = all ? 1000 : 100;
