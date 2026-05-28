@@ -47,8 +47,11 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const [cfg, lists] = await Promise.all([getAudienceConfig(), listTempLists().catch(() => [])]);
-      return res.status(200).json({ success: true, connected: true, config: slimConfig(cfg), lists });
+      const cfg = await getAudienceConfig();
+      const out = { success: true, connected: true, config: slimConfig(cfg) };
+      /* Lijsten alleen op verzoek ophalen (live call) — houdt het dashboard snel. */
+      if (String(req.query?.lists || '') === '1') out.lists = await listTempLists().catch(() => []);
+      return res.status(200).json(out);
     }
 
     const action = String(req.query?.action || '').trim();
