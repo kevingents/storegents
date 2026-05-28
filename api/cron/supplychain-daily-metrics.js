@@ -22,10 +22,15 @@ function yesterdayIso() {
 }
 
 async function handler(req, res) {
-  const secret = process.env.SUPPLYCHAIN_CRON_SECRET || '';
+  /* Accepteer de Vercel-cron-invocatie: secret valt terug op CRON_SECRET (die
+     Vercel automatisch als Authorization: Bearer meestuurt) en de vercel-cron
+     user-agent mag altijd door. Custom SUPPLYCHAIN_CRON_SECRET blijft werken
+     voor handmatig triggeren. */
+  const secret = process.env.SUPPLYCHAIN_CRON_SECRET || process.env.CRON_SECRET || '';
+  const ua = String(req.headers['user-agent'] || '').toLowerCase();
   const incoming = String(req.headers.authorization || req.query.secret || '')
     .replace(/^Bearer\s+/i, '').trim();
-  if (secret && incoming !== secret) {
+  if (secret && incoming !== secret && !ua.includes('vercel-cron')) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
