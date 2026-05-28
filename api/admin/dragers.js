@@ -23,6 +23,35 @@ export default async function handler(req, res) {
   try {
     const refresh = req.query?.refresh === '1' || req.query?.refresh === 'true';
     const data = refresh ? await importDragers() : await readDragers();
+
+    /* Winkel-weergave (?store=): wat komt er naar deze winkel toe (bestemming),
+       plus hoeveel daarvan te laat is. Read-only — geen SFTP-refresh. Matcht op
+       winkelnaam of filiaal-nummer; alleen de eigen dragers terug. */
+    const store = String(req.query?.store || '').trim();
+    if (store) {
+      const lc = store.toLowerCase();
+      const list = (data.list || []).filter((d) =>
+        String(d.bestemmingNaam || '').toLowerCase() === lc || String(d.bestemming || '') === store
+      );
+      const entry = (data.byStore || []).find((s) =>
+        String(s.store || '').toLowerCase() === lc || String(s.filiaal || '') === store
+      );
+      return res.status(200).json({
+        success: true,
+        scope: 'store',
+        store,
+        deadlineHours: data.deadlineHours || 48,
+        refreshedAt: data.refreshedAt || null,
+        sourceFile: data.sourceFile || '',
+        totals: {
+          dragers: entry?.dragers ?? list.length,
+          stuks: entry?.stuks ?? list.reduce((n, d) => n + (d.regels || 0), 0),
+          teLaat: entry?.teLaat ?? list.filter((d) => d.teLaat).length
+        },
+        list
+      });
+    }
+
     return res.status(200).json({ success: true, ...data });
   } catch (e) {
     console.error('[admin/dragers]', e);
