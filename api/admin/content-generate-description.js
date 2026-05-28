@@ -64,7 +64,7 @@ export default async function handler(req, res) {
       descriptionPlain ? `- Huidige korte omschrijving: ${descriptionPlain}` : ''
     ].filter(Boolean).join('\n');
 
-    const { text, model } = await claudeMessage({ system, user, maxTokens: 500, temperature: 0.7 });
+    const { text, model } = await claudeMessage({ system, user, maxTokens: 220, temperature: 0.7 });
 
     return res.status(200).json({
       success: true,
