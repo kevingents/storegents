@@ -17,6 +17,7 @@
 
 import { readMarketing, upsertItem, deleteItem, saveAgency } from '../../lib/marketing-store.js';
 import { readVoorraadSummary } from '../../lib/srs-voorraad-store.js';
+import { readVoorraadAdvies } from '../../lib/voorraad-advies.js';
 import { listBranchesFromConfig } from '../../lib/business-config.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -68,15 +69,26 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const [marketing, summary] = await Promise.all([readMarketing(), readVoorraadSummary().catch(() => ({}))]);
+      const [marketing, summary, advies] = await Promise.all([
+        readMarketing(),
+        readVoorraadSummary().catch(() => ({})),
+        readVoorraadAdvies().catch(() => null)
+      ]);
+      /* Rijk advies (verkopen ⋈ voorraad) als de import gedraaid heeft; anders
+         de lichte versie uit de voorraad-summary. */
+      const rich = advies && Array.isArray(advies.filialen) && advies.filialen.length ? advies : null;
       return res.status(200).json({
         success: true,
         campaigns: marketing.campaigns,
         content: marketing.content,
         assets: marketing.assets,
         agency: marketing.agency,
-        voorraadAdvies: buildVoorraadAdvies(summary),
-        voorraadGeneratedAt: summary?.generatedAt || null,
+        voorraadAdvies: rich ? rich.filialen : buildVoorraadAdvies(summary),
+        voorraadAdviesGlobal: rich ? rich.global : null,
+        voorraadAdviesTotals: rich ? rich.totals : null,
+        voorraadAdviesWindow: rich ? rich.window : null,
+        voorraadAdviesRich: Boolean(rich),
+        voorraadGeneratedAt: (rich ? rich.generatedAt : null) || summary?.generatedAt || null,
         generatedAt: new Date().toISOString()
       });
     }
