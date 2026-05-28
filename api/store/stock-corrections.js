@@ -68,12 +68,13 @@ export default async function handler(req, res) {
         const store = clean(body.store);
         const articles = Array.isArray(body.articles) ? body.articles : [];
         const note = clean(body.note);
+        const bestemming = clean(body.bestemming);
         const requestedBy = body.requestedBy || body.actor || { name: 'onbekend' };
 
         if (!store) return res.status(400).json({ success: false, message: 'Geen winkel opgegeven.' });
         if (!articles.length) return res.status(400).json({ success: false, message: 'Geen artikelen opgegeven.' });
 
-        const created = await createRequest({ store, articles, note }, requestedBy);
+        const created = await createRequest({ store, articles, note, bestemming }, requestedBy);
         return res.status(200).json({ success: true, request: created });
       }
 
