@@ -143,6 +143,10 @@
     {
       "path": "/api/cron/srs-voorraad-import",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/beeldbank-classify",
+      "schedule": "30 6 * * *"
     }
   ]
 }

@@ -11,6 +11,9 @@
  *   vendor     exact merk
  *   seizoen    exact seizoen
  *   hoofdgroep exacte hoofdgroep
+ *   color      exacte kleur
+ *   video      '1' = met video, '0' = zonder
+ *   model      '1' = met model/sfeerbeeld, '0' = zonder (alleen geclassificeerd)
  *   offset     paginatie (default 0)
  *   limit      paginatie (default 120, max 500)
  *
@@ -22,6 +25,7 @@
  */
 
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
+import { readModelTags } from '../../lib/beeldbank-vision.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 const clean = (v) => String(v == null ? '' : v).trim();
@@ -41,7 +45,11 @@ export default async function handler(req, res) {
   if (!requireAdmin(req, res)) return;
 
   try {
-    const cache = await readProductsCache();
+    const [cache, modelTags] = await Promise.all([
+      readProductsCache(),
+      readModelTags().catch(() => ({ tags: {}, updatedAt: null }))
+    ]);
+    const tags = modelTags.tags || {};
 
     /* Dedupe variant-cache → één entry per product; kleuren over álle varianten. */
     const byProduct = new Map();
@@ -52,6 +60,9 @@ export default async function handler(req, res) {
       if (!entry) {
         const images = Array.isArray(v.images) ? v.images.filter(Boolean) : (v.image ? [v.image] : []);
         entry = {
+          productId: pid,
+          hasModel: Boolean(tags[pid]?.hasModel),
+          modelClassified: Object.prototype.hasOwnProperty.call(tags, pid),
           title: clean(v.title) || '—',
           handle: clean(v.productHandle),
           url: clean(v.productUrl),
@@ -94,12 +105,15 @@ export default async function handler(req, res) {
     const fHoofdgroep = clean(req.query?.hoofdgroep);
     const fColor = clean(req.query?.color);
     const fVideo = clean(req.query?.video); /* '1' = met video, '0' = zonder */
+    const fModel = clean(req.query?.model); /* '1' = met model/sfeerbeeld, '0' = zonder */
 
     let filtered = all;
     if (fCollection) filtered = filtered.filter((p) => p.collections.includes(fCollection));
     if (fColor) filtered = filtered.filter((p) => p.colors.includes(fColor));
     if (fVideo === '1') filtered = filtered.filter((p) => (p.videos || []).length > 0);
     else if (fVideo === '0') filtered = filtered.filter((p) => !(p.videos || []).length);
+    if (fModel === '1') filtered = filtered.filter((p) => p.hasModel);
+    else if (fModel === '0') filtered = filtered.filter((p) => p.modelClassified && !p.hasModel);
     if (fVendor) filtered = filtered.filter((p) => p.vendor === fVendor);
     if (fSeizoen) filtered = filtered.filter((p) => p.seizoen === fSeizoen);
     if (fHoofdgroep) filtered = filtered.filter((p) => p.hoofdgroep === fHoofdgroep);
@@ -127,12 +141,16 @@ export default async function handler(req, res) {
       success: true,
       refreshedAt: cache.refreshedAt || null,
       total: filtered.length,
+      imagesTotal: all.length,
       returned: page.length,
       offset,
       limit,
       hasMore: offset + page.length < filtered.length,
       collectionsAvailable: cMap.size > 0,
       withVideo: all.reduce((n, p) => n + ((p.videos || []).length ? 1 : 0), 0),
+      withModel: all.reduce((n, p) => n + (p.hasModel ? 1 : 0), 0),
+      modelClassified: all.reduce((n, p) => n + (p.modelClassified ? 1 : 0), 0),
+      modelTaggedAt: modelTags.updatedAt || null,
       facets: {
         collections: facetList(cMap),
         colors: facetList(kMap),
