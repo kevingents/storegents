@@ -62,6 +62,7 @@ export default async function handler(req, res) {
           image: clean(v.image) || images[0] || '',
           imagesCount: images.length,
           images: images.slice(0, 10),
+          videos: Array.isArray(v.videos) ? v.videos.filter((x) => x && x.url).slice(0, 5) : [],
           _colors: new Set()
         };
         byProduct.set(pid, entry);
@@ -92,10 +93,13 @@ export default async function handler(req, res) {
     const fSeizoen = clean(req.query?.seizoen);
     const fHoofdgroep = clean(req.query?.hoofdgroep);
     const fColor = clean(req.query?.color);
+    const fVideo = clean(req.query?.video); /* '1' = met video, '0' = zonder */
 
     let filtered = all;
     if (fCollection) filtered = filtered.filter((p) => p.collections.includes(fCollection));
     if (fColor) filtered = filtered.filter((p) => p.colors.includes(fColor));
+    if (fVideo === '1') filtered = filtered.filter((p) => (p.videos || []).length > 0);
+    else if (fVideo === '0') filtered = filtered.filter((p) => !(p.videos || []).length);
     if (fVendor) filtered = filtered.filter((p) => p.vendor === fVendor);
     if (fSeizoen) filtered = filtered.filter((p) => p.seizoen === fSeizoen);
     if (fHoofdgroep) filtered = filtered.filter((p) => p.hoofdgroep === fHoofdgroep);
@@ -128,6 +132,7 @@ export default async function handler(req, res) {
       limit,
       hasMore: offset + page.length < filtered.length,
       collectionsAvailable: cMap.size > 0,
+      withVideo: all.reduce((n, p) => n + ((p.videos || []).length ? 1 : 0), 0),
       facets: {
         collections: facetList(cMap),
         colors: facetList(kMap),
