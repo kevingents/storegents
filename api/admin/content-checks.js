@@ -93,7 +93,10 @@ export default async function handler(req, res) {
 
     /* long_description + complementary — alleen tonen als de metafield überhaupt
        leesbaar is (anders zou álles "ontbreekt" tonen → misleidend). */
-    const longReadable = products.some((p) => p.hasLongDescription);
+    /* custom.long_description is een eigen (custom) metafield dat we zélf
+       schrijven — altijd "beschikbaar", ook als nog geen enkel product het
+       gevuld heeft (anders verbergen we de generator juist als je 'm nodig hebt). */
+    const longReadable = true;
     const compReadable = products.some((p) => p.hasComplementary);
     const missingLong = longReadable ? products.filter((p) => !p.hasLongDescription).sort((a, b) => b.voorraad - a.voorraad) : [];
     const missingComp = compReadable ? products.filter((p) => !p.hasComplementary).sort((a, b) => b.voorraad - a.voorraad) : [];

@@ -47,12 +47,17 @@ export default async function handler(req, res) {
   }
 
   /* Standaard: probeer een paar bekende resources (eerste die lukt bevestigt auth). */
-  const probes = ['templist', 'mailing', 'contact', 'audience'];
+  const fromIso = new Date(Date.now() - 180 * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const probes = [
+    ['templist', { pageSize: '1' }],
+    ['mailing', { fromDate: fromIso, pageSize: '1' }],
+    ['contact', { pageSize: '1' }]
+  ];
   const checks = {};
   let connected = false;
-  for (const p of probes) {
+  for (const [p, query] of probes) {
     try {
-      const d = await spotlerRequest('GET', p, { query: { pageSize: '1' } });
+      const d = await spotlerRequest('GET', p, { query });
       checks[p] = { ok: true, summary: summarize(d) };
       connected = true;
     } catch (e) {
