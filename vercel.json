@@ -151,6 +151,10 @@
     {
       "path": "/api/cron/beeldbank-classify",
       "schedule": "30 6 * * *"
+    },
+    {
+      "path": "/api/cron/supplychain-daily-metrics",
+      "schedule": "30 4 * * *"
     }
   ]
 }
