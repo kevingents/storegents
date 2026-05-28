@@ -129,6 +129,10 @@
       "schedule": "45 5 * * *"
     },
     {
+      "path": "/api/cron/spotler-audience-sync",
+      "schedule": "50 5 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
