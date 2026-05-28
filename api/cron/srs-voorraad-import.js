@@ -33,7 +33,7 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
-  const remotePath = String(req.query?.path || '/');
+  const remotePath = String(req.query?.path || '/Dataexport');
   const only = String(req.query?.only || '').toLowerCase();
 
   try {

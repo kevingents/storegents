@@ -27,7 +27,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   }
 
-  const remotePath = String(req.query?.path || '/');
+  const remotePath = String(req.query?.path || '/Dataexport');
   const only = String(req.query?.only || '').toLowerCase();
 
   try {
