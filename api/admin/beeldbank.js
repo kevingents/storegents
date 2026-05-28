@@ -43,34 +43,43 @@ export default async function handler(req, res) {
   try {
     const cache = await readProductsCache();
 
-    /* Dedupe variant-cache → één entry per product. */
+    /* Dedupe variant-cache → één entry per product; kleuren over álle varianten. */
     const byProduct = new Map();
     for (const v of Object.values(cache.bySku || {})) {
       const pid = v.productId || v.productHandle || v.title;
-      if (!pid || byProduct.has(pid)) continue;
-      const images = Array.isArray(v.images) ? v.images.filter(Boolean) : (v.image ? [v.image] : []);
-      byProduct.set(pid, {
-        title: clean(v.title) || '—',
-        handle: clean(v.productHandle),
-        url: clean(v.productUrl),
-        vendor: clean(v.vendor),
-        hoofdgroep: clean(v.hoofdgroepOmschrijving) || clean(v.hoofdgroep),
-        seizoen: clean(v.seizoen),
-        collections: Array.isArray(v.collections) ? v.collections.map(clean).filter(Boolean) : [],
-        image: clean(v.image) || images[0] || '',
-        imagesCount: images.length,
-        images: images.slice(0, 10)
-      });
+      if (!pid) continue;
+      let entry = byProduct.get(pid);
+      if (!entry) {
+        const images = Array.isArray(v.images) ? v.images.filter(Boolean) : (v.image ? [v.image] : []);
+        entry = {
+          title: clean(v.title) || '—',
+          handle: clean(v.productHandle),
+          url: clean(v.productUrl),
+          vendor: clean(v.vendor),
+          hoofdgroep: clean(v.hoofdgroepOmschrijving) || clean(v.hoofdgroep),
+          seizoen: clean(v.seizoen),
+          collections: Array.isArray(v.collections) ? v.collections.map(clean).filter(Boolean) : [],
+          image: clean(v.image) || images[0] || '',
+          imagesCount: images.length,
+          images: images.slice(0, 10),
+          _colors: new Set()
+        };
+        byProduct.set(pid, entry);
+      }
+      const col = clean(v.color);
+      if (col) entry._colors.add(col);
     }
 
     /* Beeldbank = alléén producten met minstens één afbeelding. */
     const all = [...byProduct.values()].filter((p) => p.image);
+    for (const p of all) { p.colors = [...p._colors]; delete p._colors; }
 
     /* Facets over de volledige beeld-set (stabiele filterlijst). */
-    const cMap = new Map(), vMap = new Map(), sMap = new Map(), hMap = new Map();
+    const cMap = new Map(), vMap = new Map(), sMap = new Map(), hMap = new Map(), kMap = new Map();
     const bump = (map, key) => { const k = clean(key); if (k) map.set(k, (map.get(k) || 0) + 1); };
     for (const p of all) {
       for (const c of p.collections) bump(cMap, c);
+      for (const k of p.colors) bump(kMap, k);
       bump(vMap, p.vendor);
       bump(sMap, p.seizoen);
       bump(hMap, p.hoofdgroep);
@@ -82,15 +91,17 @@ export default async function handler(req, res) {
     const fVendor = clean(req.query?.vendor);
     const fSeizoen = clean(req.query?.seizoen);
     const fHoofdgroep = clean(req.query?.hoofdgroep);
+    const fColor = clean(req.query?.color);
 
     let filtered = all;
     if (fCollection) filtered = filtered.filter((p) => p.collections.includes(fCollection));
+    if (fColor) filtered = filtered.filter((p) => p.colors.includes(fColor));
     if (fVendor) filtered = filtered.filter((p) => p.vendor === fVendor);
     if (fSeizoen) filtered = filtered.filter((p) => p.seizoen === fSeizoen);
     if (fHoofdgroep) filtered = filtered.filter((p) => p.hoofdgroep === fHoofdgroep);
     if (q) {
       filtered = filtered.filter((p) => {
-        const hay = `${p.title} ${p.vendor} ${p.hoofdgroep} ${p.collections.join(' ')}`.toLowerCase();
+        const hay = `${p.title} ${p.vendor} ${p.hoofdgroep} ${p.collections.join(' ')} ${p.colors.join(' ')}`.toLowerCase();
         return hay.includes(q);
       });
     }
@@ -119,6 +130,7 @@ export default async function handler(req, res) {
       collectionsAvailable: cMap.size > 0,
       facets: {
         collections: facetList(cMap),
+        colors: facetList(kMap),
         vendors: facetList(vMap),
         seizoenen: facetList(sMap),
         hoofdgroepen: facetList(hMap)
