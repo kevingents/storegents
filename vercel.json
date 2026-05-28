@@ -121,6 +121,10 @@
       "schedule": "0 3 * * *"
     },
     {
+      "path": "/api/cron/content-new-product-check",
+      "schedule": "30 3 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
