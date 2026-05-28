@@ -14,6 +14,7 @@ import {
   bulkUpsert
 } from '../../lib/user-permissions-store.js';
 import { ROLES, DEPARTMENTS, PERMISSIONS, ROLE_DEFAULT_PERMISSIONS, resolvePermissions, isValidPermission } from '../../lib/user-roles.js';
+import { readRolePermissions, getAllRoles } from '../../lib/role-permissions-store.js';
 import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
@@ -41,9 +42,9 @@ function parseBody(req) {
   return req.body || {};
 }
 
-function validatePatch(patch) {
+function validatePatch(patch, validRoleKeys) {
   const errors = [];
-  if (patch.role && !ROLES.find((r) => r.key === patch.role)) {
+  if (patch.role && validRoleKeys && !validRoleKeys.has(patch.role)) {
     errors.push(`Onbekende role: ${patch.role}`);
   }
   if (Array.isArray(patch.extraPermissions)) {
@@ -93,10 +94,14 @@ export default async function handler(req, res) {
       const body = parseBody(req);
       const bulkMode = String(req.query.bulk || '') === '1';
       const updatedBy = String(req.headers['x-actor'] || body.actor || 'admin').trim() || 'admin';
+      /* Geldige rol-keys = vaste rollen + custom rollen (uit role-permissions store). */
+      let validRoleKeys;
+      try { validRoleKeys = new Set(getAllRoles(await readRolePermissions()).map((r) => r.key)); }
+      catch { validRoleKeys = new Set(ROLES.map((r) => r.key)); }
 
       if (bulkMode) {
         const items = Array.isArray(body.items) ? body.items : [];
-        const errors = items.flatMap((it) => validatePatch(it).map((m) => `[${it.personnelId}] ${m}`));
+        const errors = items.flatMap((it) => validatePatch(it, validRoleKeys).map((m) => `[${it.personnelId}] ${m}`));
         if (errors.length) return res.status(400).json({ success: false, message: 'Ongeldige invoer.', errors });
         const count = await bulkUpsert(items, updatedBy);
         return res.status(200).json({ success: true, count });
@@ -105,7 +110,7 @@ export default async function handler(req, res) {
       const personnelId = body.personnelId || req.query.personnelId;
       if (!personnelId) return res.status(400).json({ success: false, message: 'personnelId is verplicht.' });
 
-      const errors = validatePatch(body);
+      const errors = validatePatch(body, validRoleKeys);
       if (errors.length) return res.status(400).json({ success: false, message: 'Ongeldige invoer.', errors });
 
       const before = await getUserPermissions(personnelId);
