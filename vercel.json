@@ -125,6 +125,10 @@
       "schedule": "30 3 * * *"
     },
     {
+      "path": "/api/cron/spotler-metrics-refresh",
+      "schedule": "45 5 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
