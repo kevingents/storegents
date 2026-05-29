@@ -22,6 +22,7 @@
  */
 
 import { readKpiRegistry } from '../../lib/kpi-registry.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 import { computeKpiValue, resolvePeriodRange } from '../../lib/kpi-sources/index.js';
 import { getTargetsForStores } from '../../lib/kpi-targets-store.js';
 import { listBranchesFromConfig, BUSINESS_CONFIG } from '../../lib/business-config.js';
@@ -237,4 +238,4 @@ async function handler(req, res) {
   });
 }
 
-export default handler;
+export default trackedCron('kpi-alerts', handler);

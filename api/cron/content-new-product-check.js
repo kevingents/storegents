@@ -13,6 +13,7 @@
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 import { createNotification } from '../../lib/store-notifications-store.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 const SEEN_PATH = 'marketing/content-seen-products.json';
 
@@ -25,7 +26,7 @@ function isAuthorized(req) {
   return Boolean(adminToken && token && token === adminToken);
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
@@ -86,3 +87,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, message: e.message || 'Onbekende fout.' });
   }
 }
+
+export default trackedCron('content-new-product-check', handler);

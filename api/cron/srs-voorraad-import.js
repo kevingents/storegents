@@ -18,6 +18,7 @@
 
 import { importVoorraad, importLocaties, importAll } from '../../lib/srs-voorraad-import.js';
 import { importDragers } from '../../lib/srs-dragers-import.js';
+import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
@@ -77,4 +78,4 @@ async function handler(req, res) {
   }
 }
 
-export default handler;
+export default trackedCron('srs-voorraad-import', handler);
