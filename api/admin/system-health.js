@@ -11,10 +11,20 @@ async function timed(label, key, fn) {
 }
 
 function apiBase(req) {
-  const configured = process.env.PUBLIC_API_BASE_URL || process.env.VERCEL_URL || '';
-  if (configured) return configured.startsWith('http') ? configured.replace(/\/$/, '') : `https://${configured.replace(/\/$/, '')}`;
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  return `${proto}://${req.headers.host}`;
+  /* Volgorde is belangrijk i.v.m. Vercel Deployment Protection.
+     VERCEL_URL is de deployment-specifieke URL die Protection blokkeert met
+     een HTML 401-login — interne fetches daarheen falen dus. De host waarmee
+     de admin de portal opende (req.headers.host) is daarentegen het publieke,
+     niet-beschermde alias. Daarom: expliciete publieke base eerst, dan de
+     request-host, en VERCEL_URL pas als allerlaatste redmiddel. */
+  const explicit = String(process.env.PUBLIC_API_BASE_URL || process.env.GENTS_API_BASE_URL || '').trim();
+  if (explicit) return explicit.startsWith('http') ? explicit.replace(/\/$/, '') : `https://${explicit.replace(/\/$/, '')}`;
+  if (req.headers.host) {
+    const proto = req.headers['x-forwarded-proto'] || 'https';
+    return `${proto}://${req.headers.host}`;
+  }
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
+  return '';
 }
 
 function adminToken(req) {
@@ -32,7 +42,13 @@ function appendAdminToken(url, token) {
 
 async function getJson(url, token = '') {
   const finalUrl = appendAdminToken(url, token);
-  const response = await fetch(finalUrl, { headers: { Accept: 'application/json' } });
+  const headers = { Accept: 'application/json' };
+  if (token) headers['x-admin-token'] = token;
+  /* Stuur de Deployment-Protection bypass mee voor het geval de base toch
+     een beschermde URL is — anders krijgen we een HTML 401-loginpagina terug. */
+  const bypass = String(process.env.VERCEL_AUTOMATION_BYPASS_SECRET || process.env.VERCEL_PROTECTION_BYPASS || '').trim();
+  if (bypass) headers['x-vercel-protection-bypass'] = bypass;
+  const response = await fetch(finalUrl, { headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.success === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
   return data;
