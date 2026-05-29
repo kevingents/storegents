@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/cron/taken-reminders",
+      "schedule": "30 6 * * *"
+    },
+    {
       "path": "/api/cron/run-report-schedules",
       "schedule": "0,15,30,45 * * * *"
     },
