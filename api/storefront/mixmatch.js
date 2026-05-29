@@ -46,22 +46,38 @@ export default async function handler(req, res) {
       (artikelId && lc(c.artikelId) === lc(artikelId)) ||
       (handle && lc(c.handle) === handle)
     );
+    /* Matcht het fictieve pak-product zelf (de via productBundleCreate gemaakte
+       2-/3-delig producten worden bij het pakket bewaard in bundleProducts[]). */
+    const matchesBundle = (p) => handle && Array.isArray(p.bundleProducts)
+      && p.bundleProducts.some((b) => lc(b.handle) === handle);
 
-    /* 1) PRIMAIR: een actief pakket dat dit product bevat. Werkt op wat de
-       beheerder heeft samengesteld — onafhankelijk van de cache-pairing. */
-    const pakket = (pak.pakketten || []).find((p) => p.status === 'actief' && (p.components || []).some(matches));
+    /* 1) PRIMAIR: een actief pakket dat dit product bevat (als los onderdeel)
+       OF dat dit fictieve pak-product is. Werkt op wat de beheerder heeft
+       samengesteld — onafhankelijk van de cache-pairing. */
+    const pakket = (pak.pakketten || []).find((p) => p.status === 'actief'
+      && ((p.components || []).some(matches) || matchesBundle(p)));
     if (pakket) {
-      const partners = (pakket.components || [])
-        .filter((c) => !matches(c))
+      /* Alle onderdelen (colbert/broek/gilet) met handle — de theme haalt hun
+         varianten/maten op via /products/<handle>.js. */
+      const pieces = (pakket.components || [])
         .map((c) => ({ role: c.role, artikelId: c.artikelId, handle: c.handle, title: c.title, image: c.image }))
-        .filter((c) => c.handle); /* handle nodig om varianten op te halen in de theme */
+        .filter((c) => c.handle);
+      const partners = pieces.filter((c) => !matches(c));
+      const hasGilet = pieces.some((c) => lc(c.role) === 'gilet');
+      /* isPakPage = we staan op het fictieve pak-product zelf (geen los onderdeel
+         dat in dit pakket zit). Dan voegt de widget álle delen toe. */
+      const isPakPage = matchesBundle(pakket) && !(pakket.components || []).some(matches);
       return res.status(200).json({
         success: true,
-        found: partners.length > 0,
+        found: pieces.length > 0,
+        mode: 'pak',
+        isPakPage,
         code: pakket.code || '',
-        type: pakket.type || '2-delig',
+        type: pakket.type || (hasGilet ? '3-delig' : '2-delig'),
+        hasGilet,
         active: true,
         pak: { naam: pakket.naam, type: pakket.type, categorie: pakket.categorie, prijsType: pakket.prijsType },
+        pieces,
         partners
       });
     }
@@ -76,15 +92,21 @@ export default async function handler(req, res) {
 
     const slim = (piece, role) => piece ? { role, artikelId: piece.artikelId, handle: piece.handle, title: piece.title, image: piece.image, productUrl: piece.productUrl } : null;
     const all = [slim(pair.colbert, 'colbert'), slim(pair.broek, 'broek'), slim(pair.gilet, 'gilet')].filter(Boolean);
-    const partners = all.filter((pp) => !((artikelId && lc(pp.artikelId) === lc(artikelId)) || (handle && lc(pp.handle) === handle)));
+    const pieces = all.filter((c) => c.handle);
+    const partners = pieces.filter((pp) => !((artikelId && lc(pp.artikelId) === lc(artikelId)) || (handle && lc(pp.handle) === handle)));
+    const hasGilet = pieces.some((c) => lc(c.role) === 'gilet');
 
     return res.status(200).json({
       success: true,
       found: partners.length > 0,
+      mode: 'pak',
+      isPakPage: false,
       code: pair.code,
       type: pair.threePiece ? '3-delig' : '2-delig',
+      hasGilet,
       active: false,
       pak: null,
+      pieces,
       partners
     });
   } catch (e) {
