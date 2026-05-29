@@ -11,7 +11,7 @@ import { getAllStoreEmails, bulkSetStoreEmails, getEmailForStore } from '../../l
 import { listReserveringBranches } from '../../lib/reserveringen-branch-mapping.js';
 
 function isAuthorized(req) {
-  const expected = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const expected = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(
     req.headers['x-admin-token'] ||
     req.headers.authorization ||

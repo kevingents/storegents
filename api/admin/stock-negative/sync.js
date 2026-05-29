@@ -3,7 +3,7 @@ import { importLatestStockXml } from '../../../lib/srs-stock-sftp-client.js';
 import { applyStockDeltaRows, replaceStockNegativeRows } from '../../../lib/stock-negative-store.js';
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const syncSecret = process.env.STOCK_NEGATIVE_SYNC_SECRET || '';
   const incoming = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
   const secret = String(req.headers.authorization || req.query.secret || '').replace(/^Bearer\s+/i, '').trim();

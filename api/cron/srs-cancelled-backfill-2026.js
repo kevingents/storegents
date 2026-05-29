@@ -14,7 +14,7 @@ function setCors(res) {
 
 function isAuthorizedCron(req) {
   const expected = clean(process.env.CRON_SECRET || '');
-  const adminToken = clean(process.env.ADMIN_TOKEN || '12345');
+  const adminToken = clean(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random())));
   const authHeader = clean(req.headers.authorization || '');
   const querySecret = clean(req.query.secret || '');
   const queryAdminToken = clean(req.query.adminToken || req.query.admin_token || '');
@@ -52,7 +52,7 @@ function getTotals(state = {}) {
 async function callBackfill(req, { offset, limit, dryRun }) {
   const protocol = req.headers['x-forwarded-proto'] || 'https';
   const host = req.headers.host || process.env.VERCEL_URL || '';
-  const adminToken = clean(process.env.ADMIN_TOKEN || '12345');
+  const adminToken = clean(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random())));
   if (!host) throw new Error('Host ontbreekt voor interne backfill-call.');
 
   const url = new URL(`${protocol}://${host}/api/admin/unavailable-order-lines/backfill-cancelled-2026`);

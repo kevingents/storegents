@@ -15,7 +15,7 @@ async function handler(req, res) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
-  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || '12345';
+  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
 
   if (req.method === 'GET') {
     req.method = 'POST';

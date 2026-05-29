@@ -29,7 +29,7 @@ function isAuthorized(req) {
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
   if (ua.includes('vercel-cron')) return true;
   /* Daarnaast handmatige trigger met admin token */
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const token = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
   return token === adminToken;
 }

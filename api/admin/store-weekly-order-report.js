@@ -1,6 +1,6 @@
 // api/admin/store-weekly-order-report.js
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
 const DEADLINE_HOURS = 48;
 const PICK_PACK_MINUTES_PER_ORDER = 10;
 const REPORT_STATUSES = ['accepted', 'pending', 'processed'];

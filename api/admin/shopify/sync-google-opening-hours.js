@@ -7,7 +7,7 @@ function setCors(res) {
 }
 
 function isAuthorized(req) {
-  const expected = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const expected = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(req.headers['x-admin-token'] || req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   return Boolean(expected && given && expected === given);
 }

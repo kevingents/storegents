@@ -6,7 +6,7 @@ function clean(value) { return String(value || '').trim(); }
 function normalizeStatus(value) { return clean(value).toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' '); }
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const token = String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.headers.authorization || req.query.adminToken || req.query.admin_token || '').replace(/^Bearer\s+/i, '').trim();
   return token === adminToken;
 }

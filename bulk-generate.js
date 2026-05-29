@@ -9,7 +9,7 @@ function field(value) {
 }
 
 function isAllowed(req) {
-  const token = process.env.ADMIN_TOKEN || '12345';
+  const token = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const headerToken = req.headers['x-admin-token'];
   return !process.env.REQUIRE_WEBORDER_TOKEN || headerToken === token;
 }

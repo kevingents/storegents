@@ -206,7 +206,7 @@ async function handler(req, res) {
   }
 
   /* Auth: cron-secret OF admin-token (admin mag handmatig dry-runnen). */
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const givenAdmin = String(
     req.headers['x-admin-token'] ||
     req.query.adminToken ||

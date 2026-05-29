@@ -6,7 +6,7 @@ import { mapUpstreamError, sendError } from '../../../lib/api-error.js';
 import { getWorkflow } from '../../../lib/admin-workqueue/store.js';
 import { setRequestHeaders, withRequestLog } from '../../../lib/request-context.js';
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '12345';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
 const BRANCH_LOCATION_MAP = {
   '97': 'GENTS Magazijn',
   '99': 'GENTS Magazijn',

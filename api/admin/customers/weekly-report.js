@@ -53,7 +53,7 @@ const reportCache = new Map();
 function isAuthorized(req) {
   if (String(req.query.public || '') === 'true') return true;
 
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
 
   const token = String(
     req.headers['x-admin-token'] ||

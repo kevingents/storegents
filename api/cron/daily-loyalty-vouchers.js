@@ -14,7 +14,7 @@ function setCors(res) {
 
 function isAuthorized(req) {
   const cronSecret = process.env.CRON_SECRET || '';
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const header = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   const querySecret = String(req.query.secret || req.query.adminToken || '').trim();
   const headerAdmin = String(req.headers['x-admin-token'] || '').trim();
@@ -79,7 +79,7 @@ export default async function handler(req, res) {
   const live = isLiveRun(req);
   const dryRun = !live || String(req.query.dryRun || '').toLowerCase() === 'true';
 
-  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || String(req.query.secret || '12345');
+  req.headers['x-admin-token'] = process.env.ADMIN_TOKEN || String(req.query.secret || (globalThis.crypto?.randomUUID?.() || Math.random()));
   req.method = 'POST';
 
   req.body = {

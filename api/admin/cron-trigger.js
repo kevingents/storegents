@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     const proto = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers.host;
     const baseUrl = `${proto}://${host}`;
-    const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+    const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
     const cronSecret = String(process.env.CRON_SECRET || '').trim();
 
     /* Extra query-params die de caller meegeeft (bv. daysBack, maxCustomers) */

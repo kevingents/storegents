@@ -8,7 +8,7 @@ function setCors(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 }
 function isAuthorized(req) {
-  const expected = getAdminToken() || String(process.env.ADMIN_TOKEN || '12345').trim();
+  const expected = getAdminToken() || String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(req.headers['x-admin-token'] || req.headers['x-admin-pin'] || req.query.adminToken || req.query.token || '').replace(/^Bearer\s+/i, '').trim();
   return Boolean(expected && given && expected === given);
 }

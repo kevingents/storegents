@@ -47,7 +47,7 @@ export default async function handler(req, res) {
   try {
     const base = req.headers.host ? `https://${req.headers.host}` : '';
     if (base) {
-      const token = process.env.ADMIN_TOKEN || '12345';
+      const token = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
       const resp = await fetch(`${base}/api/admin/unavailable-order-lines?status=processed&t=${Date.now()}`, {
         headers: { 'x-admin-token': token, Accept: 'application/json' }
       });

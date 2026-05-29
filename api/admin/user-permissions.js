@@ -19,7 +19,7 @@ import { appendAuditEntry } from '../../lib/permissions-audit-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 function isAuthorized(req) {
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const token = String(
     req.headers['x-admin-token'] ||
     req.headers['x-admin-pin'] ||

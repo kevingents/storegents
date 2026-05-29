@@ -27,7 +27,7 @@ function isAuthorized(req) {
   /* Vercel cron stuurt User-Agent: vercel-cron */
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
   if (ua.includes('vercel-cron')) return true;
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const token = String(req.headers['x-admin-token'] || req.query?.adminToken || '').trim();
   return Boolean(adminToken && token && token === adminToken);
 }

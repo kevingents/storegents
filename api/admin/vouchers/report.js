@@ -14,7 +14,7 @@ function setCors(res) {
 function isAuthorized(req) {
   if (String(req.query.public || '') === 'true') return true;
 
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
 
   const token = String(
     req.headers['x-admin-token'] ||

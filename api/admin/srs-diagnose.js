@@ -12,7 +12,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { srsApiLogin, invalidateSrsWeborderSession } from '../../lib/srs-weborder-client.js';
 
 function isAuthorized(req) {
-  const expected = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const expected = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(
     req.headers['x-admin-token'] ||
     req.headers.authorization ||

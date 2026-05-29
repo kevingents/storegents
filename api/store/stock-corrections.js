@@ -35,7 +35,7 @@ function parseBody(req) {
 function clean(v) { return String(v ?? '').trim(); }
 
 function isAdminToken(req) {
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(req.headers['x-admin-token'] || req.query.adminToken || '').replace(/^Bearer\s+/i, '').trim();
   return Boolean(adminToken) && given === adminToken;
 }

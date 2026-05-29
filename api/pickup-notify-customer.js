@@ -19,7 +19,7 @@ const SHOPIFY_STORE_URL = String(process.env.SHOPIFY_STORE_URL || '').replace(/^
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
 
 function isAuthorized(req) {
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const token = String(
     req.headers['x-admin-token'] ||
     req.headers['x-admin-pin'] ||

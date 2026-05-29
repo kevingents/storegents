@@ -2,7 +2,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { updateSupportTicketStatus } from '../../lib/support-tickets-store.js';
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   const token = String(
     req.headers['x-admin-token'] ||
     req.query.adminToken ||

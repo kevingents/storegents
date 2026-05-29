@@ -8,7 +8,7 @@ function setCors(res) {
 }
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   return String(req.headers['x-admin-token'] || req.query.adminToken || '').trim() === adminToken;
 }
 

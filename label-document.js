@@ -2,7 +2,7 @@ import { getDeclarations } from '../../lib/declarations-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 function isAuthorized(req) {
-  const adminToken = process.env.ADMIN_TOKEN || '12345';
+  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
   return req.headers['x-admin-token'] === adminToken;
 }
 

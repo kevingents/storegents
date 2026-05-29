@@ -45,7 +45,7 @@ function cleanStatus(value) { return clean(value).toLowerCase().replace(/[_-]+/g
 
 function isAuthorized(req) {
   if (String(req.query.public || '') === 'true') return true;
-  const expected = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const expected = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const given = String(
     req.headers['x-admin-token'] ||
     req.headers.authorization ||

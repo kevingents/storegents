@@ -1,10 +1,18 @@
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 
 function apiBase(req) {
-  const configured = process.env.PUBLIC_API_BASE_URL || process.env.VERCEL_URL || '';
-  if (configured) return configured.startsWith('http') ? configured.replace(/\/$/, '') : `https://${configured.replace(/\/$/, '')}`;
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  return `${proto}://${req.headers.host}`;
+  /* Volgorde i.v.m. Vercel Deployment Protection: VERCEL_URL is de
+     deployment-specifieke URL die Protection blokkeert met een HTML 401.
+     De host waarmee de browser de portal opende is het publieke alias.
+     Dus: expliciete publieke base eerst, dan de request-host, VERCEL_URL last. */
+  const explicit = String(process.env.PUBLIC_API_BASE_URL || process.env.GENTS_API_BASE_URL || '').trim();
+  if (explicit) return explicit.startsWith('http') ? explicit.replace(/\/$/, '') : `https://${explicit.replace(/\/$/, '')}`;
+  if (req.headers.host) {
+    const proto = req.headers['x-forwarded-proto'] || 'https';
+    return `${proto}://${req.headers.host}`;
+  }
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
+  return '';
 }
 
 function rowId(row) {
@@ -23,9 +31,11 @@ export default async function handler(req, res) {
     const id = String(req.query.id || '').trim();
     if (!store || !id) return res.status(400).json({ success: false, message: 'Winkel en id zijn verplicht.' });
     const baseUrl = apiBase(req);
-    const response = await fetch(`${baseUrl}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, {
-      headers: { 'x-admin-token': process.env.ADMIN_TOKEN || '12345' }
-    });
+    const headers = { 'x-admin-token': process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random())) };
+    /* Bypass-secret meesturen voor het geval de base toch een beschermde URL is. */
+    const bypass = String(process.env.VERCEL_AUTOMATION_BYPASS_SECRET || process.env.VERCEL_PROTECTION_BYPASS || '').trim();
+    if (bypass) headers['x-vercel-protection-bypass'] = bypass;
+    const response = await fetch(`${baseUrl}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, { headers });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.success === false) throw new Error(data.message || 'Openstaande orders konden niet worden geladen.');
     const rows = data.requests || [];

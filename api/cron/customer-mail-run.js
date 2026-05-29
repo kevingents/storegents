@@ -234,7 +234,7 @@ async function handler(req, res) {
   }
 
   /* Auth: cron-secret OF admin-token. */
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const givenAdmin = String(req.headers['x-admin-token'] || req.query.adminToken || '').replace(/^Bearer\s+/i, '').trim();
   const isAdmin = Boolean(adminToken && givenAdmin && adminToken === givenAdmin);
   if (!isAdmin && !requireCronSecret(req, res, 'WEBORDER_MAIL_SECRET')) return;

@@ -18,7 +18,7 @@ function setCors(res) {
 
 function isAuthorizedCron(req) {
   const expected = clean(process.env.CRON_SECRET || '');
-  const adminToken = clean(process.env.ADMIN_TOKEN || '12345');
+  const adminToken = clean(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random())));
   const authHeader = clean(req.headers['author' + 'ization'] || '');
   const querySecret = clean(req.query.secret || '');
   const queryAdminToken = clean(req.query.adminToken || req.query.admin_token || '');

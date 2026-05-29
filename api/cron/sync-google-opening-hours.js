@@ -8,7 +8,7 @@ async function handler(req, res) {
   }
 
   const cronSecret = process.env.CRON_SECRET || '';
-  const adminToken = String(process.env.ADMIN_TOKEN || '12345').trim();
+  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
   const header = req.headers.authorization || '';
   const token = header.replace(/^Bearer\s+/i, '').trim();
   const givenAdmin = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
