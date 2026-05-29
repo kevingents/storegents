@@ -1,6 +1,9 @@
 /**
  * Cron: GET /api/cron/srs-voorraad-import
- * Schedule: '0 5 * * *' (dagelijks 05:00 UTC — na de nachtelijke SRS-export)
+ * Schedule: '0 5,11,15 * * *' (3x/dag: 05:00 UTC na de nachtelijke SRS-export,
+ *   + 11:00 en 15:00 UTC om intraday-mutaties op te pikken). Pakt telkens het
+ *   nieuwste voorraad_*.csv.gz; levert SRS overdag geen nieuw bestand, dan
+ *   re-importeert 'ie hetzelfde bestand (geen kwaad, maar ook geen versere data).
  *
  * Haalt de nieuwste voorraad_*.csv.gz + voorraadlocaties_*.csv.gz van de SRS
  * data-export SFTP, parsed ze en schrijft een snapshot via srs-voorraad-store.
