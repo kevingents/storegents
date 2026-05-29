@@ -11,6 +11,7 @@
  */
 
 import { readPakketten, savePakket, deletePakket, summarize } from '../../lib/mixmatch-store.js';
+import { assignTemplate, DEFAULT_TEMPLATE_SUFFIX } from '../../lib/mixmatch-publish.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 export const maxDuration = 30;
@@ -44,8 +45,20 @@ export default async function handler(req, res) {
 
       /* save (create of update) */
       const pakket = await savePakket(body, 'admin');
+
+      /* Automatisch: actief pakket → ken de Mix & Match-template toe aan de
+         component-producten in Shopify (zodat de "koop als pak"-sectie verschijnt).
+         Best-effort: een Shopify-fout mag het opslaan niet ongedaan maken. */
+      let templateAssign = null;
+      if (pakket?.status === 'actief') {
+        const ids = (pakket.components || []).map((c) => c.productId).filter(Boolean);
+        if (ids.length) {
+          templateAssign = await assignTemplate(ids, DEFAULT_TEMPLATE_SUFFIX).catch((e) => ({ error: e.message || 'template-toewijzing faalde', okCount: 0, count: ids.length }));
+        }
+      }
+
       const { pakketten } = await readPakketten();
-      return res.status(200).json({ success: true, pakket, summary: summarize(pakketten) });
+      return res.status(200).json({ success: true, pakket, templateAssign, summary: summarize(pakketten) });
     }
 
     return res.status(405).json({ success: false, message: 'Methode niet toegestaan.' });

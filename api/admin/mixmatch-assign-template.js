@@ -19,7 +19,7 @@
  */
 
 import { readPakketten } from '../../lib/mixmatch-store.js';
-import { shopifyGraphql } from '../../lib/shopify-gift-card-client.js';
+import { assignTemplate } from '../../lib/mixmatch-publish.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 export const maxDuration = 60;
@@ -68,22 +68,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, commit: false, suffix, count: products.length, products });
     }
 
-    /* Schrijf template_suffix per product (sequentieel = throttle-vriendelijk). */
-    const results = [];
-    for (const pr of products) {
-      try {
-        const d = await shopifyGraphql(
-          `mutation($input: ProductInput!){ productUpdate(input: $input){ product { id templateSuffix } userErrors { field message } } }`,
-          { input: { id: pr.id, templateSuffix: suffix } }
-        );
-        const errs = d?.productUpdate?.userErrors || [];
-        if (errs.length) results.push({ ...pr, ok: false, error: errs.map((e) => e.message).join(', ') });
-        else results.push({ ...pr, ok: true, templateSuffix: d?.productUpdate?.product?.templateSuffix || suffix });
-      } catch (e) {
-        results.push({ ...pr, ok: false, error: e.message || 'fout' });
-      }
-    }
-    const okCount = results.filter((r) => r.ok).length;
+    /* Schrijf template_suffix per product via de gedeelde helper. */
+    const { results, okCount } = await assignTemplate(products.map((p) => p.id), suffix);
     return res.status(200).json({ success: true, commit: true, suffix, count: products.length, okCount, failed: products.length - okCount, results });
   } catch (e) {
     console.error('[admin/mixmatch-assign-template]', e);
