@@ -11,7 +11,7 @@
  * Auth: admin-token vereist.
  */
 
-import { findBundlePairs, inspectMetafields } from '../../lib/bundle-pairing.js';
+import { findBundlePairs, inspectMetafields, findExistingBundles } from '../../lib/bundle-pairing.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 export const maxDuration = 60;
@@ -36,6 +36,27 @@ export default async function handler(req, res) {
         configured: true, error: e.message || 'inspectie faalde', products: [], keys: []
       }));
     }
+
+    /* Check of er al een Shopify-bundle bestaat met deze producten (voorkomt
+       dubbele aanmaak). Annotateert elk stuk + pak met de gevonden bundle(s). */
+    const bundleCheck = await findExistingBundles().catch((e) => ({
+      checked: false, error: e.message || 'bundle-check faalde', byComponent: {}, bundles: [], count: 0
+    }));
+    const byComp = bundleCheck.byComponent || {};
+    let pakkenMetBundle = 0;
+    for (const p of (data.pairs || [])) {
+      const annotate = (piece) => { if (piece && piece.productId && byComp[piece.productId]) piece.inBundle = byComp[piece.productId]; };
+      annotate(p.colbert); annotate(p.broek); annotate(p.gilet);
+      p.bundleExists = Boolean((p.colbert && p.colbert.inBundle) || (p.broek && p.broek.inBundle) || (p.gilet && p.gilet.inBundle));
+      if (p.bundleExists) pakkenMetBundle += 1;
+    }
+    data.bundleCheck = {
+      checked: bundleCheck.checked,
+      error: bundleCheck.error || '',
+      count: bundleCheck.count || 0,
+      truncated: Boolean(bundleCheck.truncated),
+      pakkenMetBundle
+    };
 
     return res.status(200).json({ success: true, ...data });
   } catch (e) {
