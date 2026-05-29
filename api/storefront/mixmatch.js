@@ -37,16 +37,40 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'artikelId of handle vereist.' });
     }
 
-    const [pairsData, pak] = await Promise.all([
-      findBundlePairs().catch(() => ({ pairs: [] })),
-      readPakketten().catch(() => ({ pakketten: [] }))
+    const [pak, pairsData] = await Promise.all([
+      readPakketten().catch(() => ({ pakketten: [] })),
+      findBundlePairs().catch(() => ({ pairs: [] }))
     ]);
 
+    const matches = (c) => c && (
+      (artikelId && lc(c.artikelId) === lc(artikelId)) ||
+      (handle && lc(c.handle) === handle)
+    );
+
+    /* 1) PRIMAIR: een actief pakket dat dit product bevat. Werkt op wat de
+       beheerder heeft samengesteld — onafhankelijk van de cache-pairing. */
+    const pakket = (pak.pakketten || []).find((p) => p.status === 'actief' && (p.components || []).some(matches));
+    if (pakket) {
+      const partners = (pakket.components || [])
+        .filter((c) => !matches(c))
+        .map((c) => ({ role: c.role, artikelId: c.artikelId, handle: c.handle, title: c.title, image: c.image }))
+        .filter((c) => c.handle); /* handle nodig om varianten op te halen in de theme */
+      return res.status(200).json({
+        success: true,
+        found: partners.length > 0,
+        code: pakket.code || '',
+        type: pakket.type || '2-delig',
+        active: true,
+        pak: { naam: pakket.naam, type: pakket.type, categorie: pakket.categorie, prijsType: pakket.prijsType },
+        partners
+      });
+    }
+
+    /* 2) FALLBACK: de cache-pairing (colbert↔broek via artikel_id). */
     const isThis = (piece) => piece && (
       (artikelId && lc(piece.artikelId) === lc(artikelId)) ||
       (handle && lc(piece.handle) === handle)
     );
-
     const pair = (pairsData.pairs || []).find((p) => isThis(p.colbert) || isThis(p.broek) || isThis(p.gilet)) || null;
     if (!pair) return res.status(200).json({ success: true, found: false });
 
@@ -54,17 +78,13 @@ export default async function handler(req, res) {
     const all = [slim(pair.colbert, 'colbert'), slim(pair.broek, 'broek'), slim(pair.gilet, 'gilet')].filter(Boolean);
     const partners = all.filter((pp) => !((artikelId && lc(pp.artikelId) === lc(artikelId)) || (handle && lc(pp.handle) === handle)));
 
-    /* Actief pakket dat dit artikel bevat → theme kan kiezen alleen gecureerde
-       (actieve) pakken te tonen. */
-    const pakket = (pak.pakketten || []).find((p) => p.status === 'actief' && (p.components || []).some((c) => artikelId && lc(c.artikelId) === lc(artikelId)));
-
     return res.status(200).json({
       success: true,
       found: partners.length > 0,
       code: pair.code,
       type: pair.threePiece ? '3-delig' : '2-delig',
-      active: Boolean(pakket),
-      pak: pakket ? { naam: pakket.naam, type: pakket.type, categorie: pakket.categorie, prijsType: pakket.prijsType } : null,
+      active: false,
+      pak: null,
       partners
     });
   } catch (e) {
