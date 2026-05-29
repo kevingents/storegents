@@ -26,7 +26,7 @@ import { trackedCron } from '../../lib/cron-auto-track.js';
 import { computeKpiValue, resolvePeriodRange } from '../../lib/kpi-sources/index.js';
 import { getTargetsForStores } from '../../lib/kpi-targets-store.js';
 import { listBranchesFromConfig, BUSINESS_CONFIG } from '../../lib/business-config.js';
-import { isAlertAlreadySentToday, recordAlertSent } from '../../lib/kpi-alerts-store.js';
+import { isAlertAlreadySentToday, recordAlertsSent } from '../../lib/kpi-alerts-store.js';
 import { sendMail, baseMailHtml, rowsTable } from '../../lib/gents-mailer.js';
 
 function isAuthorized(req) {
@@ -194,17 +194,17 @@ async function handler(req, res) {
         text: rows.map((r) => `${r.Niveau}: ${r.KPI} @ ${r.Winkel} = ${r.Waarde} (target ${r.Target}, behaald ${r.Behaald})`).join('\n')
       });
       mailSent = true;
-      /* Markeer als verzonden — alleen na succesvolle mail */
-      for (const a of alerts) {
-        await recordAlertSent({
-          kpi: a.kpi.key,
-          store: a.store,
-          level: a.classification.level,
-          value: a.value,
-          target: a.target,
-          label: a.kpi.label
-        });
-      }
+      /* Markeer als verzonden — alleen na succesvolle mail. Eén batch-write
+         i.p.v. een loop: voorkomt N blob-round-trips én de race waarbij elke
+         schrijfactie de vorige dedup-entry overschreef. */
+      await recordAlertsSent(alerts.map((a) => ({
+        kpi: a.kpi.key,
+        store: a.store,
+        level: a.classification.level,
+        value: a.value,
+        target: a.target,
+        label: a.kpi.label
+      })));
     } catch (mailErr) {
       errors.push({ kpi: '*', store: '*', error: `mail-send-failed: ${mailErr.message}` });
     }
