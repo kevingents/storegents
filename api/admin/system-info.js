@@ -24,30 +24,30 @@ import { BUSINESS_CONFIG } from '../../lib/business-config.js';
 
 const EXPECTED_ENV_VARS = [
   /* === Secrets === */
-  { name: 'ADMIN_TOKEN', label: 'Admin auth-token', critical: true, category: 'auth' },
+  { name: 'ADMIN_TOKEN', label: 'Admin auth-token', critical: true, category: 'auth', aliases: ['GENTS_ADMIN_TOKEN', 'ADMIN_PIN', 'ADMIN_MASTER_PIN', 'GENTS_ADMIN_MASTER_PIN'] },
   { name: 'CRON_SECRET', label: 'Vercel cron secret', critical: true, category: 'auth' },
   { name: 'BLOB_READ_WRITE_TOKEN', label: 'Vercel Blob token', critical: true, category: 'storage' },
 
   /* === Shopify === */
-  { name: 'SHOPIFY_STORE_DOMAIN', label: 'Shopify shop-domain', critical: true, category: 'shopify' },
-  { name: 'SHOPIFY_ADMIN_ACCESS_TOKEN', label: 'Shopify admin token', critical: true, category: 'shopify' },
+  { name: 'SHOPIFY_STORE_DOMAIN', label: 'Shopify shop-domain', critical: true, category: 'shopify', aliases: ['SHOPIFY_SHOP_DOMAIN', 'SHOPIFY_STORE_URL', 'SHOPIFY_DOMAIN', 'SHOPIFY_SHOP', 'SHOPIFY_STORE'] },
+  { name: 'SHOPIFY_ADMIN_ACCESS_TOKEN', label: 'Shopify admin token', critical: true, category: 'shopify', aliases: ['SHOPIFY_ACCESS_TOKEN', 'SHOPIFY_ADMIN_API_TOKEN', 'SHOPIFY_ADMIN_TOKEN', 'SHOPIFY_API_TOKEN'] },
   { name: 'SHOPIFY_API_VERSION', label: 'Shopify API versie', critical: false, category: 'shopify' },
   { name: 'SHOPIFY_SRS_METAFIELD_NS', label: 'SRS metafield namespace', critical: false, category: 'shopify' },
 
   /* === SRS === */
-  { name: 'SRS_USERNAME', label: 'SRS SOAP gebruiker', critical: true, category: 'srs' },
-  { name: 'SRS_PASSWORD', label: 'SRS SOAP wachtwoord', critical: true, category: 'srs' },
-  { name: 'SRS_SOAP_URL', label: 'SRS SOAP endpoint', critical: false, category: 'srs' },
+  { name: 'SRS_USERNAME', label: 'SRS SOAP gebruiker', critical: true, category: 'srs', aliases: ['SRS_USER', 'SRS_API_USER', 'SRS_API_USERNAME'] },
+  { name: 'SRS_PASSWORD', label: 'SRS SOAP wachtwoord', critical: true, category: 'srs', aliases: ['SRS_API_PASSWORD'] },
+  { name: 'SRS_SOAP_URL', label: 'SRS SOAP endpoint', critical: false, category: 'srs', aliases: ['SRS_BASE_URL', 'SRS_API_BASE_URL', 'SRS_MESSAGE_BASE_URL'] },
   { name: 'SRS_SOAP_TIMEOUT_MS', label: 'SRS timeout (default 20000)', critical: false, category: 'srs' },
 
   /* === Mail === */
   { name: 'RESEND_API_KEY', label: 'Resend mail API key', critical: true, category: 'mail' },
   { name: 'SUPPORT_EMAIL', label: 'Support-mailadres fallback', critical: false, category: 'mail' },
-  { name: 'WEBORDER_MAIL_FROM', label: 'Mail-from voor weborder-mails', critical: false, category: 'mail' },
+  { name: 'WEBORDER_MAIL_FROM', label: 'Mail-from voor weborder-mails', critical: false, category: 'mail', aliases: ['MAIL_FROM', 'RESEND_FROM_EMAIL'] },
 
   /* === Externe services === */
-  { name: 'GOOGLE_PLACES_API_KEY', label: 'Google Places API key', critical: false, category: 'integrations' },
-  { name: 'GOOGLE_SERVICE_ACCOUNT_JSON', label: 'Google Business Profile auth', critical: false, category: 'integrations' },
+  { name: 'GOOGLE_PLACES_API_KEY', label: 'Google Places API key', critical: false, category: 'integrations', aliases: ['GOOGLE_API_KEY', 'GOOGLE_REVIEWS_API_KEY', 'GOOGLE_API_VERCEL_KEY'] },
+  { name: 'GOOGLE_SERVICE_ACCOUNT_JSON', label: 'Google Business Profile auth', critical: false, category: 'integrations', aliases: ['GOOGLE_BUSINESS_REFRESH_TOKEN', 'GOOGLE_BUSINESS_CLIENT_SECRET'] },
   { name: 'SENDCLOUD_PUBLIC_KEY', label: 'Sendcloud public key', critical: false, category: 'integrations' },
   { name: 'SENDCLOUD_SECRET_KEY', label: 'Sendcloud secret key', critical: false, category: 'integrations' },
   { name: 'RETURNISTA_API_TOKEN', label: 'Returnista API token', critical: false, category: 'integrations' },
@@ -66,8 +66,17 @@ const EXPECTED_ENV_VARS = [
 function checkEnvVars() {
   const summary = { critical: { present: 0, missing: 0 }, optional: { present: 0, missing: 0 } };
   const items = EXPECTED_ENV_VARS.map((envVar) => {
-    const val = process.env[envVar.name];
-    const present = Boolean(val && String(val).trim());
+    /* Accepteer ook alias-namen: de codebase leest sommige waardes onder
+       meerdere namen (historische drift). Aanwezig zodra ÉÉN ervan gezet is —
+       anders gaf dit endpoint vals-alarm "ontbrekend" terwijl alles werkte. */
+    const names = [envVar.name, ...(envVar.aliases || [])];
+    let val = '';
+    let matchedVia = '';
+    for (const n of names) {
+      const v = process.env[n];
+      if (v && String(v).trim()) { val = String(v); matchedVia = n; break; }
+    }
+    const present = Boolean(val);
     const bucket = envVar.critical ? 'critical' : 'optional';
     if (present) summary[bucket].present += 1;
     else summary[bucket].missing += 1;
@@ -77,8 +86,10 @@ function checkEnvVars() {
       category: envVar.category,
       critical: envVar.critical,
       present,
+      /* Welke (alias-)naam de waarde leverde — handig bij naam-drift. */
+      matchedVia: present && matchedVia !== envVar.name ? matchedVia : undefined,
       /* NOOIT de daadwerkelijke waarde teruggeven — alleen lengte als indicator */
-      valueLength: present ? String(val).length : 0
+      valueLength: present ? val.length : 0
     };
   });
   return { items, summary };
