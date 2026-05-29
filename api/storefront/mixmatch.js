@@ -16,6 +16,7 @@
 
 import { findBundlePairs } from '../../lib/bundle-pairing.js';
 import { readPakketten } from '../../lib/mixmatch-store.js';
+import { colorVariantsForHandle } from '../../lib/mixmatch-color-groups.js';
 import { corsJson } from '../../lib/request-guards.js';
 
 export const maxDuration = 30;
@@ -37,9 +38,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'artikelId of handle vereist.' });
     }
 
-    const [pak, pairsData] = await Promise.all([
+    const [pak, pairsData, colorVariants] = await Promise.all([
       readPakketten().catch(() => ({ pakketten: [] })),
-      findBundlePairs().catch(() => ({ pairs: [] }))
+      findBundlePairs().catch(() => ({ pairs: [] })),
+      handle ? colorVariantsForHandle(handle).catch(() => []) : Promise.resolve([])
     ]);
 
     const matches = (c) => c && (
@@ -78,7 +80,8 @@ export default async function handler(req, res) {
         active: true,
         pak: { naam: pakket.naam, type: pakket.type, categorie: pakket.categorie, prijsType: pakket.prijsType },
         pieces,
-        partners
+        partners,
+        colorVariants
       });
     }
 
@@ -88,7 +91,7 @@ export default async function handler(req, res) {
       (handle && lc(piece.handle) === handle)
     );
     const pair = (pairsData.pairs || []).find((p) => isThis(p.colbert) || isThis(p.broek) || isThis(p.gilet)) || null;
-    if (!pair) return res.status(200).json({ success: true, found: false });
+    if (!pair) return res.status(200).json({ success: true, found: false, colorVariants });
 
     const slim = (piece, role) => piece ? { role, artikelId: piece.artikelId, handle: piece.handle, title: piece.title, image: piece.image, productUrl: piece.productUrl } : null;
     const all = [slim(pair.colbert, 'colbert'), slim(pair.broek, 'broek'), slim(pair.gilet, 'gilet')].filter(Boolean);
@@ -107,7 +110,8 @@ export default async function handler(req, res) {
       active: false,
       pak: null,
       pieces,
-      partners
+      partners,
+      colorVariants
     });
   } catch (e) {
     console.error('[storefront/mixmatch]', e);
