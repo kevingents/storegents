@@ -19,7 +19,7 @@
  */
 
 import { readPakketten } from '../../lib/mixmatch-store.js';
-import { assignTemplate } from '../../lib/mixmatch-publish.js';
+import { assignTemplate, DEFAULT_TEMPLATE_SUFFIX } from '../../lib/mixmatch-publish.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 export const maxDuration = 60;
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
 
   try {
     const body = parseBody(req);
-    const suffix = clean(body.suffix) || 'pakken';
+    const suffix = clean(body.suffix) || DEFAULT_TEMPLATE_SUFFIX;
     const scope = clean(body.scope) || 'active';
     const commit = body.commit === true || body.commit === '1';
     const onlyIds = Array.isArray(body.ids) ? body.ids.map(clean).filter(Boolean) : null;
