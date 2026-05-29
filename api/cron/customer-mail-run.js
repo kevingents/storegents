@@ -16,7 +16,7 @@
 
 import { appendMailLog } from '../../lib/gents-mail-log-store.js';
 import { baseMailHtml, sendMail } from '../../lib/gents-mailer.js';
-import { getAdminToken, getApiBaseUrl, getProtectionBypassSecret, getStoreNames, getStoreMailAsync, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
+import { fetchInternalApi, getStoreNames, getStoreMailAsync, isExcludedStore, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getGroupMailRecipients } from '../../lib/mail-recipient-resolver.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
@@ -53,34 +53,13 @@ function computeRanges(mode, now = new Date()) {
 }
 
 async function fetchWeeklyReport(req, range, store) {
-  const baseUrl = getApiBaseUrl(req);
-  if (!baseUrl) throw new Error('GENTS_API_BASE_URL ontbreekt');
+  /* Centrale helper: base-URL + x-admin-token + Deployment-Protection bypass
+     + HTML-respons-detectie op één plek (lib/gents-mail-config.js). */
   const p = new URLSearchParams({ dateFrom: range.from, dateTo: range.to, t: String(Date.now()) });
   if (store) p.set('store', store);
-  const url = `${baseUrl}/api/admin/customers/weekly-report?${p.toString()}`;
-  /* Vercel Deployment Protection bypass — zet VERCEL_AUTOMATION_BYPASS_SECRET
-     env-var om interne crons langs deployment protection te laten komen. */
-  const bypass = getProtectionBypassSecret();
-  const headers = { Accept: 'application/json', 'x-admin-token': getAdminToken() };
-  if (bypass) {
-    headers['x-vercel-protection-bypass'] = bypass;
-    headers['x-vercel-set-bypass-cookie'] = 'true';
-  }
-  const r = await fetch(url, {
-    headers,
-    signal: AbortSignal.timeout(Number(process.env.CUSTOMER_MAIL_FETCH_TIMEOUT_MS || 60000))
+  return fetchInternalApi(req, `/api/admin/customers/weekly-report?${p.toString()}`, {
+    timeoutMs: Number(process.env.CUSTOMER_MAIL_FETCH_TIMEOUT_MS || 60000)
   });
-  const text = await r.text();
-  if (/^\s*<(!doctype|html)/i.test(text)) {
-    const titleMatch = text.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : 'onbekend';
-    const hint = bypass ? '' : ' — zet VERCEL_AUTOMATION_BYPASS_SECRET env-var';
-    throw new Error(`Endpoint gaf HTML terug (${title} · HTTP ${r.status})${hint}`);
-  }
-  let d;
-  try { d = text ? JSON.parse(text) : {}; } catch { d = { message: text }; }
-  if (!r.ok || d.success === false) throw new Error(d.message || `weekly-report fout ${r.status}`);
-  return d;
 }
 
 function pctCell(pct, target, actual) {
