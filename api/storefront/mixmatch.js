@@ -17,6 +17,7 @@
 import { findBundlePairs } from '../../lib/bundle-pairing.js';
 import { readPakketten } from '../../lib/mixmatch-store.js';
 import { colorVariantsForHandle } from '../../lib/mixmatch-color-groups.js';
+import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { corsJson } from '../../lib/request-guards.js';
 
 export const maxDuration = 30;
@@ -38,11 +39,29 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'artikelId of handle vereist.' });
     }
 
-    const [pak, pairsData, colorVariants] = await Promise.all([
+    const [pak, pairsData, cache] = await Promise.all([
       readPakketten().catch(() => ({ pakketten: [] })),
       findBundlePairs().catch(() => ({ pairs: [] })),
-      handle ? colorVariantsForHandle(handle).catch(() => []) : Promise.resolve([])
+      readProductsCache().catch(() => null)
     ]);
+    const colorVariants = handle ? await colorVariantsForHandle(handle, cache).catch(() => []) : [];
+    const byArtCache = cache?.bySrsArtikelId || {};
+
+    /* Vul ontbrekende product-handle/titel/foto van een component aan uit de
+       productcache (op artikel_id). Opgeslagen pakketten misten soms de handle
+       — zonder handle kan de widget de maten niet ophalen. */
+    const enrichPiece = (c) => {
+      const out = { role: c.role, artikelId: clean(c.artikelId), handle: clean(c.handle), title: clean(c.title), image: clean(c.image) };
+      if (!out.handle && out.artikelId) {
+        const v = byArtCache[lc(out.artikelId)];
+        if (v) {
+          out.handle = clean(v.productHandle);
+          if (!out.title) out.title = clean(v.title);
+          if (!out.image) out.image = clean(v.image);
+        }
+      }
+      return out;
+    };
 
     const matches = (c) => c && (
       (artikelId && lc(c.artikelId) === lc(artikelId)) ||
@@ -61,9 +80,7 @@ export default async function handler(req, res) {
     if (pakket) {
       /* Alle onderdelen (colbert/broek/gilet) met handle — de theme haalt hun
          varianten/maten op via /products/<handle>.js. */
-      const pieces = (pakket.components || [])
-        .map((c) => ({ role: c.role, artikelId: c.artikelId, handle: c.handle, title: c.title, image: c.image }))
-        .filter((c) => c.handle);
+      const pieces = (pakket.components || []).map(enrichPiece).filter((c) => c.handle);
       const partners = pieces.filter((c) => !matches(c));
       const hasGilet = pieces.some((c) => lc(c.role) === 'gilet');
       /* isPakPage = we staan op het fictieve pak-product zelf (geen los onderdeel
