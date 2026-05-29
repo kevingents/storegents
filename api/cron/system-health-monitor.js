@@ -1,5 +1,6 @@
 import { evaluateAlerts } from '../../lib/system-alert-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 /**
  * Cron: GET /api/cron/system-health-monitor
@@ -20,13 +21,7 @@ import { trackedCron } from '../../lib/cron-auto-track.js';
 function clean(value) { return String(value || '').trim(); }
 
 function isAuthorized(req) {
-  /* Vercel cron stuurt User-Agent: vercel-cron */
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('vercel-cron')) return true;
-  /* Handmatige trigger met admin token */
-  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
-  const token = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
-  return token === adminToken;
+  return isCronAuthorized(req);
 }
 
 async function sendAlertEmail(notifications) {

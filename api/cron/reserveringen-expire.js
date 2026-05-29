@@ -27,8 +27,8 @@ function isAuthorized(req) {
   const qToken = String(req.query.token || req.query.adminToken || '').trim();
   if (cronSecret && bearer === cronSecret) return true;
   if (adminToken && (bearer === adminToken || xToken === adminToken || qToken === adminToken)) return true;
-  /* Op Vercel: header `x-vercel-cron` aanwezig bij scheduled functions */
-  if (req.headers['x-vercel-cron']) return true;
+  /* GEEN terugval op de spoofbare `x-vercel-cron`-header: met CRON_SECRET gezet
+     stuurt Vercel Authorization: Bearer <CRON_SECRET> mee (zie hierboven). */
   return false;
 }
 

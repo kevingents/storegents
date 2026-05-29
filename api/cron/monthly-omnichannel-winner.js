@@ -38,19 +38,10 @@ import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { baseMailHtml, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl } from '../../lib/gents-mail-config.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 function isAuthorized(req) {
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('vercel-cron')) return true;
-  if (req.headers['x-vercel-cron']) return true;
-  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
-  const token = String(
-    req.headers['x-admin-token'] ||
-    req.headers.authorization ||
-    req.query.adminToken ||
-    ''
-  ).replace(/^Bearer\s+/i, '').trim();
-  return Boolean(adminToken && token && token === adminToken);
+  return isCronAuthorized(req);
 }
 
 function esc(value) {

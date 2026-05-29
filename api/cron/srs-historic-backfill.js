@@ -2,6 +2,7 @@ import { getFulfillments, isSrsCancelledStatus } from '../../lib/srs-weborders-m
 import { addOrderCancellationsBulk } from '../../lib/order-cancellation-bulk-store.js';
 import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 /**
  * Nachtelijke cron: backfill van CANCELLED weborder-fulfillments uit SRS
@@ -25,13 +26,7 @@ function setCors(res) {
 function clean(value) { return String(value || '').trim(); }
 
 function isAuthorized(req) {
-  /* Vercel cron stuurt User-Agent vercel-cron, dat accepteren we direct */
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('vercel-cron')) return true;
-  /* Daarnaast handmatige trigger met admin token */
-  const adminToken = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
-  const token = String(req.headers['x-admin-token'] || req.query.adminToken || '').trim();
-  return token === adminToken;
+  return isCronAuthorized(req);
 }
 
 function inCurrentYear(value) {

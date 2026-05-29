@@ -22,10 +22,9 @@ function isAuthorized(req) {
   if (cronSecret && (header === cronSecret || querySecret === cronSecret || headerAdmin === cronSecret)) return true;
   if (adminToken && (header === adminToken || querySecret === adminToken || headerAdmin === adminToken)) return true;
 
-  // Vercel cron requests are allowed, but live execution is still controlled
-  // by LOYALTY_VOUCHER_CRON_LIVE / ?live=true below.
-  if (req.headers['x-vercel-cron']) return true;
-
+  /* GEEN terugval meer op de spoofbare `x-vercel-cron`-header: met CRON_SECRET
+     gezet stuurt Vercel Authorization: Bearer <CRON_SECRET> mee (zie hierboven).
+     Live-uitvoer blijft los gegate via LOYALTY_VOUCHER_CRON_LIVE / ?live=true. */
   return false;
 }
 

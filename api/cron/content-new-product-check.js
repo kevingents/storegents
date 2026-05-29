@@ -14,16 +14,12 @@ import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 import { createNotification } from '../../lib/store-notifications-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 const SEEN_PATH = 'marketing/content-seen-products.json';
 
 function isAuthorized(req) {
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('vercel-cron')) return true;
-  if (req.headers['x-vercel-cron']) return true;
-  const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
-  const token = String(req.headers['x-admin-token'] || req.query?.adminToken || '').trim();
-  return Boolean(adminToken && token && token === adminToken);
+  return isCronAuthorized(req);
 }
 
 async function handler(req, res) {

@@ -30,14 +30,10 @@ import {
   bumpSnapshotIndex
 } from '../../lib/srs-stock-snapshot-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 function isAuthorized(req) {
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('vercel-cron')) return true;
-  if (req.headers['x-vercel-cron']) return true;
-  const adminToken = String(process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()))).trim();
-  const token = String(req.headers['x-admin-token'] || req.query?.adminToken || '').trim();
-  return Boolean(adminToken && token && token === adminToken);
+  return isCronAuthorized(req);
 }
 
 function groupRowsByBranch(rows = []) {

@@ -10,15 +10,14 @@ import { refreshShopifyProductsCache } from '../../lib/shopify-products-cache.js
  * Vercel cron schedule (suggestie):  0 3 * * *   (03:00 elke nacht)
  */
 async function handler(req, res) {
-  /* Accepteer de Vercel-cron-invocatie: secret valt terug op CRON_SECRET (die
-     Vercel automatisch als Authorization: Bearer meestuurt) en de vercel-cron
-     user-agent mag altijd door. Custom SHOPIFY_PRODUCTS_CRON_SECRET blijft
-     werken voor handmatig triggeren. */
+  /* Vercel stuurt bij een cron-invocatie automatisch Authorization: Bearer
+     <CRON_SECRET> mee. Daarop vertrouwen we — NIET op de spoofbare vercel-cron
+     user-agent. Custom SHOPIFY_PRODUCTS_CRON_SECRET blijft werken voor
+     handmatig triggeren. Zonder secret: geen auth-gate (legacy gedrag). */
   const secret = String(process.env.SHOPIFY_PRODUCTS_CRON_SECRET || process.env.CRON_SECRET || '').trim();
-  const ua = String(req.headers['user-agent'] || '').toLowerCase();
   const incoming = String(req.headers.authorization || req.query.secret || '')
     .replace(/^Bearer\s+/i, '').trim();
-  if (secret && incoming !== secret && !ua.includes('vercel-cron')) {
+  if (secret && incoming !== secret) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 
