@@ -74,6 +74,20 @@ function unavailableStatusesOnly(value) {
     .join(',') || DEFAULT_UNAVAILABLE_STATUSES;
 }
 
+/* Verdacht-signaal uit de lost&found-cron (srs-unavailable-lost-found-check): die
+   schrijft het signaal op het item (line.lostFoundCheck.signal) én top-level op het
+   record. Per item lezen; fallback op record-niveau alléén bij 1-regel record om
+   mis-attributie te voorkomen. */
+function suspicionFields(line = {}, parent = {}, singleLine = false) {
+  const s = line.lostFoundCheck?.signal || (singleLine ? parent.lostFoundCheck?.signal : null) || null;
+  return {
+    suspicionScore: Number(s?.score || 0),
+    suspicionStatus: clean(s?.status || ''),
+    suspicionLevel: clean(s?.level || ''),
+    suspicionCheckedAt: clean(line.lostFoundCheck?.checkedAt || (singleLine ? parent.lostFoundCheck?.checkedAt : '') || '')
+  };
+}
+
 function lineRowsFromRecords(records = []) {
   return records.flatMap((record) => {
     const lines = Array.isArray(record.items) && record.items.length ? record.items : [{}];
@@ -123,6 +137,7 @@ function lineRowsFromRecords(records = []) {
       processAttempts: Number(record.processAttempts || 0),
       error: record.error || '',
       problemType: 'niet_leverbaar',
+      ...suspicionFields(line, record, lines.length === 1),
       originalCancellation: record
     }));
   });
