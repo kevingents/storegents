@@ -243,9 +243,12 @@ function bucketBy(rows = [], keyFn) {
   const map = new Map();
   rows.forEach((row) => {
     const key = keyFn(row) || 'Onbekend';
-    const current = map.get(key) || { key, rows: 0, amount: 0, refunded: 0, alreadyRefunded: 0, srsCancelled: 0, srsPending: 0, failed: 0 };
+    const current = map.get(key) || { key, rows: 0, amount: 0, pendingAmount: 0, refunded: 0, alreadyRefunded: 0, srsCancelled: 0, srsPending: 0, failed: 0 };
     current.rows += 1;
-    current.amount += Number(row.amount || 0);
+    const amt = Number(row.amount || 0);
+    current.amount += amt;
+    /* Nog niet terugbetaald = "open bedrag" voor dit filiaal. */
+    if (!isRefunded(row)) current.pendingAmount += amt;
     if (isRefunded(row)) current.refunded += 1;
     if (isAlreadyRefunded(row)) current.alreadyRefunded += 1;
     if (isSrsCancelled(row)) current.srsCancelled += 1;
@@ -255,7 +258,7 @@ function bucketBy(rows = [], keyFn) {
   });
 
   return Array.from(map.values())
-    .map((item) => ({ ...item, amount: euro(item.amount) }))
+    .map((item) => ({ ...item, amount: euro(item.amount), pendingAmount: euro(item.pendingAmount) }))
     .sort((a, b) => b.amount - a.amount || b.rows - a.rows);
 }
 
