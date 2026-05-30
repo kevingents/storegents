@@ -159,6 +159,10 @@
     {
       "path": "/api/cron/supplychain-daily-metrics",
       "schedule": "30 4 * * *"
+    },
+    {
+      "path": "/api/cron/top-customers-snapshot",
+      "schedule": "0 5 * * *"
     }
   ]
 }
