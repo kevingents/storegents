@@ -1,5 +1,5 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../../lib/cors.js';
-import { getCustomers } from '../../../lib/srs-customers-client.js';
+import { getCustomers, debugExtractCustomerFields } from '../../../lib/srs-customers-client.js';
 import { upsertCustomersInMap, markFullRebuild, readVerenigingMap } from '../../../lib/students-vereniging-store.js';
 
 /**
@@ -28,11 +28,36 @@ export default async function handler(req, res) {
   const page = Math.max(1, Number(req.query.page || 1));
   const pageSize = Math.max(50, Math.min(1000, Number(req.query.pageSize || 500)));
   const finalize = ['1', 'true', 'yes'].includes(String(req.query.finalize || '').toLowerCase());
+  const debug = ['1', 'true', 'yes'].includes(String(req.query.debug || '').toLowerCase());
 
   const startedAt = Date.now();
 
   try {
-    const { customers = [] } = await getCustomers({ page, pageSize });
+    const { customers = [], raw = '' } = await getCustomers({ page, pageSize });
+
+    /* Diagnose: laat zien WELKE velden de bulk-GetCustomers response teruggeeft
+       + hoeveel klanten een vereniging-veld hebben. Cruciaal om te zien of de
+       bulk-response het vereniging-veld überhaupt bevat (anders blijft de cache
+       altijd leeg omdat upsert klanten zonder vereniging skipt). */
+    if (debug) {
+      const withVereniging = customers.filter((c) => String(c.vereniging || '').trim()).length;
+      return res.status(200).json({
+        success: true,
+        debug: true,
+        page,
+        pageSize,
+        customersInPage: customers.length,
+        customersWithVereniging: withVereniging,
+        sampleFields: debugExtractCustomerFields(raw),
+        sampleCustomers: customers.slice(0, 3).map((c) => ({
+          customerId: c.customerId,
+          name: c.name,
+          vereniging: c.vereniging || null,
+          verenigingType: c.verenigingType || null
+        })),
+        durationMs: Date.now() - startedAt
+      });
+    }
 
     /* Upsert deze batch in de cache */
     const upsertResult = await upsertCustomersInMap(customers);

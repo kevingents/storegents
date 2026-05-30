@@ -93,7 +93,10 @@ async function handler(req, res) {
       await markFullRebuild(0); /* totalCustomersScanned wordt geüpdatet door markFullRebuild */
       map = await readVerenigingMap(); /* refresh na markFullRebuild */
     } else {
-      map._cronResumePage = page + 1; /* volgende cron pakt deze page op */
+      /* `page` is na de loop al opgehoogd naar de eerstvolgende NIET-verwerkte
+         page (regel `page += 1`). Resume dus op `page` zelf — niet page+1,
+         anders wordt elke partial-run één page overgeslagen. */
+      map._cronResumePage = page; /* volgende cron pakt deze page op */
     }
     /* Schrijf state expliciet als we niet exhausted zijn */
     if (!exhausted) {
@@ -114,7 +117,7 @@ async function handler(req, res) {
       totalCustomersInRun,
       totalAdded,
       totalUpdated,
-      nextResumePage: exhausted ? null : (page + 1),
+      nextResumePage: exhausted ? null : page,
       totalWithVereniging: map.totalWithVereniging || 0,
       lastFullRebuildAt: map.lastFullRebuildAt,
       runtimeMs,
