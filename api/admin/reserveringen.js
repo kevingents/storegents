@@ -61,14 +61,15 @@ export default async function handler(req, res) {
     const statusFilter = clean(req.query.status);
     const includeAll = String(req.query.all || '') === '1';
 
-    /* Haal alle reserveringen op (zonder store-filter zodat we kunnen aggregeren) */
-    const all = await getReserveringen({ status: statusFilter, includeAll, limit: 5000 });
+    /* Aggregaat-set: standaard-window (open + laatste 30d non-open), ZONDER status-
+       of winkel-filter. Cruciaal: het statusfilter mag NIET op het aggregaat —
+       anders zou bv. status=opgehaald de 'Open'-kolom én de open-totalen op 0
+       zetten, terwijl de KPI-kaarten ("Open totaal", "Waarde open") open tonen. */
+    const all = await getReserveringen({ includeAll, limit: 5000 });
 
-    /* Filter optioneel op winkel — pas NA aggregaat zodat byStore alle winkels
-       blijft tonen, en items[] alleen het gevraagde. */
-    const items = storeFilter
-      ? all.filter((r) => String(r.store || '').trim().toLowerCase() === storeFilter.toLowerCase())
-      : all;
+    /* Items-lijst voor de tabel: wél op winkel + status gefilterd (een status-
+       filter toont álle van die status, zonder 30d-cutoff — vandaar aparte fetch). */
+    const items = await getReserveringen({ store: storeFilter, status: statusFilter, includeAll, limit: 5000 });
 
     /* Aggregaat per winkel (alle winkels uit branch-mapping zodat lege winkels
        ook in de tabel zichtbaar zijn met 0 reserveringen). */
