@@ -171,6 +171,10 @@
     {
       "path": "/api/cron/stock-reconcile",
       "schedule": "50 3 * * *"
+    },
+    {
+      "path": "/api/cron/seo-audit",
+      "schedule": "55 3 * * *"
     }
   ]
 }
