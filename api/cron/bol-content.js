@@ -1,6 +1,6 @@
 import { trackedCron } from '../../lib/cron-auto-track.js';
 import { buildBolContentPlan } from '../../lib/bol-content-optimizer.js';
-import { runBolContentAuto } from '../../lib/bol-content-writer.js';
+import { runBolContentAuto, ensureBolFamilies } from '../../lib/bol-content-writer.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 
 export const maxDuration = 60;
@@ -17,13 +17,25 @@ async function handler(req, res) {
   if (secret && incoming !== secret) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   try {
     const plan = await buildBolContentPlan();
+    const configured = isBolConfigured();
+
+    /* Families aanvullen waar ze ontbreken (los van de content-kill-switch —
+       jullie willen families aanmaken; overschrijft bestaande niet).
+       Uitzetten met BOL_FAMILIES_AUTO=0. */
+    let families = null;
+    const familiesOff = ['0', 'false', 'no'].includes(String(process.env.BOL_FAMILIES_AUTO || '').toLowerCase());
+    if (configured && !familiesOff) {
+      try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 120) }); } catch (e) { families = { error: e.message }; }
+    }
+
+    /* Volledige content-push alleen als expliciet aangezet (BOL_AUTO_CONTENT≠0). */
     const autoOff = ['0', 'false', 'no'].includes(String(process.env.BOL_AUTO_CONTENT || '').toLowerCase());
-    if (autoOff || !isBolConfigured()) {
-      return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, gepusht: 0, autonoom: false, configured: isBolConfigured(), refreshedAt: plan.refreshedAt });
+    if (autoOff || !configured) {
+      return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, gepusht: 0, autonoom: false, configured, families, refreshedAt: plan.refreshedAt });
     }
     const maxPush = Number(process.env.BOL_AUTO_CONTENT_MAX || 300);
     const out = await runBolContentAuto({ dryRun: false, maxPush });
-    return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, autonoom: true, ...out, refreshedAt: plan.refreshedAt });
+    return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, autonoom: true, families, ...out, refreshedAt: plan.refreshedAt });
   } catch (error) {
     console.error('[bol-content cron]', error);
     return res.status(500).json({ success: false, message: error.message || 'bol-content-cron mislukt.' });

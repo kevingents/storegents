@@ -12,7 +12,7 @@
  */
 
 import { buildBolContentPlan, readBolContentPlan, isPlanFresh } from '../../lib/bol-content-optimizer.js';
-import { pushBolContent, runBolContentAuto, discoverBolCatalog } from '../../lib/bol-content-writer.js';
+import { pushBolContent, runBolContentAuto, discoverBolCatalog, ensureBolFamilies } from '../../lib/bol-content-writer.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -59,7 +59,14 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, ...out });
       }
 
-      return res.status(400).json({ success: false, message: 'Onbekende action (refresh|push|auto|discover).' });
+      if (action === 'families') {
+        /* Maak families aan waar ze ontbreken (overschrijft bestaande niet). */
+        const dryRun = body.dryRun !== false;
+        const out = await ensureBolFamilies({ dryRun, maxCheck: Number(body.maxCheck) || 120 });
+        return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), ...out });
+      }
+
+      return res.status(400).json({ success: false, message: 'Onbekende action (refresh|push|auto|discover|families).' });
     }
 
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
