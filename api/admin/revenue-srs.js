@@ -139,6 +139,19 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
     });
 
     const total = Number(tx.total || 0);
+
+    /* Reconcile met het BON-TOTAAL. SRS SOAP levert niet altijd de volledige
+       regeldetails (items[]) terug; dan telt de regel-som structureel te laag
+       en wijkt het netto-totaal af van (a) de per-winkel-rollup hieronder en
+       (b) het dashboard (today-stats), die beide al op tx.total rekenen.
+       tx.total is het werkelijk afgerekende bonbedrag → dat is leidend.
+       Klopt de regel-som wél met het bontotaal, dan houden we de fijnere
+       bruto/retour-splitsing per regel (belangrijk voor gemengde bonnen). */
+    if (Math.abs((txGross - txRefund) - total) > 0.01) {
+      if (total >= 0) { txGross = total; txRefund = 0; }
+      else { txGross = 0; txRefund = -total; }
+    }
+
     grossRevenue += txGross;
     refundedRevenue += txRefund;
     grossItems += txGrossPieces;
