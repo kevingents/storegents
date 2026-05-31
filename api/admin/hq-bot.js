@@ -29,7 +29,8 @@ export default async function handler(req, res) {
     const result = await askHqBot({
       question: body.question,
       personnelId: body.personnelId || body.employeeId || body.userId || '',
-      allowedStores: Array.isArray(body.allowedStores) ? body.allowedStores : []
+      allowedStores: Array.isArray(body.allowedStores) ? body.allowedStores : [],
+      role: body.role || ''
     });
     res.setHeader('Cache-Control', 'no-store, max-age=0');
     return res.status(200).json({ success: true, ...result });
