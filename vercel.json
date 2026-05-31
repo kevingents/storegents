@@ -187,6 +187,10 @@
     {
       "path": "/api/cron/bol-returns",
       "schedule": "20 4 * * *"
+    },
+    {
+      "path": "/api/cron/bol-content",
+      "schedule": "25 4 * * *"
     }
   ]
 }
