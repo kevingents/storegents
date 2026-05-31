@@ -175,6 +175,10 @@
     {
       "path": "/api/cron/seo-audit",
       "schedule": "55 3 * * *"
+    },
+    {
+      "path": "/api/cron/ai-visibility",
+      "schedule": "5 4 * * *"
     }
   ]
 }
