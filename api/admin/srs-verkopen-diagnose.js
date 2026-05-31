@@ -23,7 +23,9 @@ export default async function handler(req, res) {
 
   try {
     const sampleSize = Math.max(1, Math.min(20, Number(req.query.sample || 5)));
-    const result = await diagnoseVerkopen({ sampleSize });
+    const filiaal = String(req.query.filiaal || req.query.fil || '').trim();
+    const datum = String(req.query.datum || req.query.date || '').trim();
+    const result = await diagnoseVerkopen({ sampleSize, filiaal, datum });
     res.setHeader('Cache-Control', 'no-store, max-age=0');
     return res.status(200).json(result);
   } catch (error) {
