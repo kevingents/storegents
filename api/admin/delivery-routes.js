@@ -19,9 +19,11 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const routes = await getDeliveryRoutes();
+      /* Standaard verborgen routes WEGLATEN (anders deed de verberg-actie
+         niets). Wie ze toch wil zien geeft expliciet ?includeHidden=1 mee. */
       return res.status(200).json({
         success: true,
-        routes: filterRoutes(routes, { ...req.query, includeHidden: '1' })
+        routes: filterRoutes(routes, req.query)
       });
     }
 
