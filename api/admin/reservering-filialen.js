@@ -18,6 +18,8 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { readVoorraadRows, readVoorraadSummary } from '../../lib/srs-voorraad-store.js';
 import { listReserveringBranches } from '../../lib/reserveringen-branch-mapping.js';
+import { readResAging, resAgingKey, daysSince } from '../../lib/reservering-aging-store.js';
+import { getReserveringConfig } from '../../lib/reservering-config-store.js';
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
@@ -28,12 +30,16 @@ export default async function handler(req, res) {
 
   try {
     const storeFilter = String(req.query.store || '').trim();
+    const [config, aging] = await Promise.all([getReserveringConfig(), readResAging()]);
+    const threshold = config.agingDagen;
+    const firstSeen = aging.firstSeen || {};
+
     const branches = listReserveringBranches();
     const branchById = new Map(branches.map((b) => [String(b.branchId), b]));
 
     const byStore = new Map();
     for (const b of branches) {
-      byStore.set(b.store, { store: b.store, resBranchId: String(b.branchId), resName: b.resName, skuCount: 0, stuks: 0, items: [] });
+      byStore.set(b.store, { store: b.store, resBranchId: String(b.branchId), resName: b.resName, skuCount: 0, stuks: 0, overdueCount: 0, oldestDays: 0, items: [] });
     }
 
     const rows = await readVoorraadRows();
@@ -45,10 +51,17 @@ export default async function handler(req, res) {
       if (v <= 0) continue;
       totalResRows += 1;
       const cell = byStore.get(b.store);
+      const seen = firstSeen[resAgingKey(r.filiaalNummer, r.sku)] || null;
+      const dagen = seen ? daysSince(seen) : 0;
+      const overdue = dagen >= threshold;
       cell.skuCount += 1;
       cell.stuks += v;
-      cell.items.push({ sku: r.sku, voorraad: v });
+      if (overdue) cell.overdueCount += 1;
+      if (dagen > cell.oldestDays) cell.oldestDays = dagen;
+      cell.items.push({ sku: r.sku, voorraad: v, sinds: seen, dagen, overdue });
     }
+
+    for (const cell of byStore.values()) cell.items.sort((a, b) => b.dagen - a.dagen);
 
     let out = [...byStore.values()];
     if (storeFilter) out = out.filter((s) => s.store.toLowerCase() === storeFilter.toLowerCase());
@@ -60,9 +73,12 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       voorraadGeneratedAt: summaryAt,
+      agingDagen: threshold,
+      agingTrackedSince: aging.updatedAt,
       resBranchesConfigured: branches.length,
       resBranchesWithStock: out.filter((s) => s.stuks > 0).length,
       totalResRows,
+      totaalOverdue: out.reduce((n, s) => n + s.overdueCount, 0),
       byStore: out
     });
   } catch (error) {
