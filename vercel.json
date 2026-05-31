@@ -183,6 +183,10 @@
     {
       "path": "/api/cron/alert-rules-eval",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/bol-returns",
+      "schedule": "20 4 * * *"
     }
   ]
 }
