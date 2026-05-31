@@ -15,6 +15,8 @@
 import { runProductAudit, readProductAudit, isAuditFresh } from '../../lib/shopify-product-audit.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
+export const maxDuration = 60;
+
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'OPTIONS'])) return;
   if (!requireAdmin(req, res)) return;

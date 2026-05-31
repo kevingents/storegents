@@ -1,6 +1,8 @@
 import { trackedCron } from '../../lib/cron-auto-track.js';
 import { runProductAudit } from '../../lib/shopify-product-audit.js';
 
+export const maxDuration = 60;
+
 /**
  * Cron: bouw de product-zichtbaarheid-audit 1× per dag op, zodat de
  * admin-pagina direct een verse (gecachte) audit toont zonder live scan.
