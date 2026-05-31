@@ -191,6 +191,14 @@
     {
       "path": "/api/cron/bol-content",
       "schedule": "25 4 * * *"
+    },
+    {
+      "path": "/api/cron/bol-stock?map=1",
+      "schedule": "40 5 * * *"
+    },
+    {
+      "path": "/api/cron/bol-stock",
+      "schedule": "0 12,18 * * *"
     }
   ]
 }
