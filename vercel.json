@@ -199,6 +199,10 @@
     {
       "path": "/api/cron/bol-stock",
       "schedule": "0 12,18 * * *"
+    },
+    {
+      "path": "/api/cron/bol-insights",
+      "schedule": "30 6 * * *"
     }
   ]
 }
