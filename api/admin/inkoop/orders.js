@@ -19,8 +19,10 @@ import {
   listOrders, getOrder, createOrder, updateOrder, setOrderStatus,
   recordMail, recordSrsPush, deleteOrder, getSupplier
 } from '../../../lib/inkoop-store.js';
+import { applyReceiving } from '../../../lib/inkoop-store.js';
 import { getSrsBranchId } from '../../../lib/srs-branches.js';
-import { createPurchaseOrderInSrs } from '../../../lib/srs-purchase-order-create-client.js';
+import { createPurchaseOrderInSrs, cancelPurchaseOrderInSrs, receivePurchaseOrderInSrs } from '../../../lib/srs-purchase-order-create-client.js';
+import { reconcileFromSrs } from '../../../lib/inkoop-reconcile.js';
 import { sendMail, baseMailHtml, rowsTable } from '../../../lib/gents-mailer.js';
 
 export const maxDuration = 30;
@@ -147,6 +149,44 @@ export default async function handler(req, res) {
           }
           throw e;
         }
+      }
+
+      if (mode === 'receive') {
+        const order = await getOrder(clean(body.id));
+        if (!order) return res.status(404).json({ success: false, message: 'Order niet gevonden.' });
+        if (!clean(order.srsOrderNr)) return res.status(400).json({ success: false, message: 'Order is nog niet doorgezet naar SRS; binnenmelden kan pas daarna.' });
+        /* items meegegeven (per regel ontvangen aantal), anders default: alle openstaande stuks. */
+        const items = Array.isArray(body.items) && body.items.length
+          ? body.items
+          : (order.lines || []).map((l) => ({ barcode: l.barcode, sku: l.sku, pieces: l.quantity, purchasePrice: l.purchasePrice }));
+        try {
+          const result = await receivePurchaseOrderInSrs(order.srsOrderNr, items);
+          const rcv = Number(result.piecesReceived) || 0;
+          const ord = Number(result.piecesOrdered) || order.totalPieces || 0;
+          const status = ord > 0 && rcv >= ord ? 'ontvangen' : 'deels_ontvangen';
+          const { order: updated } = await applyReceiving(order.id, { status, piecesReceived: rcv, piecesOrdered: ord, piecesOpen: Math.max(0, ord - rcv), actor });
+          return res.status(200).json({ success: true, srs: result, order: updated });
+        } catch (e) {
+          if (e.code === 'PO_PUSH_DISABLED') return res.status(200).json({ success: false, pushEnabled: false, message: e.message });
+          throw e;
+        }
+      }
+
+      if (mode === 'cancel') {
+        const order = await getOrder(clean(body.id));
+        if (!order) return res.status(404).json({ success: false, message: 'Order niet gevonden.' });
+        let srsResult = null;
+        if (clean(order.srsOrderNr)) {
+          try { srsResult = await cancelPurchaseOrderInSrs(order.srsOrderNr); }
+          catch (e) { if (e.code !== 'PO_PUSH_DISABLED') throw e; }
+        }
+        const updated = await setOrderStatus(order.id, 'geannuleerd', actor, srsResult ? 'geannuleerd in SRS' : 'lokaal geannuleerd');
+        return res.status(200).json({ success: true, srs: srsResult, order: updated });
+      }
+
+      if (mode === 'reconcile') {
+        const rec = await reconcileFromSrs({ days: Math.min(Math.max(Number(body.days) || 120, 7), 365) });
+        return res.status(200).json({ success: true, ...rec });
       }
 
       return res.status(400).json({ success: false, message: `Onbekende mode: ${mode}` });

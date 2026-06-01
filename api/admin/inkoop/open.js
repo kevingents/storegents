@@ -12,6 +12,7 @@
 import { corsJson, requireAdmin } from '../../../lib/request-guards.js';
 import { getPurchaseOrders } from '../../../lib/srs-purchase-orders-client.js';
 import { listOrders } from '../../../lib/inkoop-store.js';
+import { reconcileFromSrs } from '../../../lib/inkoop-reconcile.js';
 
 export const maxDuration = 30;
 
@@ -35,16 +36,31 @@ export default async function handler(req, res) {
     const branchId = clean(req.query.branchId);
     const supplierId = clean(req.query.supplierId);
 
-    /* SRS open PO's (best-effort: een SRS-fout mag de lokale lijst niet blokkeren). */
-    let srs = { orders: [], openCount: 0, piecesOpen: 0 };
+    /* SRS-orders (status all, zodat ontvangen orders ook in de set zitten voor de
+       reconcile). Best-effort: een SRS-fout mag de lokale lijst niet blokkeren. */
+    let srsAll = { orders: [] };
     let srsError = null;
+    let reconciled = 0;
     try {
-      srs = await withTimeout(getPurchaseOrders({ days, status: 'open', branchId }), 9000, 'SRS PurchaseOrders');
+      srsAll = await withTimeout(getPurchaseOrders({ days, status: 'all', branchId }), 9000, 'SRS PurchaseOrders');
+      /* Spiegel lokale doorgezette orders tegen de SRS-stand (deels/volledig ontvangen). */
+      try {
+        const rec = await reconcileFromSrs({ srsOrders: srsAll.orders });
+        reconciled = rec.updated;
+      } catch (_) { /* reconcile is best-effort */ }
     } catch (e) {
       srsError = e.message || String(e);
     }
 
-    /* Lokale open orders (concept/verstuurd/doorgezet/deels-ontvangen). */
+    /* Alleen de openstaande SRS-orders tonen. */
+    const srsOpenOrders = (srsAll.orders || []).filter((o) => o.isOpen);
+    const srs = {
+      orders: srsOpenOrders,
+      openCount: srsOpenOrders.length,
+      piecesOpen: srsOpenOrders.reduce((s, o) => s + (Number(o.piecesOpen) || 0), 0)
+    };
+
+    /* Lokale open orders (na reconcile, dus net bijgewerkte statussen). */
     const local = await listOrders({ openOnly: true, branchId, supplierId });
 
     /* Samenvatting per leverancier (SRS + lokaal samen). */
@@ -69,6 +85,7 @@ export default async function handler(req, res) {
       success: true,
       window: { days },
       srsError,
+      reconciled,
       srs: {
         count: (srs.orders || []).length,
         openCount: srs.openCount || 0,
