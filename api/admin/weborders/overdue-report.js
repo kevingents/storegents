@@ -182,7 +182,7 @@ export default async function handler(req, res) {
       note: result.note || '',
       degraded: Boolean(result.degraded),
       ownerLogic: 'order-line-current-branch',
-      ownerLogicNote: 'Adminrapportage telt openstaande orderregels op Huidig filiaal. Regels met Huidig filiaal Klant, Magazijn of geleverd/geannuleerd/afgerond tellen niet mee.',
+      ownerLogicNote: 'Adminrapportage telt openstaande orderregels op Huidig filiaal. Het magazijn telt mee als eigen, aanspreekbare rij ("GENTS Magazijn"). Regels met Huidig filiaal Klant of geleverd/geannuleerd/afgerond tellen niet mee.',
       deadlineHours: 48,
       totals: {
         openCount,
