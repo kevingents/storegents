@@ -166,7 +166,7 @@
     },
     {
       "path": "/api/cron/gala-crawl",
-      "schedule": "40 6 * * *"
+      "schedule": "40 6 * * 1"
     },
     {
       "path": "/api/cron/beeldbank-classify",
