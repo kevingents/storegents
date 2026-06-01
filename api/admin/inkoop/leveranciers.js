@@ -48,13 +48,24 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const source = clean(req.query.source || 'merged').toLowerCase();
 
-      /* Eenmalige import: SRS-historie → lokale store. */
+      /* Eenmalige import: SRS-historie → lokale store. Met diagnostiek zodat
+         "0 geïmporteerd" onderscheidbaar is van "SRS-fout" of "al aanwezig". */
       if (clean(req.query.import) === '1') {
         const days = Math.min(Math.max(Number(req.query.days) || 365, 30), 730);
-        const srs = await withTimeout(getSrsSuppliersFromHistory({ days }), 20000, 'SRS import').catch((e) => ({ suppliers: [], error: e.message }));
+        const srs = await withTimeout(getSrsSuppliersFromHistory({ days }), 20000, 'SRS import')
+          .catch((e) => ({ suppliers: [], error: e.message, ordersFound: 0 }));
         const merged = await mergeSrsSuppliers(srs.suppliers || [], actorOf(req));
         const local = await listSuppliers();
-        return res.status(200).json({ success: true, imported: merged.added, total: merged.total, suppliers: local });
+        return res.status(200).json({
+          success: true,
+          imported: merged.added,
+          total: merged.total,
+          days,
+          srsOrdersFound: srs.ordersFound ?? null,
+          srsSuppliersFound: (srs.suppliers || []).length,
+          srsError: srs.error || null,
+          suppliers: local
+        });
       }
 
       if (source === 'srs') {
