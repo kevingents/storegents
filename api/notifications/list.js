@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   if (!store) return res.status(400).json({ success: false, message: 'store is verplicht.' });
 
   try {
-    const items = await listForStore(store, { limit, includeRead: true });
+    const items = await listForStore(store, { limit, includeRead: true, refresh: true });
     return res.status(200).json({ success: true, count: items.length, notifications: items });
   } catch (error) {
     console.error('[notifications/list]', error);
