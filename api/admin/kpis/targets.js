@@ -20,6 +20,7 @@ import {
   getTargetsForMonth,
   setTarget,
   setTargetsForStore,
+  setAllTargetsForMonth,
   listMonthsWithTargets
 } from '../../../lib/kpi-targets-store.js';
 import { corsJson, requireAdmin } from '../../../lib/request-guards.js';
@@ -59,6 +60,13 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'year + month vereist.' });
       }
       const actor = actorFromReq(req);
+
+      /* Bulk-ALLE-winkels-mode: { targetsByStore: { store: { kpi: value } } }
+         → in 1 atomaire write alle winkels opslaan (Sla alles op-knop). */
+      if (body.targetsByStore && typeof body.targetsByStore === 'object') {
+        const updated = await setAllTargetsForMonth(year, month, body.targetsByStore, actor);
+        return res.status(200).json({ success: true, stores: updated });
+      }
 
       /* Bulk-mode: setTargetsForStore */
       if (body.kpiValues && typeof body.kpiValues === 'object') {
