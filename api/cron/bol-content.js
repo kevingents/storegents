@@ -2,6 +2,7 @@ import { trackedCron } from '../../lib/cron-auto-track.js';
 import { buildBolContentPlan } from '../../lib/bol-content-optimizer.js';
 import { runBolContentAuto, ensureBolFamilies } from '../../lib/bol-content-writer.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
+import { getBolSettings } from '../../lib/bol-settings-store.js';
 
 export const maxDuration = 300;
 
@@ -16,19 +17,19 @@ async function handler(req, res) {
   const secret = String(process.env.BOL_CRON_SECRET || process.env.CRON_SECRET || '').trim();
   const incoming = String(req.headers.authorization || req.query.secret || '').replace(/^Bearer\s+/i, '').trim();
   if (secret && incoming !== secret) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
-  const on = (v) => ['1', 'true', 'yes'].includes(String(v || '').toLowerCase());
   try {
     const plan = await buildBolContentPlan();
     const configured = isBolConfigured();
+    const settings = await getBolSettings();
 
-    /* Families aanvullen — alleen als expliciet aangezet (BOL_FAMILIES_AUTO=1). */
+    /* Families aanvullen — alleen als ingeschakeld (Instellingen). */
     let families = null;
-    if (configured && on(process.env.BOL_FAMILIES_AUTO)) {
+    if (configured && settings.familiesAuto) {
       try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 80) }); } catch (e) { families = { error: e.message }; }
     }
 
-    /* Volledige content-push — alleen als expliciet aangezet (BOL_AUTO_CONTENT=1). */
-    if (!on(process.env.BOL_AUTO_CONTENT) || !configured) {
+    /* Volledige content-push — alleen als ingeschakeld (Instellingen). */
+    if (!settings.contentAuto || !configured) {
       return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, gepusht: 0, autonoom: false, configured, families, refreshedAt: plan.refreshedAt });
     }
     const maxPush = Number(process.env.BOL_AUTO_CONTENT_MAX || 300);
