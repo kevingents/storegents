@@ -16,7 +16,7 @@ import { pushBolContent, runBolContentAuto, discoverBolCatalog, ensureBolFamilie
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'POST', 'OPTIONS'])) return;
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
       if (action === 'families') {
         /* Maak families aan waar ze ontbreken (overschrijft bestaande niet). */
         const dryRun = body.dryRun !== false;
-        const out = await ensureBolFamilies({ dryRun, maxCheck: Number(body.maxCheck) || 120 });
+        const out = await ensureBolFamilies({ dryRun, maxCheck: Number(body.maxCheck) || 40 });
         return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), ...out });
       }
 

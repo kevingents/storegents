@@ -3,7 +3,7 @@ import { runBolStockSync, refreshBolOfferMap, buildBolStockPlan } from '../../li
 import { runBolPriceSync } from '../../lib/bol-price-sync.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Cron: zet de bol-voorraad gelijk aan de magazijnvoorraad − veiligheidsmarge.

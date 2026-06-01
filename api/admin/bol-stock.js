@@ -15,7 +15,7 @@ import { buildBolStockPlan, readBolStockPlan, isStockPlanFresh, runBolStockSync,
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'POST', 'OPTIONS'])) return;

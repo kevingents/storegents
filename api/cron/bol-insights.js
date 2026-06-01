@@ -2,7 +2,7 @@ import { trackedCron } from '../../lib/cron-auto-track.js';
 import { runBolInsights } from '../../lib/bol-insights.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 
-export const maxDuration = 90;
+export const maxDuration = 300;
 
 /**
  * Cron: ververs bol omzet/best-sellers/buy-box/performance 1× per dag (na de

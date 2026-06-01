@@ -14,7 +14,7 @@ import { buildBolPricePlan, runBolPriceSync } from '../../lib/bol-price-sync.js'
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
-export const maxDuration = 90;
+export const maxDuration = 300;
 
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'POST', 'OPTIONS'])) return;

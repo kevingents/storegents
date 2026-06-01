@@ -3,7 +3,7 @@ import { buildBolContentPlan } from '../../lib/bol-content-optimizer.js';
 import { runBolContentAuto, ensureBolFamilies } from '../../lib/bol-content-writer.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * Cron: herbereken het bol content-plan. Schrijven naar bol is OPT-IN:
@@ -24,7 +24,7 @@ async function handler(req, res) {
     /* Families aanvullen — alleen als expliciet aangezet (BOL_FAMILIES_AUTO=1). */
     let families = null;
     if (configured && on(process.env.BOL_FAMILIES_AUTO)) {
-      try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 120) }); } catch (e) { families = { error: e.message }; }
+      try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 80) }); } catch (e) { families = { error: e.message }; }
     }
 
     /* Volledige content-push — alleen als expliciet aangezet (BOL_AUTO_CONTENT=1). */
