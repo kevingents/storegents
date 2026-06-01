@@ -302,9 +302,20 @@ async function handler(req, res) {
     } catch (error) { warnings.push(error.message); }
     let exchangeRows = [];
     try {
-      const exchanges = await fetchJson(`${baseUrl}/api/admin/exchanges?${query}`, `admin-exchanges (${periodKey})`, 30000);
-      const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
-      exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
+      const exchanges = await fetchJson(`${baseUrl}/api/admin/exchanges-report?${query}`, `admin-exchanges (${periodKey})`, 30000);
+      /* exchanges-report geeft per-winkel aggregaten met openOverOneWeek (=
+         uitwisselingen die te lang open staan). Expandeer naar losse regels
+         zodat de per-winkel-tellingen + het totaal in het rapport kloppen. */
+      if (Array.isArray(exchanges.rows) && exchanges.rows.length && exchanges.rows[0] && 'openOverOneWeek' in exchanges.rows[0]) {
+        for (const r of exchanges.rows) {
+          const n = Math.max(0, Number(r.openOverOneWeek || 0));
+          for (let i = 0; i < n; i++) exchangeRows.push({ store: r.store, overdue: true, status: 'Open > 1 week', createdAt: '' });
+        }
+      } else {
+        /* Fallback: oude vorm met losse exchange-regels. */
+        const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
+        exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
+      }
     } catch (error) { warnings.push(`admin-exchanges niet beschikbaar (${periodKey}): ${error.message}`); }
     const data = { scoreboardRows, exchangeRows, scoreboardWarnings, scoreboardDataQuality };
     periodCache.set(periodKey, data);
