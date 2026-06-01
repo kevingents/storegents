@@ -157,6 +157,10 @@
       "schedule": "20 5 * * *"
     },
     {
+      "path": "/api/cron/merchandiser-snapshot",
+      "schedule": "40 5 * * *"
+    },
+    {
       "path": "/api/cron/beeldbank-classify",
       "schedule": "30 6 * * *"
     },
