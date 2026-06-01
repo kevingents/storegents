@@ -78,9 +78,6 @@ function buildStoreMailHtml({ store, mode, label, weekRow, monthRow, weekRange, 
     <h3 style="margin:18px 0 8px;font-size:14px">Vorige week — ${label}</h3>
     <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px">
       <tr><td>Nieuwe klanten:</td><td style="text-align:right"><strong>${w.newCount || w.total || 0}</strong> ${pctCell(w.pctInschrijvingenVsTarget, w.targetInschrijvingen, w.newCount || w.total || 0)}</td></tr>
-      <tr><td>Met bon:</td><td style="text-align:right"><strong>${w.withBon || w.withReceipt || 0}</strong> ${pctCell(w.pctMetBonVsTarget, w.targetMetBon, w.withBon || w.withReceipt || 0)}</td></tr>
-      <tr><td>Met email:</td><td style="text-align:right"><strong>${w.withEmail || 0}</strong> ${pctCell(w.pctMetEmailVsTarget, w.targetMetEmail, w.withEmail || 0)}</td></tr>
-      <tr><td>Totaal bonnen verkocht:</td><td style="text-align:right"><strong>${w.totalReceiptsInStore || 0}</strong> ${pctCell(w.pctInschrijvingenVsBons, w.totalReceiptsInStore, w.newCount || w.total || 0)}</td></tr>
     </table>
     <small style="color:#64748b">Periode: ${weekRange?.from || '—'} t/m ${weekRange?.to || '—'}</small>
   ` : '';
@@ -89,9 +86,6 @@ function buildStoreMailHtml({ store, mode, label, weekRow, monthRow, weekRange, 
     <h3 style="margin:18px 0 8px;font-size:14px">Maand tot nu toe</h3>
     <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px">
       <tr><td>Nieuwe klanten:</td><td style="text-align:right"><strong>${m.newCount || m.total || 0}</strong> ${pctCell(m.pctInschrijvingenVsTarget, m.targetInschrijvingen, m.newCount || m.total || 0)}</td></tr>
-      <tr><td>Met bon:</td><td style="text-align:right"><strong>${m.withBon || m.withReceipt || 0}</strong> ${pctCell(m.pctMetBonVsTarget, m.targetMetBon, m.withBon || m.withReceipt || 0)}</td></tr>
-      <tr><td>Met email:</td><td style="text-align:right"><strong>${m.withEmail || 0}</strong> ${pctCell(m.pctMetEmailVsTarget, m.targetMetEmail, m.withEmail || 0)}</td></tr>
-      <tr><td>Totaal bonnen verkocht:</td><td style="text-align:right"><strong>${m.totalReceiptsInStore || 0}</strong> ${pctCell(m.pctInschrijvingenVsBons, m.totalReceiptsInStore, m.newCount || m.total || 0)}</td></tr>
     </table>
     <small style="color:#64748b">Periode: ${monthRange?.from || '—'} t/m ${monthRange?.to || '—'}</small>
   ` : '';
@@ -118,8 +112,6 @@ function buildHQMailHtml({ mode, label, totals, rows, range }) {
       <td>${row.store}</td>
       <td style="text-align:right">${row.newCount || row.total || 0}</td>
       <td style="text-align:right">${pctCell(row.pctInschrijvingenVsTarget, row.targetInschrijvingen, row.newCount || row.total || 0)}</td>
-      <td style="text-align:right">${row.totalReceiptsInStore || 0}</td>
-      <td style="text-align:right">${pctCell(row.pctInschrijvingenVsBons, row.totalReceiptsInStore, row.newCount || row.total || 0)}</td>
     </tr>`).join('');
 
   return baseMailHtml({
@@ -128,14 +120,11 @@ function buildHQMailHtml({ mode, label, totals, rows, range }) {
     bodyHtml: `
       <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px">
         <tr><td><strong>Totaal nieuwe klanten:</strong></td><td style="text-align:right"><strong>${r.totalNew || r.total || 0}</strong> ${pctCell(r.pctInschrijvingenVsTarget, r.targetInschrijvingen, r.totalNew || r.total || 0)}</td></tr>
-        <tr><td>Met bon:</td><td style="text-align:right">${r.withBon || 0} ${pctCell(r.pctMetBonVsTarget, r.targetMetBon, r.withBon || 0)}</td></tr>
-        <tr><td>Met email:</td><td style="text-align:right">${r.withEmail || 0} ${pctCell(r.pctMetEmailVsTarget, r.targetMetEmail, r.withEmail || 0)}</td></tr>
-        <tr><td>Totaal bonnen verkocht:</td><td style="text-align:right">${r.totalReceipts || 0} ${pctCell(r.pctInschrijvingenVsBons, r.totalReceipts, r.totalNew || r.total || 0)}</td></tr>
       </table>
       <h3 style="margin:18px 0 8px;font-size:14px">Top 10 winkels op nieuwe klanten</h3>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead><tr style="background:#f1f5f9"><th style="text-align:left;padding:6px">Winkel</th><th style="text-align:right;padding:6px">Nieuw</th><th style="text-align:right;padding:6px">% vs target</th><th style="text-align:right;padding:6px">Bonnen</th><th style="text-align:right;padding:6px">% inschr/bon</th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="5" style="color:#94a3b8;padding:6px">Geen data</td></tr>'}</tbody>
+        <thead><tr style="background:#f1f5f9"><th style="text-align:left;padding:6px">Winkel</th><th style="text-align:right;padding:6px">Nieuw</th><th style="text-align:right;padding:6px">% vs target</th></tr></thead>
+        <tbody>${tableRows || '<tr><td colspan="3" style="color:#94a3b8;padding:6px">Geen data</td></tr>'}</tbody>
       </table>`
   });
 }
@@ -247,38 +236,60 @@ async function handler(req, res) {
   const rowsPrimary = allDataPrimary.rows || [];
   const rowsMonthMTD = allDataMonthMTD?.rows || [];
 
-  /* Per filiaal: bouw + verstuur 2 mails (store + regiomanager) */
+  /* Per filiaal: bouw + verstuur 2 mails (store + regiomanager). Winkel- en
+     regiomanager-mail worden los afgehandeld zodat één mislukte verzending de
+     andere niet blokkeert; bij een fout loggen we de ontvanger + welke stap
+     faalde, zodat de reden in het mail-log zichtbaar is (niet meer "—"). */
   for (const store of stores) {
+    let recipient = { email: '', cc: [], regionManagerEmail: [] };
+    try { recipient = await getStoreMailAsync(store); } catch (e) { /* val terug op leeg; logt hieronder */ }
+
+    const weekRow = rowsPrimary.find((r) => r.store === store);
+    const monthRow = mode === 'weekly' ? rowsMonthMTD.find((r) => r.store === store) : null;
+    if (!weekRow && !monthRow) {
+      results.push({ store, skipped: 'no-data-for-store' });
+      continue;
+    }
+
+    let html;
     try {
-      const recipient = await getStoreMailAsync(store);
-      const weekRow = rowsPrimary.find((r) => r.store === store);
-      const monthRow = mode === 'weekly' ? rowsMonthMTD.find((r) => r.store === store) : null;
-      if (!weekRow && !monthRow) {
-        results.push({ store, skipped: 'no-data-for-store' });
-        continue;
-      }
-      const html = buildStoreMailHtml({
+      html = buildStoreMailHtml({
         store, mode, label: ranges.label,
         weekRow: mode === 'monthly' ? null : weekRow,
         monthRow: mode === 'monthly' ? weekRow : monthRow,
         weekRange: ranges.week,
         monthRange: ranges.month
       });
-      const storeMail = await sendStoreMail({ store, recipient, mode, html, dryRun, label: ranges.label });
-      const mgrMail = await sendRegionManagerMail({ store, recipient, html, dryRun, label: ranges.label, mode });
+    } catch (error) {
+      results.push({ store, error: `opbouw: ${error.message}` });
+      await appendMailLog({ type: `customer_${mode}_run_error`, store, key: 'run', status: 'error', recipient: recipient.email || '', message: `rapport opbouwen: ${error.message}` }).catch(() => {});
+      continue;
+    }
 
+    /* Winkel-mail */
+    let storeMail = { sent: false };
+    try {
+      storeMail = await sendStoreMail({ store, recipient, mode, html, dryRun, label: ranges.label });
       if (!dryRun && storeMail.sent) {
         await appendMailLog({ type: `customer_${mode}_store`, store, key: `${mode}-${primaryRange.from}`, status: 'sent', recipient: recipient.email || '', resendId: storeMail.resendId || '' });
       }
+    } catch (error) {
+      results.push({ store, error: `winkel-mail: ${error.message}` });
+      await appendMailLog({ type: `customer_${mode}_run_error`, store, key: 'run', status: 'error', recipient: recipient.email || '(geen adres)', message: `winkel-mail naar ${recipient.email || '(geen adres)'}: ${error.message}` }).catch(() => {});
+    }
+
+    /* Regiomanager-mail (onafhankelijk van de winkel-mail) */
+    let mgrMail = { sent: false };
+    try {
+      mgrMail = await sendRegionManagerMail({ store, recipient, html, dryRun, label: ranges.label, mode });
       if (!dryRun && mgrMail.sent) {
         await appendMailLog({ type: `customer_${mode}_region_manager`, store, key: `${mode}-${primaryRange.from}`, status: 'sent', recipient: (recipient.regionManagerEmail || []).join(', '), resendId: mgrMail.resendId || '' });
       }
-
-      results.push({ store, storeMail, regionManagerMail: mgrMail });
     } catch (error) {
-      results.push({ store, error: error.message });
-      await appendMailLog({ type: `customer_${mode}_run_error`, store, key: 'run', status: 'error', message: error.message }).catch(() => {});
+      await appendMailLog({ type: `customer_${mode}_run_error`, store, key: 'run', status: 'error', recipient: (recipient.regionManagerEmail || []).join(', '), message: `regiomanager-mail: ${error.message}` }).catch(() => {});
     }
+
+    results.push({ store, storeMail, regionManagerMail: mgrMail });
   }
 
   /* HQ-mail: globale samenvatting */
