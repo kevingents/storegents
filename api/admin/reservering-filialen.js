@@ -44,9 +44,11 @@ export default async function handler(req, res) {
 
     const rows = await readVoorraadRows();
     let totalResRows = 0;
+    let resBranchRowsSeen = 0; /* RES-filialen komen voor in de export (ongeacht voorraad) */
     for (const r of rows) {
       const b = branchById.get(String(r.filiaalNummer));
       if (!b) continue;
+      resBranchRowsSeen += 1;
       const v = Number(r.voorraad || 0);
       if (v <= 0) continue;
       totalResRows += 1;
@@ -77,6 +79,7 @@ export default async function handler(req, res) {
       agingTrackedSince: aging.updatedAt,
       resBranchesConfigured: branches.length,
       resBranchesWithStock: out.filter((s) => s.stuks > 0).length,
+      resBranchRowsSeen,
       totalResRows,
       totaalOverdue: out.reduce((n, s) => n + s.overdueCount, 0),
       byStore: out
