@@ -48,7 +48,10 @@ export default async function handler(req, res) {
       period
     });
 
-    const reg = await readKpiRegistry();
+    /* forceFresh: rapporten moeten ALTIJD de laatste KPI-config + bindings zien,
+       niet de tot 60s oude in-memory cache. Eén verse read bovenaan ververst de
+       cache voor de rest van dit request (ook listKpisForReport hieronder). */
+    const reg = await readKpiRegistry({ forceFresh: true });
     const allKpis = reg.kpis.filter((k) => k.enabled);
 
     const requestedKpiKey = q.kpi ? String(q.kpi).trim() : null;
