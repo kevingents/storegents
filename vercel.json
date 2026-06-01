@@ -161,6 +161,10 @@
       "schedule": "40 5 * * *"
     },
     {
+      "path": "/api/cron/retail-anomaly-check",
+      "schedule": "50 5 * * *"
+    },
+    {
       "path": "/api/cron/beeldbank-classify",
       "schedule": "30 6 * * *"
     },
