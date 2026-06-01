@@ -41,6 +41,10 @@
       "schedule": "30 */2 * * *"
     },
     {
+      "path": "/api/cron/overdue-snapshot",
+      "schedule": "45 7 * * *"
+    },
+    {
       "path": "/api/cron/weborder-mail-run",
       "schedule": "0 8 * * *"
     },

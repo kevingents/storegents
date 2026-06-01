@@ -4,6 +4,7 @@ import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { addCurrentOverdueOrder, addLoggedWeeklyOverdueOrders, ensureWeeklyStoreRow } from '../../lib/region-weekly-overdue-memory.js';
+import { addSnapshotWeeklyOverdueOrders } from '../../lib/weekly-overdue-snapshot-store.js';
 import { getDragerCache, summarizeDragers } from '../../lib/srs-dragers-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
@@ -339,6 +340,9 @@ async function handler(req, res) {
       } catch (error) { warnings.push(error.message); }
     }
     await addLoggedWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo });
+    /* Volledige periode-telling uit de dagelijkse overdue-snapshot (los van de
+       mail-log) — zo telt "te laat in periode" ook resolved orders mee. */
+    await addSnapshotWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo, ensureWeeklyStoreRow });
 
     const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows });
     if (!region.email) {
