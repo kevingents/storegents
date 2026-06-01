@@ -56,7 +56,6 @@ const EXPECTED_ENV_VARS = [
   { name: 'WEBORDER_DEADLINE_OPERATIONAL_DAYS', label: 'Override weborder-deadline (dagen)', critical: false, category: 'overrides' },
   { name: 'EXCHANGE_DEADLINE_OPERATIONAL_DAYS', label: 'Override uitwisseling-deadline', critical: false, category: 'overrides' },
   { name: 'DRAGER_DEADLINE_HOURS', label: 'Override drager-deadline (uren)', critical: false, category: 'overrides' },
-  { name: 'WK_POULE_DEADLINE', label: 'Override WK Poule start-datum', critical: false, category: 'overrides' },
   { name: 'MAIL_MAX_RECIPIENTS', label: 'Override max-recipients rapportage', critical: false, category: 'overrides' },
   { name: 'PERSONNEL_SESSION_TTL_SECONDS', label: 'Override sessie-TTL', critical: false, category: 'overrides' },
   { name: 'INVITE_TTL_MS', label: 'Override invite-TTL', critical: false, category: 'overrides' },
@@ -103,7 +102,6 @@ async function getBlobOverview() {
     { prefix: 'srs/',              label: 'SRS caches & snapshots' },
     { prefix: 'audit/',            label: 'Audit-logs' },
     { prefix: 'mail-events/',      label: 'Mail events' },
-    { prefix: 'wk-poule/',         label: 'WK Poule data' },
     { prefix: 'shopify/',          label: 'Shopify caches' }
   ];
 
@@ -168,7 +166,6 @@ function getBusinessConfigSnapshot() {
       maxUploadBytes: BUSINESS_CONFIG.mail.maxUploadBytes
     },
     session: BUSINESS_CONFIG.session,
-    wkPouleTournament: BUSINESS_CONFIG.wkPouleTournament,
     branchesCount: BUSINESS_CONFIG.branches.list.length,
     retailBranchesCount: BUSINESS_CONFIG.branches.list.filter((b) => b.kind === 'retail').length
   };
