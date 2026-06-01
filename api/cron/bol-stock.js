@@ -6,9 +6,9 @@ import { isBolConfigured } from '../../lib/bol-client.js';
 export const maxDuration = 60;
 
 /**
- * Cron: zet de bol-voorraad gelijk aan de magazijnvoorraad. Schrijven naar bol
- * is OPT-IN: alleen als BOL_STOCK_AUTO=1. Zonder die vlag wordt enkel het plan
- * herberekend (geen push). ?map=1 ververst ook de EAN→offerId-map.
+ * Cron: zet de bol-voorraad gelijk aan de magazijnvoorraad − veiligheidsmarge.
+ * Voorraad-sync staat standaard AAN (altijd veilig: bol toont nooit meer dan je
+ * magazijn). Uitzetten met BOL_STOCK_AUTO=0. ?map=1 ververst de offer-map.
  * Prijs-pariteit apart opt-in via BOL_PRICE_AUTO=1. Schedule: 0 6,12,18 * * *.
  */
 async function handler(req, res) {
@@ -16,8 +16,9 @@ async function handler(req, res) {
   const incoming = String(req.headers.authorization || req.query.secret || '').replace(/^Bearer\s+/i, '').trim();
   if (secret && incoming !== secret) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   const on = (v) => ['1', 'true', 'yes'].includes(String(v || '').toLowerCase());
+  const off = (v) => ['0', 'false', 'no'].includes(String(v || '').toLowerCase());
   try {
-    if (!isBolConfigured() || !on(process.env.BOL_STOCK_AUTO)) {
+    if (!isBolConfigured() || off(process.env.BOL_STOCK_AUTO)) {
       const plan = await buildBolStockPlan();
       return res.status(200).json({ success: true, configured: isBolConfigured(), autonoom: false, totaal: plan.totaal, metVoorraad: plan.metVoorraad });
     }
