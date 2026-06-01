@@ -4,6 +4,7 @@ import { baseMailHtml, rowsTable, sendMail } from '../../lib/gents-mailer.js';
 import { getAdminToken, getApiBaseUrl, requireCronSecret } from '../../lib/gents-mail-config.js';
 import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { addCurrentOverdueOrder, addLoggedWeeklyOverdueOrders, ensureWeeklyStoreRow } from '../../lib/region-weekly-overdue-memory.js';
+import { getDragerCache, summarizeDragers } from '../../lib/srs-dragers-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
@@ -115,18 +116,22 @@ function exchangeTotalsByStore(exchangeRows = []) {
   return Array.from(map.values()).sort((a, b) => b.overdueExchanges - a.overdueExchanges || a.store.localeCompare(b.store, 'nl'));
 }
 
-function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows }) {
+function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows }) {
   const stores = new Set(region.stores || []);
   const metrics = scoreboardRows.filter((row) => stores.has(row.store)).map(metricFromScoreboard);
   const overdueStores = Array.from(overdueByStore.values()).filter((row) => stores.has(row.store) && row.overdueCount > 0);
-  const exchanges = exchangeRows.filter((row) => stores.has(exchangeStore(row)));
+  /* Openstaande dragers per toegewezen winkel: open + te laat (>drempel). */
+  const dragerStores = [...stores].map((store) => {
+    const s = summarizeDragers(dragerRows || [], store);
+    return { store, openCount: s.openCount, overdueCount: s.overdueCount, oldestAgeHours: s.oldestAgeHours };
+  }).filter((r) => r.openCount > 0 || r.overdueCount > 0)
+    .sort((a, b) => b.overdueCount - a.overdueCount || b.openCount - a.openCount || a.store.localeCompare(b.store, 'nl'));
 
   return {
     region,
     metrics,
     overdueStores,
-    exchanges,
-    exchangeTotals: exchangeTotalsByStore(exchanges),
+    dragerStores,
     totals: {
       labelCreated: metrics.reduce((sum, row) => sum + row.labelCreated, 0),
       customersWithEmail: metrics.reduce((sum, row) => sum + row.customersWithEmail, 0),
@@ -136,7 +141,9 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows 
       overdueOrders: overdueStores.reduce((sum, row) => sum + number(row.overdueCount), 0),
       currentOverdueOrders: overdueStores.reduce((sum, row) => sum + number(row.currentOverdueCount), 0),
       processedAfterOverdue: overdueStores.reduce((sum, row) => sum + Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)), 0),
-      overdueExchanges: exchanges.length
+      openDragers: dragerStores.reduce((sum, row) => sum + number(row.openCount), 0),
+      teLateDragers: dragerStores.reduce((sum, row) => sum + number(row.overdueCount), 0),
+      winkelsMetDragers: dragerStores.length
     }
   };
 }
@@ -147,14 +154,15 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
   const sections = {
     pickpack: region.sections?.pickpack !== false,
     overdueOrders: region.sections?.overdueOrders !== false,
-    overdueExchanges: region.sections?.overdueExchanges !== false,
+    /* "Openstaande dragers" vervangt de oude uitwisselingen-sectie (oude
+       overdueExchanges-vlag blijft gerespecteerd voor backwards-compat). */
+    openDragers: region.sections?.openDragers !== false && region.sections?.overdueExchanges !== false,
     customerSignups: region.sections?.customerSignups !== false,
     shippingLabels: region.sections?.shippingLabels !== false
   };
 
   const metricRows = summary.metrics.sort((a, b) => a.store.localeCompare(b.store, 'nl'));
   const overdueRows = summary.overdueStores.sort((a, b) => b.overdueCount - a.overdueCount || a.store.localeCompare(b.store, 'nl'));
-  const exchangeRows = summary.exchanges.slice(0, 80);
 
   /* Diagnose-banner: toon ALLEEN als data-fetches faalden of de mail
      verdacht leeg is (alle metrics nul én geen stores in regio of geen
@@ -163,7 +171,7 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
     summary.totals.overdueOrders === 0 &&
     summary.totals.labelCreated === 0 &&
     summary.totals.customerRegistrations === 0 &&
-    summary.totals.overdueExchanges === 0;
+    summary.totals.openDragers === 0;
   const hasWarnings = (diagnostics.scoreboardWarnings || []).length > 0 ||
                       (diagnostics.cronWarnings || []).length > 0;
   const dq = diagnostics.scoreboardDataQuality || {};
@@ -205,7 +213,10 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
     totalsRows.push({ label: 'Klanten met e-mail', value: summary.totals.customersWithEmail });
     totalsRows.push({ label: 'Klanten zonder e-mail', value: summary.totals.customersWithoutEmail });
   }
-  if (sections.overdueExchanges) totalsRows.push({ label: 'Uitwisselingen te laat', value: summary.totals.overdueExchanges });
+  if (sections.openDragers) {
+    totalsRows.push({ label: 'Open dragers', value: summary.totals.openDragers });
+    totalsRows.push({ label: 'Dragers te laat', value: summary.totals.teLateDragers });
+  }
 
   return `
     ${diagnosticsBlock}
@@ -236,18 +247,14 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
         { label: 'Klanten zonder e-mail', value: (row) => row.customersWithoutEmail }
       ] : [])
     ])}` : ''}
-    ${sections.overdueExchanges ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat per winkel</h2>
-    ${summary.exchangeTotals.length ? rowsTable(summary.exchangeTotals, [
+    ${sections.openDragers ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Openstaande dragers per winkel</h2>
+    <p style="color:#3a4a5a;font-size:13px;margin:0 0 8px;">Openstaande dragers (onderweg/nog binnen te melden) per toegewezen winkel, met hoeveel er te laat zijn.</p>
+    ${summary.dragerStores.length ? rowsTable(summary.dragerStores, [
       { label: 'Winkel', value: (row) => row.store },
-      { label: 'Uitwisselingen te laat', value: (row) => row.overdueExchanges }
-    ]) : '<p style="color:#3a4a5a;">Geen te late uitwisselingen per winkel.</p>'}
-    <h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Uitwisselingen te laat details</h2>
-    ${exchangeRows.length ? rowsTable(exchangeRows, [
-      { label: 'Winkel', value: exchangeStore },
-      { label: 'Order', value: (row) => row.orderNr || row.orderNumber || row.id || '-' },
-      { label: 'Leeftijd', value: (row) => ageLabel(row.createdAt || row.dateTime || row.updatedAt) },
-      { label: 'Status', value: (row) => row.status || '-' }
-    ]) : '<p style="color:#3a4a5a;">Geen te late uitwisselingen gevonden.</p>'}` : ''}`;
+      { label: 'Open dragers', value: (row) => row.openCount },
+      { label: 'Te laat', value: (row) => row.overdueCount },
+      { label: 'Oudste', value: (row) => row.oldestAgeHours ? `${Math.floor(Number(row.oldestAgeHours) / 24)}d ${Math.round(Number(row.oldestAgeHours) % 24)}u` : '-' }
+    ]) : '<p style="color:#3a4a5a;">Geen openstaande dragers voor de toegewezen winkels.</p>'}` : ''}`;
 }
 
 async function handler(req, res) {
@@ -300,27 +307,14 @@ async function handler(req, res) {
       if (scoreboard.dataQuality) scoreboardDataQuality = scoreboard.dataQuality;
       if (scoreboard.degraded) warnings.push(`scoreboard degraded (${periodKey}): ${scoreboardWarnings.join(' | ') || 'onbekende reden'}`);
     } catch (error) { warnings.push(error.message); }
-    let exchangeRows = [];
-    try {
-      const exchanges = await fetchJson(`${baseUrl}/api/admin/exchanges-report?${query}`, `admin-exchanges (${periodKey})`, 30000);
-      /* exchanges-report geeft per-winkel aggregaten met openOverOneWeek (=
-         uitwisselingen die te lang open staan). Expandeer naar losse regels
-         zodat de per-winkel-tellingen + het totaal in het rapport kloppen. */
-      if (Array.isArray(exchanges.rows) && exchanges.rows.length && exchanges.rows[0] && 'openOverOneWeek' in exchanges.rows[0]) {
-        for (const r of exchanges.rows) {
-          const n = Math.max(0, Number(r.openOverOneWeek || 0));
-          for (let i = 0; i < n; i++) exchangeRows.push({ store: r.store, overdue: true, status: 'Open > 1 week', createdAt: '' });
-        }
-      } else {
-        /* Fallback: oude vorm met losse exchange-regels. */
-        const rows = Array.isArray(exchanges.rows) ? exchanges.rows : Array.isArray(exchanges.exchanges) ? exchanges.exchanges : [];
-        exchangeRows = rows.filter((row) => row.overdue === true || isOverdueWithWeekendRule(row.createdAt || row.dateTime || row.updatedAt, config.exchangeDeadlineOperationalDays || 7));
-      }
-    } catch (error) { warnings.push(`admin-exchanges niet beschikbaar (${periodKey}): ${error.message}`); }
-    const data = { scoreboardRows, exchangeRows, scoreboardWarnings, scoreboardDataQuality };
+    const data = { scoreboardRows, scoreboardWarnings, scoreboardDataQuality };
     periodCache.set(periodKey, data);
     return data;
   }
+
+  /* Openstaande dragers: snapshot van NU (niet periode-gebonden), één keer. */
+  let dragerRows = [];
+  try { dragerRows = await getDragerCache(); } catch (error) { warnings.push(`dragers niet beschikbaar: ${error.message}`); }
 
   const results = [];
   for (const region of config.regions || []) {
@@ -329,7 +323,7 @@ async function handler(req, res) {
     /* Per regio: bepaal eigen periode (last-week / last-2-weeks / last-month). */
     const { from: dateFrom, to: dateTo, label: periodLabel } = periodRange(region.period, now);
     const periodKey = `${dateFrom}_${dateTo}`;
-    const { scoreboardRows, exchangeRows, scoreboardWarnings, scoreboardDataQuality } = await loadPeriodData(periodKey, dateFrom, dateTo);
+    const { scoreboardRows, scoreboardWarnings, scoreboardDataQuality } = await loadPeriodData(periodKey, dateFrom, dateTo);
 
     /* Overdues moeten altijd per-store gefetched worden — geen caching. */
     const overdueByStore = new Map();
@@ -346,7 +340,7 @@ async function handler(req, res) {
     }
     await addLoggedWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo });
 
-    const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, exchangeRows });
+    const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows });
     if (!region.email) {
       results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', period: periodLabel, totals: summary.totals });
       continue;
@@ -354,7 +348,7 @@ async function handler(req, res) {
 
     const html = baseMailHtml({
       title: `Weekrapport ${region.name}`,
-      intro: `Rapportage over ${periodLabel} — te late orders, labels, klantinschrijvingen en te late uitwisselingen.`,
+      intro: `Rapportage over ${periodLabel} — te late orders, labels, klantinschrijvingen en openstaande dragers.`,
       bodyHtml: reportHtml(summary, dateFrom, dateTo, periodLabel, {
         scoreboardWarnings,
         scoreboardDataQuality,
