@@ -57,9 +57,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'Geen (fysieke) filialen om te laden.', skipped });
     }
 
-    await mergeLedger(filtered);
+    const merged = await mergeLedger(filtered);
 
-    /* Samenvatting. */
+    /* Samenvatting van wat we UPLOADDEN. */
     let totOmzet = 0, dagEntries = 0, minD = '9999-99-99', maxD = '0000-00-00';
     for (const dmap of Object.values(filtered)) {
       for (const [date, e] of Object.entries(dmap)) {
@@ -67,6 +67,22 @@ export default async function handler(req, res) {
         if (date < minD) minD = date; if (date > maxD) maxD = date;
       }
     }
+
+    /* Wat er ÉCHT in de ledger staat ná de merge (= na evt. snoei van het
+       bewaarvenster). Zo zie je meteen of de oudste dagen daadwerkelijk
+       bewaard zijn, i.p.v. alleen wat je probeerde te laden. */
+    let retainedFirst = '9999-99-99', retainedLast = '0000-00-00', retainedFromUpload = 0;
+    for (const fil of Object.keys(filtered)) {
+      const s = (merged.stores || {})[fil];
+      if (!s || !s.days) continue;
+      for (const d of Object.keys(s.days)) {
+        if (d < retainedFirst) retainedFirst = d;
+        if (d > retainedLast) retainedLast = d;
+        if (filtered[fil][d] != null) retainedFromUpload += 1;
+      }
+    }
+    const verloren = dagEntries - retainedFromUpload;
+
     return res.status(200).json({
       success: true,
       include,
@@ -74,6 +90,9 @@ export default async function handler(req, res) {
       dagEntries,
       totaalOmzet: round2(totOmzet),
       range: { from: minD, to: maxD },
+      ledgerCoverage: merged.coverage || null,
+      retainedRange: retainedFirst <= retainedLast ? { from: retainedFirst, to: retainedLast } : null,
+      verlorenDoorVenster: verloren,
       geladen: loaded.sort((a, b) => Number(a.branchId) - Number(b.branchId)),
       overgeslagen: skipped
     });
