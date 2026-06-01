@@ -19,7 +19,7 @@ import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 
 export const maxDuration = 30;
 
-const VIEWS = new Set(['overview', 'herverdeling', 'misgrijpen', 'doorverkoop']);
+const VIEWS = new Set(['overview', 'herverdeling', 'misgrijpen', 'doorverkoop', 'seizoen']);
 
 function parseBody(req) {
   if (!req.body) return {};
