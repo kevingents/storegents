@@ -2,6 +2,7 @@ import { getCustomers, getTransactions } from '../../../lib/srs-customers-client
 import { listBranches, getStoreNameByBranchId, getBranchIdByStore } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 import { getTargetsForPeriod, attachTargetsToRow, countReceiptsByBranch } from '../../../lib/customer-target-helpers.js';
+import { readLedger, aggregateLedger } from '../../../lib/srs-retail-ledger.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(
   1000,
@@ -662,15 +663,37 @@ async function buildPayload({
   const storeNames = rows.map((r) => r.store).filter(Boolean);
   let targetsByStore = {};
   let receiptsByBranch = {};
+  let receiptsSource = 'srs-transactions';
   try {
     targetsByStore = await getTargetsForPeriod(storeNames, dateFrom, dateTo);
   } catch (err) {
     console.warn('[weekly-report] getTargetsForPeriod failed:', err.message);
   }
+  /* Bonnen-aantal per winkel: eerst de transactions-API als baseline … */
   try {
     receiptsByBranch = countReceiptsByBranch(transactions);
   } catch (err) {
     console.warn('[weekly-report] countReceiptsByBranch failed:', err.message);
+  }
+  /* … maar bij voorkeur uit de verkoop-SFTP-ledger (srs/verkopen-daily.json):
+     die telt de daadwerkelijk verkochte bonnen per filiaal per dag en dekt de
+     hele periode, terwijl de SRS-transactions-API in dit rapport vaak leeg is.
+     Ledger wint per branch; ontbreekt een branch in de ledger dan blijft de
+     transactions-count staan. */
+  try {
+    const ledger = await readLedger();
+    const agg = aggregateLedger(ledger, { from: dateFrom, to: dateTo });
+    let usedFromLedger = 0;
+    for (const f of agg.filialen || []) {
+      const fil = f && f.filiaalNummer != null ? String(f.filiaalNummer) : '';
+      if (fil && Number.isFinite(Number(f.bonnen))) {
+        receiptsByBranch[fil] = Number(f.bonnen);
+        usedFromLedger += 1;
+      }
+    }
+    if (usedFromLedger > 0) receiptsSource = 'verkopen-ledger';
+  } catch (err) {
+    console.warn('[weekly-report] verkopen-ledger bonnen failed:', err.message);
   }
 
   for (const row of rows) {
@@ -706,6 +729,7 @@ async function buildPayload({
     branchId: branchId || '',
     mode: sourceMode || 'customers-report-with-receipt-check',
     sourceMode,
+    receiptsSource,
     sourceCustomerCount,
     sourceTransactionCount,
     receiptCheck,
