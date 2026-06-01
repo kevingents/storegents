@@ -59,6 +59,41 @@ export default async function handler(req, res) {
     fetchError = e.message || 'fetch failed';
   }
 
+  /* Magazijnvoorraad per SKU uit de SRS-snapshot (zelfde bron als de stock-sync),
+     zodat we per late order zien of 'm alsnog direct uit het magazijn kan. Best-
+     effort: faalt dit, dan blijft magazijnvoorraad simpelweg onbekend. */
+  const stockBySku = new Map();
+  let byBarcode = {};
+  try {
+    const [vmod, bmod] = await Promise.all([
+      import('../../lib/srs-voorraad-store.js'),
+      import('../../lib/business-config.js')
+    ]);
+    const [voorraadRows, branches] = await Promise.all([
+      vmod.readVoorraadRows().catch(() => []),
+      Promise.resolve(bmod.listBranchesFromConfig({ includeInternal: true }))
+    ]);
+    const warehouseIds = new Set((branches || []).filter((b) => b.kind === 'warehouse').map((b) => String(b.branchId)));
+    for (const r of (voorraadRows || [])) {
+      if (!warehouseIds.has(String(r.filiaalNummer))) continue;
+      const k = String(r.sku || '').trim().toLowerCase();
+      if (!k) continue;
+      stockBySku.set(k, (stockBySku.get(k) || 0) + Number(r.voorraad || 0));
+    }
+    try { const pmod = await import('../../lib/shopify-products-cache.js'); const cache = await pmod.readProductsCache(); byBarcode = (cache && cache.byBarcode) || {}; } catch (_) { /* cache optioneel */ }
+  } catch (_) { /* magazijnvoorraad optioneel */ }
+
+  const resolveMag = (item) => {
+    if (!stockBySku.size) return null;
+    const cand = [];
+    const add = (v) => { const k = String(v == null ? '' : v).trim().toLowerCase(); if (k) cand.push(k); };
+    add(item.sku); add(item.rveArtikelnummer); add(item.artikel_id); add(item.barcode);
+    const bc = String(item.barcode || '').trim().toLowerCase();
+    if (bc && byBarcode[bc] && byBarcode[bc].sku) add(byBarcode[bc].sku);
+    for (const k of cand) if (stockBySku.has(k)) return Math.max(0, Math.round(stockBySku.get(k)));
+    return null;
+  };
+
   const ordersStore = [];
   const ordersPipeline = [];
   const seenKeys = new Set();
@@ -87,6 +122,9 @@ export default async function handler(req, res) {
       const branchId = String(item.currentBranchId || '').trim();
       const storeNm = item.currentStore || item.fulfilmentStore || 'Onbekend';
       const ord = normalizeOrder(item, storeNm);
+      const mag = resolveMag(item);
+      ord.magazijnVoorraad = mag;
+      ord.magazijnLeverbaar = mag == null ? null : mag >= (ord.quantity || 1);
 
       const isMagazijn = item.warehouse || branchId === '99' || /\bmagazijn\b/.test(rawLoc) || /\bwarehouse\b/.test(rawLoc) || /webshop/.test(rawLoc);
       const isUitlevertafel = branchId === '97' || /uitlevertafel/.test(rawLoc) || /uitleverpunt/.test(rawLoc);
@@ -195,6 +233,10 @@ function normalizeOrder(item, store) {
     date: created,
     ageHours,
     itemCount,
+    sku: String(item.sku || '').trim(),
+    barcode: String(item.barcode || '').trim(),
+    productName: String(item.productName || firstLine.productName || '').trim(),
+    quantity: Number(item.quantity || firstLine.quantity || 1) || 1,
     total,
     status,
     priority,
