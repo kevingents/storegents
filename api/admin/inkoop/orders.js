@@ -41,32 +41,57 @@ function actorOf(req) {
   return clean(req.headers['x-gents-actor'] || parseBody(req).actor || req.query.actor || '') || 'admin';
 }
 
+/* Is dit een voorlopige bestelling (pre-order) of een definitieve order?
+   Definitief = doorgezet naar SRS (heeft srsOrderNr) of een ontvangst-status. */
+function isPreOrder(order) {
+  if (clean(order.srsOrderNr)) return false;
+  return !['doorgezet', 'deels_ontvangen', 'ontvangen'].includes(order.status);
+}
+
+export function orderMailLabel(order) {
+  return isPreOrder(order) ? 'Voorlopige bestelling (pre-order)' : 'Inkooporder';
+}
+
 /* Order-e-mail naar de leverancier (HTML). */
 function buildSupplierMail(order, message) {
-  /* rowsTable escapet zelf elke cel — hier dus géén esc() gebruiken. */
-  const linesHtml = rowsTable(order.lines || [], [
+  const pre = isPreOrder(order);
+  /* Bij een pre-order tonen we geen inkoopprijzen (die vul je later in). */
+  const cols = [
     { label: 'Artikel', value: (l) => l.description || l.sku || l.barcode || '' },
     { label: 'Barcode/SKU', value: (l) => l.barcode || l.sku || '' },
     { label: 'Maat', value: (l) => l.size || '' },
-    { label: 'Aantal', value: (l) => String(l.quantity || 0) },
-    { label: 'Inkoopprijs', value: (l) => euro(l.purchasePrice) }
-  ]);
-  const intro = `Inkooporder ${esc(order.orderNr)}${order.reference ? ' — ref. ' + esc(order.reference) : ''}`;
+    { label: 'Aantal', value: (l) => String(l.quantity || 0) }
+  ];
+  if (!pre) cols.push({ label: 'Inkoopprijs', value: (l) => euro(l.purchasePrice) });
+  /* rowsTable escapet zelf elke cel — hier dus géén esc() gebruiken. */
+  const linesHtml = rowsTable(order.lines || [], cols);
+
+  const kind = pre ? 'Voorlopige bestelling (pre-order)' : 'Inkooporder';
+  const intro = `${kind} ${esc(order.orderNr)}${order.reference ? ' — ref. ' + esc(order.reference) : ''}`;
   const meta = [
     order.branchName ? `Aflevering: ${esc(order.branchName)}` : '',
     order.expectedDate ? `Gewenste leverdatum: ${esc(order.expectedDate)}` : '',
-    `Totaal: ${order.totalPieces || 0} stuks · ${euro(order.totalValue)}`
+    pre ? `Totaal: ${order.totalPieces || 0} stuks` : `Totaal: ${order.totalPieces || 0} stuks · ${euro(order.totalValue)}`
   ].filter(Boolean).join(' &middot; ');
+
+  const preBanner = pre
+    ? `<div style="margin:0 0 16px;padding:12px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;color:#9a3412;font-size:13px">
+         <strong>VOORLOPIGE BESTELLING (pre-order).</strong> Dit is een voorlopige bestelling met barcode en aantal.
+         Prijzen en definitieve details volgen in de uiteindelijke inkooporder. Graag bevestigen op beschikbaarheid.
+       </div>`
+    : '';
+
   const bodyHtml = `
+    ${preBanner}
     ${message ? `<p style="margin:0 0 16px">${esc(message).replace(/\n/g, '<br>')}</p>` : ''}
     <p style="margin:0 0 12px;color:#444">${meta}</p>
     ${linesHtml}
     ${order.notes ? `<p style="margin:16px 0 0;color:#666"><strong>Opmerking:</strong> ${esc(order.notes)}</p>` : ''}`;
   return baseMailHtml({
-    title: `Inkooporder ${esc(order.orderNr)}`,
+    title: `${kind} ${esc(order.orderNr)}`,
     intro,
     bodyHtml,
-    footer: 'GENTS Herenmode · Deze inkooporder is verstuurd via het GENTS-portaal.'
+    footer: 'GENTS Herenmode · Verstuurd via het GENTS-portaal.'
   });
 }
 
@@ -129,7 +154,7 @@ export default async function handler(req, res) {
         if (!to) return res.status(400).json({ success: false, message: 'Geen e-mailadres voor deze leverancier. Vul het bij de leverancier in of geef "to" mee.' });
         const cc = body.cc || supplier?.ccEmails || [];
         const html = buildSupplierMail(order, clean(body.message));
-        await sendMail({ to, cc, subject: `Inkooporder ${order.orderNr} — GENTS Herenmode`, html });
+        await sendMail({ to, cc, subject: `${orderMailLabel(order)} ${order.orderNr} — GENTS Herenmode`, html });
         const updated = await recordMail(order.id, { to, actor });
         return res.status(200).json({ success: true, mailedTo: to, order: updated });
       }
