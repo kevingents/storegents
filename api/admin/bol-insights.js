@@ -10,6 +10,7 @@
  */
 
 import { runBolInsights, readBolInsights, isInsightsFresh, getRepriceAdvice } from '../../lib/bol-insights.js';
+import { buildBolPricePlan, runBolPriceSync } from '../../lib/bol-price-sync.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -34,7 +35,12 @@ export default async function handler(req, res) {
       const action = String(body.action || '').toLowerCase();
       if (action === 'refresh') return res.status(200).json({ success: true, ...(await runBolInsights()) });
       if (action === 'reprice') return res.status(200).json({ success: true, ...(await getRepriceAdvice(body.ean)) });
-      return res.status(400).json({ success: false, message: 'Onbekende action (refresh|reprice).' });
+      if (action === 'price-plan') return res.status(200).json({ success: true, ...(await buildBolPricePlan()) });
+      if (action === 'price-sync') {
+        const dryRun = body.dryRun !== false;
+        return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), ...(await runBolPriceSync({ dryRun, onlyChanged: body.onlyChanged !== false })) });
+      }
+      return res.status(400).json({ success: false, message: 'Onbekende action (refresh|reprice|price-plan|price-sync).' });
     }
 
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });

@@ -1,5 +1,6 @@
 import { trackedCron } from '../../lib/cron-auto-track.js';
 import { runBolStockSync, refreshBolOfferMap, buildBolStockPlan } from '../../lib/bol-stock-sync.js';
+import { runBolPriceSync } from '../../lib/bol-price-sync.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 
 export const maxDuration = 60;
@@ -22,7 +23,14 @@ async function handler(req, res) {
     const refreshMap = ['1', 'true', 'yes'].includes(String(req.query.map || '').toLowerCase());
     if (refreshMap) await refreshBolOfferMap();
     const out = await runBolStockSync({ dryRun: false, onlyChanged: true });
-    return res.status(200).json({ success: true, ...out });
+
+    /* Prijs-pariteit alleen als expliciet aangezet (BOL_PRICE_AUTO=1) — prijs is
+       gevoelig, dus opt-in. Zet de bol-prijs gelijk aan webshop + verzendkosten. */
+    let prijs = null;
+    if (['1', 'true', 'yes'].includes(String(process.env.BOL_PRICE_AUTO || '').toLowerCase())) {
+      try { prijs = await runBolPriceSync({ dryRun: false, onlyChanged: true }); } catch (e) { prijs = { error: e.message }; }
+    }
+    return res.status(200).json({ success: true, ...out, prijs });
   } catch (error) {
     console.error('[bol-stock cron]', error);
     return res.status(500).json({ success: false, message: error.message || 'bol-voorraadsync-cron mislukt.' });
