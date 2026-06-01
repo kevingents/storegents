@@ -17,6 +17,15 @@ export const maxDuration = 30;
 
 function clean(v) { return String(v == null ? '' : v).trim(); }
 
+/* Harde timeout zodat een trage SRS-SOAP-call de Vercel-functie nooit over de
+   limiet duwt (anders krijgt de browser een platform-timeout zonder CORS-headers
+   → "Failed to fetch"). Bij timeout vallen we terug op alleen lokale orders. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const t = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout na ${ms}ms`)), ms); });
+  return Promise.race([promise, t]).finally(() => clearTimeout(timer));
+}
+
 export default async function handler(req, res) {
   if (corsJson(req, res, ['GET', 'OPTIONS'])) return;
   if (!requireAdmin(req, res)) return;
@@ -30,7 +39,7 @@ export default async function handler(req, res) {
     let srs = { orders: [], openCount: 0, piecesOpen: 0 };
     let srsError = null;
     try {
-      srs = await getPurchaseOrders({ days, status: 'open', branchId });
+      srs = await withTimeout(getPurchaseOrders({ days, status: 'open', branchId }), 9000, 'SRS PurchaseOrders');
     } catch (e) {
       srsError = e.message || String(e);
     }

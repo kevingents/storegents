@@ -23,6 +23,14 @@ import { getSrsSuppliersFromHistory } from '../../../lib/srs-suppliers.js';
 export const maxDuration = 30;
 
 function clean(v) { return String(v == null ? '' : v).trim(); }
+
+/* Harde timeout rond de (trage) SRS-historie-call zodat de functie nooit over de
+   Vercel-limiet gaat → voorkomt "Failed to fetch". Bij timeout: alleen lokaal. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const t = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout na ${ms}ms`)), ms); });
+  return Promise.race([promise, t]).finally(() => clearTimeout(timer));
+}
 function parseBody(req) {
   if (!req.body) return {};
   if (typeof req.body === 'string') { try { return JSON.parse(req.body); } catch { return {}; } }
@@ -43,7 +51,7 @@ export default async function handler(req, res) {
       /* Eenmalige import: SRS-historie → lokale store. */
       if (clean(req.query.import) === '1') {
         const days = Math.min(Math.max(Number(req.query.days) || 365, 30), 730);
-        const srs = await getSrsSuppliersFromHistory({ days }).catch((e) => ({ suppliers: [], error: e.message }));
+        const srs = await withTimeout(getSrsSuppliersFromHistory({ days }), 20000, 'SRS import').catch((e) => ({ suppliers: [], error: e.message }));
         const merged = await mergeSrsSuppliers(srs.suppliers || [], actorOf(req));
         const local = await listSuppliers();
         return res.status(200).json({ success: true, imported: merged.added, total: merged.total, suppliers: local });
@@ -51,7 +59,7 @@ export default async function handler(req, res) {
 
       if (source === 'srs') {
         const days = Math.min(Math.max(Number(req.query.days) || 365, 30), 730);
-        const srs = await getSrsSuppliersFromHistory({ days });
+        const srs = await withTimeout(getSrsSuppliersFromHistory({ days }), 12000, 'SRS leveranciers');
         return res.status(200).json({ success: true, source: 'srs', ...srs });
       }
 
@@ -63,9 +71,9 @@ export default async function handler(req, res) {
       /* merged: lokaal + SRS-historie (SRS-only krijgen geen e-mail, maar wel id/naam). */
       let srsSuppliers = [];
       try {
-        const srs = await getSrsSuppliersFromHistory({ days: 365 });
+        const srs = await withTimeout(getSrsSuppliersFromHistory({ days: 365 }), 8000, 'SRS leveranciers');
         srsSuppliers = srs.suppliers || [];
-      } catch (_) { /* SRS-historie optioneel */ }
+      } catch (_) { /* SRS-historie optioneel — val terug op alleen lokaal */ }
       const haveSrsId = new Set(local.map((s) => clean(s.srsId)).filter(Boolean));
       const haveName = new Set(local.map((s) => clean(s.name).toLowerCase()));
       const extra = srsSuppliers
