@@ -9,9 +9,10 @@
  */
 
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
-import { listEvents, upsertEvent, deleteEvent, seedEvents } from '../../lib/gala-events-store.js';
+import { listEvents, upsertEvent, deleteEvent, seedEvents, readCrawlLog, writeCrawlLog } from '../../lib/gala-events-store.js';
+import { crawlGala, DEFAULT_SOURCES } from '../../lib/gala-crawl.js';
 
-export const maxDuration = 20;
+export const maxDuration = 90;
 
 function parseBody(req) {
   if (!req.body) return {};
@@ -25,10 +26,17 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      return res.status(200).json({ success: true, events: await listEvents() });
+      return res.status(200).json({ success: true, events: await listEvents(), crawl: await readCrawlLog().catch(() => null) });
     }
     if (req.method === 'POST') {
       const b = parseBody(req);
+      if (b.crawl) {
+        const r = await crawlGala({ sources: DEFAULT_SOURCES });
+        const seeded = r.events.length ? await seedEvents(r.events) : { added: 0 };
+        const log = { at: new Date().toISOString(), checked: r.checked, gevonden: r.events.length, toegevoegd: seeded.added, error: r.error || null };
+        await writeCrawlLog(log).catch(() => {});
+        return res.status(200).json({ success: true, ...log, events: await listEvents() });
+      }
       if (Array.isArray(b.seed)) {
         const r = await seedEvents(b.seed);
         return res.status(200).json({ success: true, ...r, events: await listEvents() });

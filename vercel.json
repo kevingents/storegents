@@ -165,6 +165,10 @@
       "schedule": "50 5 * * *"
     },
     {
+      "path": "/api/cron/gala-crawl",
+      "schedule": "40 6 * * *"
+    },
+    {
       "path": "/api/cron/beeldbank-classify",
       "schedule": "30 6 * * *"
     },
