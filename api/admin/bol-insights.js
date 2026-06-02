@@ -24,10 +24,19 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       if (!isBolConfigured()) return res.status(200).json({ success: true, configured: false, reason: 'bol niet gekoppeld' });
       const refresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
-      let data = refresh ? null : await readBolInsights();
-      if (!data || !isInsightsFresh(data)) data = await runBolInsights();
+      /* Cache-first: serveer de opgeslagen inzichten direct (ook als ze iets
+         verouderd zijn) — de dagelijkse cron houdt ze vers. Alleen inline
+         (her)berekenen bij een expliciete refresh of als er nog NIETS in de cache
+         staat. Voorkomt de "Aanvraag duurde te lang"-timeout op een trage scan. */
+      let data = await readBolInsights();
+      if (refresh || !data) data = await runBolInsights();
       res.setHeader('Cache-Control', 'no-store, max-age=0');
-      return res.status(200).json({ success: true, cached: !refresh && Boolean(data?.refreshedAt), ...data });
+      return res.status(200).json({
+        success: true,
+        cached: !refresh && Boolean(data?.refreshedAt),
+        stale: Boolean(data?.refreshedAt) && !isInsightsFresh(data),
+        ...data
+      });
     }
 
     if (req.method === 'POST') {
