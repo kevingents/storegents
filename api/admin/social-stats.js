@@ -9,7 +9,7 @@ import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 import { getSocialStats } from '../../lib/social-stats.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 const CACHE_PATH = 'marketing/social-stats.json';
 const TTL_MS = 60 * 60 * 1000;
 
