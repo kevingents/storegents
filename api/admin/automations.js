@@ -17,12 +17,14 @@
 
 import {
   listAutomationsStatus, getAutomationConfig, saveAutomationConfig, runAutomation, resetAutomation,
-  runCustomAutomation, resetCustomAutomation
+  runCustomAutomation, resetCustomAutomation, previewAutomationEmail
 } from '../../lib/automation-runner.js';
 import { AUTOMATIONS } from '../../lib/automations-registry.js';
 import {
-  createCustomAutomation, patchCustomAutomation, deleteCustomAutomation, getCustomAutomation, validateContent
+  createCustomAutomation, patchCustomAutomation, deleteCustomAutomation, getCustomAutomation,
+  validateContent, validateCustomRule, ruleNeedsTransactions
 } from '../../lib/custom-automations-store.js';
+import { getAutomationLimits, saveAutomationLimits } from '../../lib/automation-limits-store.js';
 import { hasResendKey } from '../../lib/resend-audience.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -34,7 +36,7 @@ function parseBody(req) {
 }
 function coerce(field, val) {
   if (field.type === 'number') { const n = Number(val); const c = Number.isFinite(n) ? n : (field.min ?? 0); return Math.max(field.min ?? -Infinity, Math.min(field.max ?? Infinity, c)); }
-  return String(val == null ? '' : val).slice(0, 200);
+  return String(val == null ? '' : val).slice(0, field.type === 'textarea' ? 2000 : 200);
 }
 
 export default async function handler(req, res) {
@@ -48,7 +50,7 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const s = await listAutomationsStatus();
-      return res.status(200).json({ success: true, connected: true, automations: s.registry, custom: s.custom });
+      return res.status(200).json({ success: true, connected: true, automations: s.registry, custom: s.custom, limits: await getAutomationLimits() });
     }
 
     const action = String(req.query?.action || '').trim();
@@ -58,6 +60,10 @@ export default async function handler(req, res) {
       const d = body.draft || {};
       const obj = await createCustomAutomation({ label: d.label, rule: d.rule, content: d.content });
       return res.status(200).json({ success: true, custom: obj });
+    }
+    if (action === 'save-limits') {
+      const limits = await saveAutomationLimits(body.limits || body || {});
+      return res.status(200).json({ success: true, limits });
     }
 
     const id = String(req.query?.id || '').trim();
@@ -76,6 +82,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, enabled: cfg.enabled, values: slim });
       }
       if (action === 'reset') { await resetAutomation(id); return res.status(200).json({ success: true, message: 'Voortgang gewist.' }); }
+      if (action === 'preview') return res.status(200).json({ success: true, html: await previewAutomationEmail(id, { values: body.values || {} }) });
       if (action === 'dry-run') return res.status(200).json({ success: true, ...(await runAutomation(id, { dryRun: true })) });
       if (action === 'run-now') return res.status(200).json({ success: true, ...(await runAutomation(id, { dryRun: false })) });
       return res.status(400).json({ success: false, message: 'Onbekende actie.' });
@@ -91,10 +98,12 @@ export default async function handler(req, res) {
       if (body.label != null) patch.label = String(body.label).slice(0, 80);
       if (body.maxPerRun != null) patch.maxPerRun = Math.max(1, Math.min(500, Number(body.maxPerRun) || 80));
       if (body.content != null) patch.content = validateContent(body.content);
+      if (body.rule != null) { patch.rule = validateCustomRule(body.rule); patch.needsTransactions = ruleNeedsTransactions(patch.rule); }
       const c = await patchCustomAutomation(id, patch);
       return res.status(200).json({ success: true, custom: c });
     }
     if (action === 'delete') { await deleteCustomAutomation(id); return res.status(200).json({ success: true }); }
+    if (action === 'preview') return res.status(200).json({ success: true, html: await previewAutomationEmail(id, { content: body.content || {}, rule: body.rule }) });
     if (action === 'reset') { await resetCustomAutomation(id); return res.status(200).json({ success: true, message: 'Voortgang gewist.' }); }
     if (action === 'dry-run') return res.status(200).json({ success: true, ...(await runCustomAutomation(id, { dryRun: true })) });
     if (action === 'run-now') return res.status(200).json({ success: true, ...(await runCustomAutomation(id, { dryRun: false })) });
