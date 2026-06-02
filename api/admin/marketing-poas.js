@@ -14,6 +14,7 @@
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 import { computePoasForRange } from '../../lib/poas-compute.js';
 import { getGoogleAdsSpend } from '../../lib/google-ads-spend.js';
+import { getMetaAdsSpend } from '../../lib/meta-ads-spend.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 
 export const maxDuration = 120;
@@ -50,17 +51,24 @@ function lastMonthRanges(n) {
 }
 
 async function poasForRange(from, to) {
-  const [fin, spendRes] = await Promise.all([
+  const [fin, g, m] = await Promise.all([
     computePoasForRange({ from, to }),
-    getGoogleAdsSpend({ from, to })
+    getGoogleAdsSpend({ from, to }),
+    getMetaAdsSpend({ from, to })
   ]);
-  const adSpend = spendRes.ok ? spendRes.spend : null;
+  const googleSpend = g.ok ? g.spend : null;
+  const metaSpend = m.ok ? m.spend : null;
+  /* Totale ad spend = som van de gekoppelde kanalen (Google + Meta). Geen enkel
+     kanaal gekoppeld → null (POAS/ROAS niet te berekenen). */
+  const adSpend = (g.ok || m.ok) ? r2((googleSpend || 0) + (metaSpend || 0)) : null;
   const usable = adSpend && adSpend > 0;
+  const errors = [!g.ok && g.error, !m.ok && m.error].filter(Boolean);
   return {
     ...fin,
-    adSpend,
-    adSpendOk: spendRes.ok,
-    adSpendError: spendRes.ok ? null : spendRes.error,
+    adSpend, googleSpend, metaSpend,
+    googleOk: g.ok, metaOk: m.ok,
+    adSpendOk: g.ok || m.ok,
+    adSpendError: errors.length ? errors.join(' · ') : null,
     poas: (usable && fin.brutowinst != null) ? r2(fin.brutowinst / adSpend) : null,
     roas: (usable && fin.nettoOmzetIncl != null) ? r2(fin.nettoOmzetIncl / adSpend) : null
   };
