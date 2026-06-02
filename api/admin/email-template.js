@@ -37,7 +37,7 @@ function previewHtml(theme) {
   ];
   const body = `<p style="margin:0 0 16px">Er is nieuwe collectie binnen die past bij wat je eerder bij ons koos — en we hebben jouw maat nog op voorraad:</p>`
     + sample.map((p) => productCard(p, theme)).join('')
-    + voucherBox('Met je verjaardag: 10% met code BDAY10 deze maand.')
+    + voucherBox('Met je verjaardag: 10% met code BDAY10 deze maand.', theme)
     + `<p style="margin:14px 0 0">${ctaButton('', '', theme)}</p>`;
   return emailShell({ store: 'Den Haag', firstName: 'Jan', theme, bodyHtml: body, footer: '<a href="#" style="color:#999">Afmelden</a>.' });
 }
