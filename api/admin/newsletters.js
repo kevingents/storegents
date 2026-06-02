@@ -20,6 +20,7 @@ import {
   startNewsletterAbTest, sendNewsletterAbWinner, BLOCK_DEFS
 } from '../../lib/newsletter-builder.js';
 import { getAbTestByNewsletter, getAbTest } from '../../lib/ab-test-store.js';
+import { attributeNewsletters } from '../../lib/newsletter-attribution.js';
 import { getEmailTheme } from '../../lib/email-template-store.js';
 import { hasResendKey } from '../../lib/resend-audience.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
@@ -38,6 +39,11 @@ export default async function handler(req, res) {
   if (!hasResendKey()) return res.status(200).json({ success: true, connected: false, message: 'Resend niet gekoppeld (RESEND_API_KEY ontbreekt).' });
 
   try {
+    if (req.method === 'GET' && String(req.query?.attribution || '') === '1') {
+      const days = Number(req.query?.days) || 30;
+      return res.status(200).json({ success: true, connected: true, attribution: await attributeNewsletters({ days }) });
+    }
+
     if (req.method === 'GET') {
       const id = String(req.query?.id || '').trim();
       if (id) {
