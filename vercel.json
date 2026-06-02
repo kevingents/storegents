@@ -149,6 +149,10 @@
       "schedule": "55 5 * * *"
     },
     {
+      "path": "/api/cron/automation-new-collection",
+      "schedule": "20 9 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
