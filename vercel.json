@@ -165,6 +165,10 @@
       "schedule": "0 10 * * *"
     },
     {
+      "path": "/api/cron/automations?id=custom",
+      "schedule": "30 10 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },

@@ -6,7 +6,7 @@
  * werken de basis af. Per-winkel afzender via Resend.
  */
 
-import { getAutomationConfig, runAutomation } from '../../lib/automation-runner.js';
+import { getAutomationConfig, runAutomation, runEnabledCustom } from '../../lib/automation-runner.js';
 import { AUTOMATIONS } from '../../lib/automations-registry.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 import { isCronAuthorized } from '../../lib/cron-auth.js';
@@ -18,9 +18,14 @@ async function handler(req, res) {
   if (!isCronAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
   const id = String(req.query?.id || '').trim();
-  if (!AUTOMATIONS[id]) return res.status(400).json({ success: false, message: 'Onbekende automation.' });
 
   try {
+    /* Alle ingeschakelde custom-automations in één run. */
+    if (id === 'custom') {
+      const results = await runEnabledCustom({ dryRun: false });
+      return res.status(200).json({ success: true, ran: results.length, results });
+    }
+    if (!AUTOMATIONS[id]) return res.status(400).json({ success: false, message: 'Onbekende automation.' });
     const cfg = await getAutomationConfig(id);
     if (!cfg.enabled) return res.status(200).json({ success: true, skipped: true, reason: `${id} staat uit` });
     const result = await runAutomation(id, { dryRun: false });
