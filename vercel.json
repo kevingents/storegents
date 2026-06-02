@@ -153,6 +153,18 @@
       "schedule": "20 9 * * *"
     },
     {
+      "path": "/api/cron/automations?id=birthday",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/automations?id=winback",
+      "schedule": "30 9 * * *"
+    },
+    {
+      "path": "/api/cron/automations?id=replenishment",
+      "schedule": "0 10 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
