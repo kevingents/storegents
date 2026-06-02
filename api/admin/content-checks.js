@@ -74,6 +74,64 @@ export default async function handler(req, res) {
     }
 
     const allProducts = Array.from(byProduct.values());
+
+    /* Debug-lookup: ?debug=<barcode|sku|artikelnummer> → waaróm staat dit artikel
+       wel/niet in het rapport? (niet in cache / seizoen buiten scope / SKU-join
+       geeft voorraad 0 / heeft tóch een afbeelding). */
+    const debugQ = String(req.query.debug || '').trim();
+    if (debugQ) {
+      const k = debugQ.toLowerCase();
+      let entry = (cache.byBarcode && cache.byBarcode[k])
+        || (cache.bySku && cache.bySku[k])
+        || (cache.bySrsArtikelId && cache.bySrsArtikelId[k])
+        || (cache.bySrsRveArtikelnummer && cache.bySrsRveArtikelnummer[k])
+        || (cache.bySrsArticleNumber && cache.bySrsArticleNumber[k])
+        || null;
+      let via = entry ? 'index' : null;
+      /* Lineaire fallback (bv. artikelnummer-zoekopdracht). */
+      if (!entry) {
+        for (const v of Object.values(cache.bySku || {})) {
+          const fields = [v.sku, v.barcode, v.articleNumber, v.srsArtikelId, v.srsRveArtikelnummer].map((x) => String(x || '').toLowerCase());
+          if (fields.includes(k)) { entry = v; via = 'scan'; break; }
+        }
+      }
+      const voorraadRowsForQuery = voorraadRows.filter((r) => String(r.sku || '').toLowerCase() === k).slice(0, 30);
+      let product = null, reason;
+      if (!entry) {
+        reason = 'Niet gevonden in de Shopify-product-cache. Staat dit product wel op Shopify met deze barcode/SKU? Zo ja: de cache is mogelijk verouderd — draai de cron shopify-products-refresh.';
+      } else {
+        const pid = entry.productId || entry.productHandle || entry.title;
+        product = byProduct.get(pid) || null;
+        const variantImages = Array.isArray(entry.images) ? entry.images.length : (entry.image ? 1 : 0);
+        const imagesCount = product ? product.imagesCount : variantImages;
+        const voorraad = product ? product.voorraad : (voorraadBySku.get(String(entry.sku || '')) || 0);
+        const seizoen = (product && product.seizoen) || entry.seizoen || '';
+        if (imagesCount > 0) reason = `Heeft ${imagesCount} afbeelding(en) op Shopify → valt daarom niet onder "geen afbeelding".`;
+        else if (!inScope(seizoen)) reason = `Seizoen "${seizoen || '(leeg)'}" valt buiten de scope 2026/NOS → uitgefilterd uit dit rapport.`;
+        else if (!(voorraad > 0)) reason = `Voorraad ${voorraad} (join op variant-SKU "${entry.sku || '(leeg)'}"). Geen voorraad>0 → valt niet onder "wél voorraad". Controleer of de SRS-voorraad-SKU exact gelijk is aan de Shopify-variant-SKU.`;
+        else reason = 'Voldoet aan alle voorwaarden — zou in "geen afbeelding — wél voorraad" moeten staan. Ververs de pagina/cache.';
+      }
+      return res.status(200).json({
+        success: true,
+        debug: {
+          query: debugQ,
+          foundInCache: !!entry,
+          via,
+          variant: entry ? {
+            productId: entry.productId, title: entry.title, sku: entry.sku, barcode: entry.barcode,
+            articleNumber: entry.articleNumber, srsArtikelId: entry.srsArtikelId, seizoen: entry.seizoen,
+            imagesOnVariant: Array.isArray(entry.images) ? entry.images.length : (entry.image ? 1 : 0), url: entry.productUrl
+          } : null,
+          product: product ? {
+            title: product.title, seizoen: product.seizoen, inScope: inScope(product.seizoen),
+            imagesCount: product.imagesCount, voorraad: product.voorraad, url: product.url
+          } : null,
+          voorraadRowsForQuery,
+          reason
+        }
+      });
+    }
+
     const products = allProducts.filter((p) => inScope(p.seizoen));
     const slim = (p) => ({
       productId: p.productId, title: p.title, handle: p.handle, url: p.url, seizoen: p.seizoen,
