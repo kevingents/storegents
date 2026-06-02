@@ -14,7 +14,11 @@
 import { buildBolContentPlan, readBolContentPlan, isPlanFresh } from '../../lib/bol-content-optimizer.js';
 import { pushBolContent, runBolContentAuto, discoverBolCatalog, ensureBolFamilies } from '../../lib/bol-content-writer.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
+import { getBolSettings } from '../../lib/bol-settings-store.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
+
+/* Welke live-write-actie vereist welke veiligheidstoggle (Instellingen → bol). */
+const LIVE_CONTENT_TOGGLE = { push: 'contentAuto', auto: 'contentAuto', families: 'familiesAuto' };
 
 export const maxDuration = 300;
 
@@ -34,6 +38,21 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       const body = req.body || {};
       const action = String(body.action || '').toLowerCase();
+
+      /* Veiligheids-gate: een LIVE content-/family-push (dryRun===false) mag pas
+         als de bijbehorende toggle AAN staat. Dit voorkomt dat de admin-route de
+         GENTS-regel omzeilt (Channable's bol-content moet eerst UIT vóór wij
+         pushen — anders vechten twee systemen om dezelfde content). De cron
+         checkte dit al; nu de handmatige route ook. */
+      if (LIVE_CONTENT_TOGGLE[action] && body.dryRun === false) {
+        const settings = await getBolSettings();
+        if (!settings[LIVE_CONTENT_TOGGLE[action]]) {
+          return res.status(409).json({
+            success: false,
+            message: `Live bol-${action === 'families' ? 'families' : 'content'}-push staat uit. Zet eerst Channable's bol-content UIT en activeer de toggle in Instellingen → bol.com voordat je live schrijft.`
+          });
+        }
+      }
 
       if (action === 'refresh') {
         const plan = await buildBolContentPlan();
