@@ -15,7 +15,14 @@ import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 import { computePoasForRange } from '../../lib/poas-compute.js';
 import { getGoogleAdsSpend } from '../../lib/google-ads-spend.js';
 import { getMetaAdsSpend } from '../../lib/meta-ads-spend.js';
+import { readPortalConfig, savePortalConfig, marketingTargets } from '../../lib/portal-config-store.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
+
+function parseBody(req) {
+  if (!req.body) return {};
+  if (typeof req.body === 'string') { try { return JSON.parse(req.body); } catch { return {}; } }
+  return req.body;
+}
 
 export const maxDuration = 120;
 const CACHE_PATH = 'marketing/poas-cache.json';
@@ -75,8 +82,20 @@ async function poasForRange(from, to) {
 }
 
 export default async function handler(req, res) {
-  if (corsJson(req, res, ['GET', 'OPTIONS'])) return;
+  if (corsJson(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   if (!requireAdmin(req, res)) return;
+
+  /* Maandtargets opslaan. */
+  if (req.method === 'POST') {
+    const b = parseBody(req);
+    if (b.saveTargets && typeof b.saveTargets === 'object') {
+      try {
+        await savePortalConfig({ marketing: b.saveTargets }, 'marketing-admin');
+        return res.status(200).json({ success: true, targets: marketingTargets(await readPortalConfig()) });
+      } catch (e) { return res.status(500).json({ success: false, message: e.message || 'Opslaan mislukt.' }); }
+    }
+    return res.status(400).json({ success: false, message: 'Onbekende POST.' });
+  }
 
   const period = String(req.query.period || 'month').toLowerCase();
   const from = String(req.query.from || req.query.dateFrom || '').trim();
@@ -101,7 +120,7 @@ export default async function handler(req, res) {
       trend = (await Promise.all(months.map(async (m) => {
         try {
           const p = await poasForRange(m.from, m.to);
-          return { label: m.label, nettoOmzetEx: p.nettoOmzetEx, brutowinst: p.brutowinst, margePct: p.margePct, adSpend: p.adSpend, poas: p.poas, roas: p.roas };
+          return { label: m.label, nettoOmzetIncl: p.nettoOmzetIncl, nettoOmzetEx: p.nettoOmzetEx, brutowinst: p.brutowinst, margePct: p.margePct, adSpend: p.adSpend, poas: p.poas, roas: p.roas };
         } catch { return { label: m.label, error: true }; }
       })));
     }
@@ -112,7 +131,8 @@ export default async function handler(req, res) {
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       configured: current.configured !== false,
       current,
-      trend
+      trend,
+      targets: marketingTargets(await readPortalConfig().catch(() => ({})))
     };
     try { await writeJsonBlob(CACHE_PATH, { key: cacheKey, at: new Date().toISOString(), data }); } catch (_) {}
     return res.status(200).json({ ...data, cached: false });
