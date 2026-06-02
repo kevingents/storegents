@@ -41,6 +41,10 @@ export default async function handler(req, res) {
        altijd leeg omdat upsert klanten zonder vereniging skipt). */
     if (debug) {
       const withVereniging = customers.filter((c) => String(c.vereniging || '').trim()).length;
+      const withLabels = customers.filter((c) => Array.isArray(c.labels) && c.labels.length).length;
+      /* Ruw eerste Customer-blok zodat we de exacte SRS-label-tagnamen kunnen
+         verifiëren (kort afgekapt). */
+      const firstCustomerXml = (String(raw || '').match(/<(?:[A-Za-z0-9_]+:)?Customer\b[\s\S]*?<\/(?:[A-Za-z0-9_]+:)?Customer>/i) || [''])[0].slice(0, 4000);
       return res.status(200).json({
         success: true,
         debug: true,
@@ -48,13 +52,16 @@ export default async function handler(req, res) {
         pageSize,
         customersInPage: customers.length,
         customersWithVereniging: withVereniging,
+        customersWithLabels: withLabels,
         sampleFields: debugExtractCustomerFields(raw),
-        sampleCustomers: customers.slice(0, 3).map((c) => ({
+        sampleLabels: customers.slice(0, 5).map((c) => ({
           customerId: c.customerId,
-          name: c.name,
           vereniging: c.vereniging || null,
-          verenigingType: c.verenigingType || null
+          verenigingType: c.verenigingType || null,
+          korting: c.korting || null,
+          labels: c.labels || []
         })),
+        rawCustomerSnippet: firstCustomerXml,
         durationMs: Date.now() - startedAt
       });
     }
