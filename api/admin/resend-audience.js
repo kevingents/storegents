@@ -15,7 +15,7 @@
 
 import {
   getResendAudienceConfig, saveResendAudienceConfig, listResendAudiences,
-  runResendAudienceSync, testResendContact, hasResendKey
+  runResendAudienceSync, runResendAudienceSyncFull, testResendContact, hasResendKey
 } from '../../lib/resend-audience.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -86,6 +86,11 @@ export default async function handler(req, res) {
 
     if (action === 'run-now') {
       const d = await runResendAudienceSync({ dryRun: false });
+      return res.status(200).json({ success: true, ...d });
+    }
+
+    if (action === 'run-full') {
+      const d = await runResendAudienceSyncFull({});
       return res.status(200).json({ success: true, ...d });
     }
 

@@ -22,7 +22,10 @@ async function handler(req, res) {
     if (!cfg.enabled) {
       return res.status(200).json({ success: true, skipped: true, reason: 'Resend audience-sync staat uit' });
     }
-    const result = await runResendAudienceSync({ dryRun: false });
+    /* ?inc=1 → goedkope incrementele run (alleen recent gewijzigde klanten);
+       near-realtime elke 2 uur. Zonder vlag de bredere dagelijkse run. */
+    const incremental = ['1', 'true', 'yes'].includes(String(req.query?.inc || '').toLowerCase());
+    const result = await runResendAudienceSync({ dryRun: false, incremental, sinceHours: incremental ? 3 : undefined });
     return res.status(200).json({ success: true, ...result });
   } catch (e) {
     console.error('[cron/resend-audience-sync]', e);
