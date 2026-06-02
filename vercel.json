@@ -145,6 +145,10 @@
       "schedule": "50 5 * * *"
     },
     {
+      "path": "/api/cron/resend-audience-sync",
+      "schedule": "55 5 * * *"
+    },
+    {
       "path": "/api/cron/kpi-alerts",
       "schedule": "0 7 * * *"
     },
