@@ -15,7 +15,8 @@
 
 import {
   getResendAudienceConfig, saveResendAudienceConfig, listResendAudiences,
-  runResendAudienceSync, runResendAudienceSyncFull, testResendContact, hasResendKey
+  runResendAudienceSync, runResendAudienceSyncFull, testResendContact, hasResendKey,
+  collectOptInContactsCsv
 } from '../../lib/resend-audience.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
@@ -51,6 +52,15 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (req.method === 'GET' && String(req.query?.action || '') === 'export-csv') {
+      const store = String(req.query?.store || '').trim();
+      const { csv, count } = await collectOptInContactsCsv({ storeFilter: store });
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('X-Contact-Count', String(count));
+      res.setHeader('Content-Disposition', `attachment; filename="resend-opt-in${store ? '-' + store.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}.csv"`);
+      return res.status(200).send(csv);
+    }
+
     if (req.method === 'GET') {
       const cfg = await getResendAudienceConfig();
       const out = { success: true, connected: true, config: slimConfig(cfg) };
