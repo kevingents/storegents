@@ -15,23 +15,29 @@ import { getInstagramToken } from '../../lib/gala-instagram.js';
 export const maxDuration = 30;
 const has = (k) => Boolean(String(process.env[k] || '').trim());
 
-/* Zoek de IG-business-account(s) achter het token via de gekoppelde pagina's. */
+/* Zoek de IG-business-account(s) achter het token via de gekoppelde pagina's.
+   Rapporteert óók hoeveel pagina's het token ziet (om "geen pagina toegewezen"
+   te onderscheiden van "pagina zonder gekoppeld IG-account"). */
 async function discoverInstagram() {
   const token = getInstagramToken();
   if (!token) return { ok: false, error: 'Geen token gevonden.' };
   const ver = (process.env.META_ADS_API_VERSION || '').trim() || 'v21.0';
   try {
-    const url = `https://graph.facebook.com/${ver}/me/accounts?fields=name,instagram_business_account{id,username,name}&access_token=${encodeURIComponent(token)}`;
+    const url = `https://graph.facebook.com/${ver}/me/accounts?fields=name,id,instagram_business_account{id,username},connected_instagram_account{id,username}&limit=100&access_token=${encodeURIComponent(token)}`;
     const r = await fetch(url);
     const j = await r.json().catch(() => ({}));
     if (!r.ok || j.error) return { ok: false, error: (j.error && j.error.message) || `HTTP ${r.status}` };
-    const accounts = [];
-    for (const p of (j.data || [])) {
-      if (p.instagram_business_account) {
-        accounts.push({ page: p.name || null, igBusinessId: p.instagram_business_account.id, username: p.instagram_business_account.username || null });
-      }
-    }
-    return { ok: true, accounts };
+    const pages = (j.data || []).map((p) => {
+      const iba = p.instagram_business_account || p.connected_instagram_account || null;
+      return {
+        page: p.name || null,
+        pageId: p.id || null,
+        igBusinessId: iba ? iba.id : null,
+        username: iba ? (iba.username || null) : null,
+        via: p.instagram_business_account ? 'business' : (p.connected_instagram_account ? 'connected' : null)
+      };
+    });
+    return { ok: true, pageCount: pages.length, pages, accounts: pages.filter((p) => p.igBusinessId) };
   } catch (e) { return { ok: false, error: e.message || 'IG-lookup mislukte.' }; }
 }
 
@@ -60,8 +66,9 @@ export default async function handler(req, res) {
     else lines.push(`Ad spend werkt: € ${Number(spend.spend || 0).toFixed(2)} (7 dagen).`);
     /* Instagram */
     if (!ig.ok) lines.push(`Instagram-lookup faalde — ${ig.error} (token mist mogelijk instagram_basic / pages_read_engagement).`);
-    else if (!ig.accounts.length) lines.push('Geen IG-businessaccount gevonden — koppel je Instagram-account aan een Facebook-pagina en geef de system user toegang.');
-    else lines.push('Gevonden IG-businessaccount(s) → gebruik dit id als INSTAGRAM_BUSINESS_ID: ' + ig.accounts.map((a) => `${a.igBusinessId}${a.username ? ' (@' + a.username + ')' : ''}`).join(', ') + '.');
+    else if (!ig.pageCount) lines.push('Token ziet 0 Facebook-pagina\'s → wijs je pagina toe aan de System User (Bedrijfsinstellingen → Systeemgebruikers → Activa toewijzen → Pagina\'s).');
+    else if (!ig.accounts.length) lines.push(`Token ziet ${ig.pageCount} pagina('s) [${ig.pages.map((p) => p.page).filter(Boolean).join(', ')}] maar géén gekoppeld IG-account → koppel Instagram op die pagina (Pagina-instellingen → Gekoppelde accounts → Instagram) of koppel de júiste pagina.`);
+    else lines.push('Gevonden IG-account(s) → gebruik dit id als INSTAGRAM_BUSINESS_ID: ' + ig.accounts.map((a) => `${a.igBusinessId}${a.username ? ' (@' + a.username + ')' : ''}`).join(', ') + '.');
   }
 
   res.setHeader('Cache-Control', 'no-store, max-age=0');
