@@ -16,8 +16,10 @@
 
 import {
   listNewsletters, getNewsletter, saveNewsletter, deleteNewsletter, duplicateNewsletter,
-  previewNewsletter, renderNewsletterHtml, sendNewsletterTest, sendNewsletterBroadcast, BLOCK_DEFS
+  previewNewsletter, renderNewsletterHtml, sendNewsletterTest, sendNewsletterBroadcast,
+  startNewsletterAbTest, sendNewsletterAbWinner, BLOCK_DEFS
 } from '../../lib/newsletter-builder.js';
+import { getAbTestByNewsletter, getAbTest } from '../../lib/ab-test-store.js';
 import { getEmailTheme } from '../../lib/email-template-store.js';
 import { hasResendKey } from '../../lib/resend-audience.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
@@ -41,7 +43,7 @@ export default async function handler(req, res) {
       if (id) {
         const nl = await getNewsletter(id);
         if (!nl) return res.status(404).json({ success: false, message: 'Niet gevonden.' });
-        return res.status(200).json({ success: true, connected: true, newsletter: nl, html: await previewNewsletter(id) });
+        return res.status(200).json({ success: true, connected: true, newsletter: nl, html: await previewNewsletter(id), abTest: await getAbTestByNewsletter(id).catch(() => null) });
       }
       const list = (await listNewsletters()).map(slim).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
       return res.status(200).json({ success: true, connected: true, newsletters: list, blockTypes: BLOCK_DEFS });
@@ -64,6 +66,18 @@ export default async function handler(req, res) {
     }
     if (action === 'send') {
       try { return res.status(200).json({ success: true, ...(await sendNewsletterBroadcast(String(body.id || ''))) }); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    if (action === 'ab-start') {
+      try { return res.status(200).json({ success: true, abTest: await startNewsletterAbTest(String(body.id || ''), { subjectA: body.subjectA, subjectB: body.subjectB, samplePct: body.samplePct }) }); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    if (action === 'ab-status') {
+      const t = body.testId ? await getAbTest(String(body.testId)) : await getAbTestByNewsletter(String(body.id || ''));
+      return res.status(200).json({ success: true, abTest: t });
+    }
+    if (action === 'ab-winner') {
+      try { return res.status(200).json({ success: true, ...(await sendNewsletterAbWinner(String(body.testId || ''), { variant: body.variant })) }); }
       catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     }
     return res.status(400).json({ success: false, message: 'Onbekende actie.' });

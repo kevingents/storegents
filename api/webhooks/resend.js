@@ -1,6 +1,7 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { appendMailEvent } from '../../lib/mail-events-store.js';
 import { markEmailBounced } from '../../lib/office-users-store.js';
+import { recordAbOpen } from '../../lib/ab-test-store.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
@@ -182,6 +183,12 @@ export default async function handler(req, res) {
 
   try {
     const result = await appendMailEvent(event);
+
+    /* A/B-test: open op een variant-mail → tel mee bij de juiste variant. */
+    if (type === 'email.opened' && event.tags && event.tags.abtest) {
+      try { await recordAbOpen(event.tags.abtest, event.tags.abvariant); }
+      catch (abErr) { console.warn('[webhooks/resend] recordAbOpen fail:', abErr.message); }
+    }
 
     /* Bij hard bounce: markeer e-mailadres als bounced in office-users zodat
        admin-UI dit kan tonen en herhaalde verzending vermeden kan worden. */
