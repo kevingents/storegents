@@ -1,5 +1,5 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { readMailConfig, writeMailConfig } from '../../lib/customer-report-mail.js';
+import { readMailConfig, writeMailConfig, previewRecipients } from '../../lib/customer-report-mail.js';
 
 /**
  * GET  /api/admin/customer-report-mail-config  → huidige config
@@ -29,7 +29,8 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const config = await readMailConfig();
-      return res.status(200).json({ success: true, config });
+      const recipientPreview = await previewRecipients(config).catch(() => null);
+      return res.status(200).json({ success: true, config, recipientPreview });
     }
     const b = parseBody(req);
     const config = await writeMailConfig({
@@ -38,7 +39,8 @@ export default async function handler(req, res) {
       includePodium: b.includePodium,
       extraRecipients: b.extraRecipients
     }, 'admin');
-    return res.status(200).json({ success: true, config, message: 'Instellingen opgeslagen.' });
+    const recipientPreview = await previewRecipients(config).catch(() => null);
+    return res.status(200).json({ success: true, config, recipientPreview, message: 'Instellingen opgeslagen.' });
   } catch (error) {
     console.error('[admin/customer-report-mail-config]', error);
     return res.status(200).json({ success: false, message: error.message || 'Config-actie mislukte.' });
