@@ -110,6 +110,49 @@ export default async function handler(req, res) {
     }
   }
 
+  /** Versheidscheck voor de nachtelijke SRS-bestanden.
+   *  Leest de blob-snapshots (geen SFTP-verbinding nodig) en controleert of de
+   *  geïmporteerde bestanden niet ouder zijn dan ~28 uur. Geeft 'warning' als
+   *  er waarschijnlijk geen nieuw bestand is binnengekomen. */
+  async function pingSrsDataFreshness() {
+    const { readJsonBlob } = await import('../../lib/json-blob-store.js');
+    const STALE_MS = 28 * 60 * 60 * 1000; /* 28 uur — ruim genoeg voor nachtlevering */
+    const now = Date.now();
+
+    const checks = await Promise.all([
+      readJsonBlob('srs/dragers.json', null).catch(() => null),
+      readJsonBlob('srs/retail-performance.json', null).catch(() => null)
+    ]);
+
+    const [dragers, retail] = checks;
+    const signals = [];
+
+    /* Dragers: refreshedAt in ISO */
+    const dragersAge = dragers?.refreshedAt ? now - Date.parse(dragers.refreshedAt) : null;
+    if (dragersAge === null) signals.push({ label: 'verplaatsingen', status: 'onbekend', file: null });
+    else signals.push({ label: 'verplaatsingen', stale: dragersAge > STALE_MS, ageHours: Math.round(dragersAge / 3600000), file: dragers?.sourceFile || null });
+
+    /* Retail/verkopen: refreshedAt */
+    const retailAge = retail?.refreshedAt ? now - Date.parse(retail.refreshedAt) : null;
+    if (retailAge === null) signals.push({ label: 'verkopen', status: 'onbekend', file: null });
+    else signals.push({ label: 'verkopen', stale: retailAge > STALE_MS, ageHours: Math.round(retailAge / 3600000), file: retail?.sources?.verkopen || null });
+
+    const stale = signals.filter((s) => s.stale);
+    const unknown = signals.filter((s) => s.status === 'onbekend');
+    if (stale.length > 0) {
+      return {
+        degraded: true,
+        message: `SRS bestanden verouderd (>${STALE_MS / 3600000}u): ${stale.map((s) => `${s.label} (${s.ageHours}u oud)`).join(', ')}. Controleer de nachtlevering via SRS bestanden.`,
+        meta: { signals }
+      };
+    }
+    if (unknown.length === signals.length) {
+      return { degraded: true, message: 'SRS data-versheid onbekend — snapshots nog niet aanwezig.', meta: { signals } };
+    }
+    const youngest = signals.filter((s) => s.ageHours != null).sort((a, b) => a.ageHours - b.ageHours)[0];
+    return { message: `SRS data vers (nieuwste snapshot: ${youngest?.ageHours ?? '?'}u oud).`, meta: { signals } };
+  }
+
   async function pingResend() {
     const key = process.env.RESEND_API_KEY;
     if (!key) throw new Error('RESEND_API_KEY ontbreekt');
@@ -120,6 +163,7 @@ export default async function handler(req, res) {
   }
 
   const services = await Promise.all([
+    timed('SRS nachtlevering', 'srs_sftp_freshness', pingSrsDataFreshness),
     timed('Shopify Admin API', 'shopify_admin', pingShopify),
     timed('SRS openstaande weborders', 'srs_open_weborders', async () => {
       const data = await getJson(`${base}/api/srs/open-weborders?store=${encodeURIComponent(store)}&t=${Date.now()}`, token);
