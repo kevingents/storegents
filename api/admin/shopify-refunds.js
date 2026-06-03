@@ -1,5 +1,12 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
+export const maxDuration = 120;
+
+/* In-memory cache: refunds in een afgesloten periode veranderen niet meer.
+   Per (van-tot-limit), ?refresh=1 forceert vers. Default 30 min. */
+const REFUNDS_CACHE = new Map();
+const REFUNDS_TTL_MS = Number(process.env.SHOPIFY_REFUNDS_CACHE_MS || 30 * 60 * 1000) || 30 * 60 * 1000;
+
 /**
  * GET /api/admin/shopify-refunds
  *
@@ -239,9 +246,16 @@ export default async function handler(req, res) {
     const dateFrom = clean(req.query.dateFrom || req.query.from || defaultFrom);
     const dateTo = clean(req.query.dateTo || req.query.to || '');
 
+    const refresh = ['1', 'true'].includes(String(req.query.refresh || ''));
+    const cacheKey = `${dateFrom}|${dateTo}|${limit}`;
+    const hit = REFUNDS_CACHE.get(cacheKey);
+    if (!refresh && hit && Date.now() - hit.ts < REFUNDS_TTL_MS) {
+      return res.status(200).json({ ...hit.payload, cached: true, cacheAgeMs: Date.now() - hit.ts });
+    }
+
     const result = await fetchRefundsForPeriod({ dateFrom, dateTo, limit });
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       mode: 'shopify_refunds',
       note: 'Bron: Shopify GraphQL — orders met refunds. Kanaal-detectie via sourceName + paymentGatewayNames. POS = in winkel, web = online.',
@@ -250,7 +264,10 @@ export default async function handler(req, res) {
       ordersScanned: result.scanned,
       totals: computeTotals(result.rows),
       rows: result.rows
-    });
+    };
+    REFUNDS_CACHE.set(cacheKey, { ts: Date.now(), payload });
+    if (REFUNDS_CACHE.size > 80) REFUNDS_CACHE.delete(REFUNDS_CACHE.keys().next().value);
+    return res.status(200).json(payload);
   } catch (error) {
     console.error('[admin/shopify-refunds]', error);
     return res.status(200).json({ success: false, configured: false, message: error.message || 'Shopify refunds konden niet worden opgehaald.' });

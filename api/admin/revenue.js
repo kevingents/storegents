@@ -1,5 +1,22 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 
+export const maxDuration = 60;
+
+/* In-memory cache: afgesloten periodes veranderen niet. Per (period|from|to|store).
+   ?refresh=1 forceert vers. Default 30 min. */
+const REVENUE_CACHE = new Map();
+const REVENUE_TTL_MS = Number(process.env.REVENUE_CACHE_MS || 30 * 60 * 1000) || 30 * 60 * 1000;
+
+/* Shopify REST cursor-paginatie: 'next'-URL in de Link-header. */
+function parseNextLink(linkHeader) {
+  if (!linkHeader) return null;
+  for (const part of String(linkHeader).split(',')) {
+    const m = part.match(/<([^>]+)>;\s*rel="next"/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 /**
  * GET /api/admin/revenue?period=today|week|month
  *
@@ -49,6 +66,13 @@ export default async function handler(req, res) {
     return res.status(200).json(emptyResponse(msg));
   }
 
+  const refresh = ['1', 'true'].includes(String(req.query.refresh || ''));
+  const cacheKey = `${period}|${customFrom}|${customTo}|${storeFilter}`;
+  const cacheHit = REVENUE_CACHE.get(cacheKey);
+  if (!refresh && cacheHit && Date.now() - cacheHit.ts < REVENUE_TTL_MS) {
+    return res.status(200).json({ ...cacheHit.payload, cached: true, cacheAgeMs: Date.now() - cacheHit.ts });
+  }
+
   try {
     const current  = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.from, range.to);
     const previous = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.prevFrom, range.prevTo);
@@ -58,7 +82,7 @@ export default async function handler(req, res) {
     /* Trend op netRevenue (na retouren + annuleringen) — eerlijkere vergelijking */
     const trendPct = prev.netRevenue ? Number((((cur.netRevenue - prev.netRevenue) / prev.netRevenue) * 100).toFixed(1)) : null;
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       period,
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
@@ -69,7 +93,10 @@ export default async function handler(req, res) {
       perStore: cur.perStore,
       topProducts: cur.topProducts,
       byDay: cur.byDay
-    });
+    };
+    REVENUE_CACHE.set(cacheKey, { ts: Date.now(), payload });
+    if (REVENUE_CACHE.size > 80) REVENUE_CACHE.delete(REVENUE_CACHE.keys().next().value);
+    return res.status(200).json(payload);
   } catch (error) {
     /* Geen 500 — return 200 met message zodat UI graceful kan degraderen */
     return res.status(200).json({ ...emptyResponse(`Shopify fout: ${error.message || 'unknown'}`), configured: true });
@@ -109,15 +136,22 @@ function computeRange(period, customFrom, customTo) {
   return { from, to, prevFrom, prevTo };
 }
 
-async function fetchShopifyOrders(domain, token, apiVersion, from, to) {
-  const url = `https://${domain}/admin/api/${apiVersion}/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,subtotal_price,total_discounts,refunds,line_items,source_name,tags,customer`;
-  const r = await fetch(url, { headers: { 'X-Shopify-Access-Token': token, Accept: 'application/json' } });
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`Shopify API ${r.status} (${apiVersion}) — ${text.slice(0, 100)}`);
+async function fetchShopifyOrders(domain, token, apiVersion, from, to, maxOrders = 5000) {
+  /* Doorbladeren via de Link-header i.p.v. 1 pagina (250) — anders worden orders
+     bij drukke periodes ondergeteld (de oude 250-cap). */
+  let url = `https://${domain}/admin/api/${apiVersion}/orders.json?status=any&created_at_min=${from.toISOString()}&created_at_max=${to.toISOString()}&limit=250&fields=id,name,created_at,total_price,subtotal_price,total_discounts,refunds,line_items,source_name,tags,customer`;
+  const orders = [];
+  while (url && orders.length < maxOrders) {
+    const r = await fetch(url, { headers: { 'X-Shopify-Access-Token': token, Accept: 'application/json' } });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      throw new Error(`Shopify API ${r.status} (${apiVersion}) — ${text.slice(0, 100)}`);
+    }
+    const d = await r.json();
+    orders.push(...(d.orders || []));
+    url = parseNextLink(r.headers.get('link'));
   }
-  const d = await r.json();
-  return d.orders || [];
+  return orders;
 }
 
 function aggregate(orders, storeFilter, range) {
