@@ -2,6 +2,7 @@ import { getVoucherLogs } from '../../../lib/voucher-log-store.js';
 import { getClosedVouchers } from '../../../lib/srs-vouchers-client.js';
 import { getStoreNameByBranchId } from '../../../lib/srs-branch-names.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
+import { nlTodayIso } from '../../../lib/datetime-nl.js';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -29,7 +30,9 @@ function isAuthorized(req) {
 }
 
 
-function todayIso() { return new Date().toISOString().slice(0, 10); }
+/* todayIso gebruikt NL-tijd zodat 'vandaag' in rapporten = NL-vandaag.
+   UTC-slice gaf 22-24 NL al morgen → vouchers van vandaag misten. */
+function todayIso() { return nlTodayIso(); }
 function daysAgoIso(days) { const date = new Date(); date.setDate(date.getDate() - days); return date.toISOString().slice(0, 10); }
 function formatAmount(value) { const amount = Number(value || 0); return Number.isFinite(amount) ? Number(amount.toFixed(2)) : 0; }
 

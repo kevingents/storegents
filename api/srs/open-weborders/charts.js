@@ -13,6 +13,7 @@
 
 import { getStoreNameByBranchId, getBranchIdByStore } from '../../../lib/branch-metrics.js';
 import { getCachedWeborders } from '../../../lib/srs-weborders-cache.js';
+import { nlTodayIso } from '../../../lib/datetime-nl.js';
 import {
   normalizeWeborder,
   isOrderLineOpenForStore,
@@ -103,7 +104,9 @@ function buildStatusBreakdown(items, storeName) {
     delivered_today: 0,
     other: 0
   };
-  const todayStr = new Date().toISOString().slice(0, 10);
+  /* NL-tijdzone, niet UTC: chart 'vandaag' moet matchen met wat de gebruiker
+     in NL ziet, ook na 22:00 wanneer UTC al morgen denkt te zijn. */
+  const todayStr = nlTodayIso();
 
   for (const item of items) {
     if (storeName && !isOrderLineOpenForStore(item, storeName) && !isClosedWeborderStatus(item.status)) {
