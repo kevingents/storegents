@@ -242,8 +242,14 @@ async function handler(req, res) {
     }
   }
 
-  return res.status(200).json({
-    success: true,
+  /* HTTP 207 'Multi-Status' wanneer minstens één winkel een fout heeft,
+     zodat trackedCron de run als 'partial' registreert i.p.v. 'success'.
+     Anders verstoppen 18-van-19 falende winkels zich in een groene cron-run. */
+  const hasErrors = results.some((r) => r.error);
+  const statusCode = hasErrors ? 207 : 200;
+  return res.status(statusCode).json({
+    success: !hasErrors,
+    partial: hasErrors,
     dryRun,
     stores: stores.length,
     results

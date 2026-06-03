@@ -102,7 +102,10 @@ async function handler(req, res) {
       throw new Error(healthData.message || `system-health gaf ${healthResp.status}`);
     }
   } catch (error) {
-    return res.status(200).json({ success: false, message: `Health check mislukt: ${error.message}` });
+    /* 500 i.p.v. 200 zodat trackedCron deze run als 'failed' registreert.
+       Anders zou de cron-overzicht 'success' tonen terwijl de monitor blind
+       is — klassieke "wie monitort de monitor". */
+    return res.status(500).json({ success: false, message: `Health check mislukt: ${error.message}` });
   }
 
   const services = healthData.services || [];

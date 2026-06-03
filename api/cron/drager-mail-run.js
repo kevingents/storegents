@@ -57,7 +57,14 @@ async function sendStoreMail({ store, recipient, rows, dryRun }) {
 
 async function handler(req, res) {
   setNoStore(res);
-  return res.status(410).json({ success: false, message: 'Dragers functie is tijdelijk uitgeschakeld omdat SRS-koppeling nog niet stabiel is.' });
+  /* Bewust 200 + success:true zodat trackedCron de cron als 'success' (skipped)
+     registreert i.p.v. dagelijks 'failed' (410 < 400 was false → failed). */
+  return res.status(200).json({
+    success: true,
+    skipped: true,
+    reason: 'disabled',
+    message: 'Dragers-mail is uitgeschakeld (SRS-koppeling nog niet stabiel). Cron blijft draaien als no-op zodat de planner zichtbaar gezond blijft — verwijder de schedule uit vercel.json om hem helemaal weg te halen.'
+  });
 }
 
 export default trackedCron('drager-mail-run', handler);
