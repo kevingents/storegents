@@ -78,7 +78,7 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
      - netRevenue     = grossRevenue − refundedRevenue
   */
   let grossRevenue = 0;       /* positieve verkoop */
-  let refundedRevenue = 0;    /* absolute waarde retours */
+  let refundedRevenue = 0;    /* absolute waarde retours (binnen winkel-totaal) */
   let itemsSold = 0;          /* netto stuks (kan negatief zijn) */
   let grossItems = 0;         /* alleen verkoop-stuks */
   let refundedItems = 0;      /* alleen retour-stuks (absoluut) */
@@ -87,6 +87,14 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
   let refundReceiptCount = 0; /* bonnen netto < 0 (puur retour) */
   let skippedWeborders = 0;
   let skippedWeborderRevenue = 0;
+  /* Pure POS-retourbonnen (tx.total < 0) — business-regel: vrijwel alle
+     kassa-retouren zijn web-orders die in de winkel zijn ingenomen zonder
+     orderNr-koppeling, en horen dus bij WEBSHOP-omzet, niet bij de winkel.
+     We weren ze hier uit het winkel-totaal en geven ze los terug zodat de
+     omzet-pagina ze kan optellen bij de webshop-refunds. */
+  let posReturnRevenue = 0;
+  let posReturnCount = 0;
+  let posReturnItems = 0;
   const storeMap = new Map();
   const productMap = new Map();
   const dayMap = new Map();
@@ -111,6 +119,16 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
     if (excludeWeborders && (!hasReceipt || hasOrderNr)) {
       skippedWeborders += 1;
       skippedWeborderRevenue += Number(tx.total || 0);
+      continue;
+    }
+
+    /* Pure refund-bon (tx.total < 0) zonder mixed-verkoop = web-retour aan
+       kassa. Hoort niet in winkel-omzet. Apart bijhouden voor display. */
+    const totalEarly = Number(tx.total || 0);
+    if (excludeWeborders && totalEarly < 0) {
+      posReturnRevenue += Math.abs(totalEarly);
+      posReturnCount += 1;
+      posReturnItems += Math.abs((tx.items || []).reduce((s, i) => s + Number(i.pieces || 0), 0));
       continue;
     }
 
@@ -200,7 +218,13 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
        Dit is webshop-omzet en moet apart worden geboekt (zie /api/admin/webshop-revenue). */
     excludedWeborderCount: skippedWeborders,
     excludedWeborderRevenue: Number(skippedWeborderRevenue.toFixed(2)),
-    revenueSourceLabel: 'Winkel-bonnen (pure POS-aankopen, excl. alle weborders)',
+    /* Web-retouren die aan de kassa zijn ingenomen (pure refund-bonnen zonder
+       orderNr-koppeling). Horen bij webshop-omzet — frontend telt deze op bij
+       de Shopify-refunds in het webshop-blok. */
+    posReturnRevenue: Number(posReturnRevenue.toFixed(2)),
+    posReturnCount,
+    posReturnItems,
+    revenueSourceLabel: 'Winkel-bonnen (pure POS-aankopen, excl. alle weborders + kassa-retouren)',
     perStore: [...storeMap.values()]
       .map((s) => ({
         ...s,
