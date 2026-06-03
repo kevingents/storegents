@@ -110,12 +110,15 @@ async function checkStorePickups(req, store) {
   return result;
 }
 
-async function checkStoreWeborders(req, store) {
+async function checkStoreWeborders(req, store, branchId = '', label = '') {
   const result = { store, kind: 'weborder', newCount: 0, newIds: [] };
   try {
-    const d = await fetchInternal(req, `/api/srs/open-weborders?store=${encodeURIComponent(store)}`);
+    /* branchId-query is betrouwbaarder voor interne locaties (magazijn/uitlevertafel)
+       die niet altijd op naam in de branch-config staan. */
+    const q = branchId ? `branchId=${encodeURIComponent(branchId)}` : `store=${encodeURIComponent(store)}`;
+    const d = await fetchInternal(req, `/api/srs/open-weborders?${q}`);
     const orders = (d.requests || d.items || d.rows || []);
-    const seenKey = `weborder:${store}`;
+    const seenKey = `weborder:${branchId || store}`;
     const seen = await getSeenIds(seenKey);
     const newOrders = orders.filter(o => {
       const id = String(o.orderNr || o.shopifyOrderName || '');
@@ -129,7 +132,7 @@ async function checkStoreWeborders(req, store) {
       const notif = await createNotification({
         stores: [store],
         target: store,
-        title: `${newOrders.length} nieuwe weborder${newOrders.length > 1 ? 's' : ''}`,
+        title: `${newOrders.length} nieuwe weborder${newOrders.length > 1 ? 's' : ''}${label ? ' · ' + label : ''}`,
         body: `${sample}${more} · Klaarmaken voor pick & pack.`,
         severity: 'info',
         link: '/pages/winkel-portaal',
@@ -176,6 +179,20 @@ async function handler(req, res) {
       results.weborder.push(await checkStoreWeborders(req, store));
     } catch (e) {
       results.pickup.push({ store, error: e.message });
+    }
+  }
+
+  /* Magazijn + uitlevertafel: ALLEEN weborders (geen klant-afhaalorders), zodat
+     ook die locaties een melding krijgen over hun open orders. Per branchId zodat
+     de naam-mapping van de uitlevertafel geen probleem geeft. */
+  if (!onlyStore) {
+    const PIPELINE_LOCATIONS = [
+      { notify: 'GENTS Magazijn', branchId: '99', label: 'Magazijn' },
+      { notify: 'GENTS Magazijn', branchId: '97', label: 'Uitlevertafel' }
+    ];
+    for (const loc of PIPELINE_LOCATIONS) {
+      try { results.weborder.push(await checkStoreWeborders(req, loc.notify, loc.branchId, loc.label)); }
+      catch (e) { results.weborder.push({ store: loc.notify, error: e.message }); }
     }
   }
 
