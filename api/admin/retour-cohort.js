@@ -29,6 +29,11 @@ const DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMA
 const TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
 const API = process.env.SHOPIFY_API_VERSION || '2025-01';
 
+/* In-memory cache: historische maanden veranderen niet, dus hergebruik het
+   scan-resultaat. ?refresh=1 forceert een verse scan. Default 6 uur. */
+const COHORT_CACHE = new Map();
+const COHORT_TTL_MS = Number(process.env.RETOUR_COHORT_CACHE_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000;
+
 function monthKey(d) { return String(d || '').slice(0, 7); } // "YYYY-MM"
 function num(v) { return Math.round(Number(v || 0) * 100) / 100; }
 
@@ -59,6 +64,14 @@ export default async function handler(req, res) {
 
   const months = Math.max(1, Math.min(24, Number(req.query.months || 6)));
   const maxOrders = Math.max(500, Math.min(30000, Number(req.query.maxOrders || 10000)));
+
+  const refresh = ['1', 'true'].includes(String(req.query.refresh || ''));
+  const cacheKey = `cohort:${months}:${maxOrders}`;
+  const hit = COHORT_CACHE.get(cacheKey);
+  if (!refresh && hit && Date.now() - hit.ts < COHORT_TTL_MS) {
+    return res.status(200).json({ ...hit.payload, cached: true, cacheAgeMs: Date.now() - hit.ts });
+  }
+
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1); // 1e dag, N maanden terug
 
@@ -123,11 +136,12 @@ export default async function handler(req, res) {
     const totReturned = rows.reduce((s, b) => s + b.ordersReturned, 0);
     const totAmount = num(rows.reduce((s, b) => s + b.returnedAmount, 0));
 
-    return res.status(200).json({
+    const payload = {
       success: true,
       mode: 'cohort_by_order_month',
       note: 'Zuiver: retour telt bij de bestelmaand van de order (niet de refund-datum). Excl. geannuleerde orders en offline winkelbonnen.',
       months, scanned, pages, truncated,
+      generatedAt: new Date().toISOString(),
       totals: {
         ordersPlaced: totPlaced,
         ordersReturned: totReturned,
@@ -135,7 +149,10 @@ export default async function handler(req, res) {
         returnPct: totPlaced ? Number(((totReturned / totPlaced) * 100).toFixed(1)) : null
       },
       rows
-    });
+    };
+    COHORT_CACHE.set(cacheKey, { ts: Date.now(), payload });
+    if (COHORT_CACHE.size > 50) COHORT_CACHE.delete(COHORT_CACHE.keys().next().value);
+    return res.status(200).json(payload);
   } catch (error) {
     console.error('[admin/retour-cohort]', error);
     return res.status(200).json({ success: false, configured: true, message: error.message || 'Cohort kon niet berekend worden.' });

@@ -23,6 +23,11 @@ const DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMA
 const TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
 const API = process.env.SHOPIFY_API_VERSION || '2025-01';
 
+/* In-memory cache: per-product retour-aggregatie verandert nauwelijks; Channable
+   trekt 1x/dag. ?refresh=1 forceert vers. Default 6 uur. */
+const FEED_CACHE = new Map();
+const FEED_TTL_MS = Number(process.env.RETOUR_FEED_CACHE_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000;
+
 function isAuthorized(req) {
   const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
   if (!adminToken) return true;
@@ -64,6 +69,31 @@ export default async function handler(req, res) {
 
   const months = Math.max(1, Math.min(36, Number(req.query.months || 12)));
   const maxOrders = Math.max(500, Math.min(40000, Number(req.query.maxOrders || 15000)));
+
+  /* Format-helper: csv én json delen dezelfde aggregatie (en dus dezelfde cache). */
+  const formatOut = (rows, meta) => {
+    if (format === 'json') {
+      return res.status(200).json({
+        success: true, months, scanned: meta.scanned, truncated: meta.truncated, cached: Boolean(meta.cached),
+        note: 'Retour% per product op stuks-basis (geretourneerde stuks / bestelde stuks). Excl. geannuleerd + offline bon.',
+        count: rows.length, rows: rows.slice(0, Number(req.query.limit || 1000))
+      });
+    }
+    const header = ['sku', 'product', 'aantal_besteld', 'aantal_retour', 'retourpercentage', 'retour_waarde'];
+    const lines = [header.join(',')];
+    for (const r of rows) lines.push([csvCell(r.sku), csvCell(r.product), r.besteld, r.retour, r.retourpercentage, r.retourwaarde].join(','));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `inline; filename="gents-retour-productfeed-${months}mnd.csv"`);
+    return res.status(200).send(lines.join('\n'));
+  };
+
+  const refresh = ['1', 'true'].includes(String(req.query.refresh || ''));
+  const cacheKey = `feed:${months}:${maxOrders}`;
+  const cacheHit = FEED_CACHE.get(cacheKey);
+  if (!refresh && cacheHit && Date.now() - cacheHit.ts < FEED_TTL_MS) {
+    return formatOut(cacheHit.rows, { scanned: cacheHit.scanned, truncated: cacheHit.truncated, cached: true });
+  }
+
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
 
@@ -128,23 +158,9 @@ export default async function handler(req, res) {
       .filter(r => r.besteld > 0 || r.retour > 0)
       .sort((a, b) => b.retour - a.retour);
 
-    if (format === 'json') {
-      return res.status(200).json({
-        success: true, months, scanned, truncated,
-        note: 'Retour% per product op stuks-basis (geretourneerde stuks / bestelde stuks). Excl. geannuleerd + offline bon.',
-        count: rows.length, rows: rows.slice(0, Number(req.query.limit || 1000))
-      });
-    }
-
-    /* CSV voor Channable */
-    const header = ['sku', 'product', 'aantal_besteld', 'aantal_retour', 'retourpercentage', 'retour_waarde'];
-    const lines = [header.join(',')];
-    for (const r of rows) {
-      lines.push([csvCell(r.sku), csvCell(r.product), r.besteld, r.retour, r.retourpercentage, r.retourwaarde].join(','));
-    }
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="gents-retour-productfeed-${months}mnd.csv"`);
-    return res.status(200).send(lines.join('\n'));
+    FEED_CACHE.set(cacheKey, { ts: Date.now(), rows, scanned, truncated });
+    if (FEED_CACHE.size > 50) FEED_CACHE.delete(FEED_CACHE.keys().next().value);
+    return formatOut(rows, { scanned, truncated });
   } catch (error) {
     console.error('[admin/retour-product-feed]', error);
     if (format === 'json') return res.status(200).json({ success: false, configured: true, message: error.message });

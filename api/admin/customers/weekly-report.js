@@ -634,7 +634,11 @@ function resolveBranches({ branchId, store }) {
     }];
   }
 
-  return listBranches();
+  /* Suitconcern (702 / magazijn 704) is een apart merk en telt niet mee in het
+     GENTS klant-weekrapport. */
+  return listBranches().filter((b) =>
+    !/suitconcern/i.test(b.store) && !['702', '704'].includes(String(b.branchId))
+  );
 }
 
 async function buildPayload({
