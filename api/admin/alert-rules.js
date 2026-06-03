@@ -33,8 +33,12 @@ export default async function handler(req, res) {
       const body = parseBody(req);
       if (body.op === 'delete') {
         if (!body.id) return res.status(400).json({ success: false, message: 'id ontbreekt.' });
-        await deleteRule(String(body.id));
-        return res.status(200).json({ success: true });
+        const removed = await deleteRule(String(body.id));
+        if (!removed) {
+          /* Niet meer in blob — kan zijn dat ie al weg was. Geen fout, wel info. */
+          return res.status(200).json({ success: true, removed: 0, message: 'Regel was al verwijderd.' });
+        }
+        return res.status(200).json({ success: true, removed });
       }
       if (body.op === 'toggle') {
         if (!body.id) return res.status(400).json({ success: false, message: 'id ontbreekt.' });
