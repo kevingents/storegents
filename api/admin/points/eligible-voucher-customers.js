@@ -137,6 +137,8 @@ async function findShopifyCustomer({ email, ids, namespace, key }) {
   return { customer: null, matchType: '', matchedValue: '' };
 }
 
+export const maxDuration = 60;
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);

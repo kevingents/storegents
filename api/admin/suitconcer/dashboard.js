@@ -161,6 +161,8 @@ async function buildStockSummary() {
   };
 }
 
+export const maxDuration = 60;
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
