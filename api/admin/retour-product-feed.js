@@ -17,7 +17,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
  * Kolommen CSV: sku, product, aantal_besteld, aantal_retour, retourpercentage, retour_waarde
  */
 
-export const config = { maxDuration: 60 };
+export const maxDuration = 300;
 
 const DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '';
 const TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';

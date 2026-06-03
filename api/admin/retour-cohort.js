@@ -23,7 +23,7 @@ import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
  *            returnedUnits, returnedAmount, returnPct }], totals, truncated }
  */
 
-export const config = { maxDuration: 60 };
+export const maxDuration = 300;
 
 const DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '';
 const TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || process.env.SHOPIFY_ADMIN_TOKEN || '';
