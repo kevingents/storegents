@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
+import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 
 /**
  * GET /api/admin/retour-cohort?months=6
@@ -33,6 +34,9 @@ const API = process.env.SHOPIFY_API_VERSION || '2025-01';
    scan-resultaat. ?refresh=1 forceert een verse scan. Default 6 uur. */
 const COHORT_CACHE = new Map();
 const COHORT_TTL_MS = Number(process.env.RETOUR_COHORT_CACHE_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000;
+/* Persistente snapshot (blob): overleeft koude starts; nachtelijke cron ververst (30u marge). */
+const COHORT_BLOB_MAX_AGE_MS = Number(process.env.RETOUR_COHORT_BLOB_MAX_AGE_MS || 30 * 60 * 60 * 1000) || 30 * 60 * 60 * 1000;
+const cohortBlobPath = (months, maxOrders) => `report-snapshots/retour-cohort-${months}-${maxOrders}.json`;
 
 function monthKey(d) { return String(d || '').slice(0, 7); } // "YYYY-MM"
 function num(v) { return Math.round(Number(v || 0) * 100) / 100; }
@@ -70,6 +74,15 @@ export default async function handler(req, res) {
   const hit = COHORT_CACHE.get(cacheKey);
   if (!refresh && hit && Date.now() - hit.ts < COHORT_TTL_MS) {
     return res.status(200).json({ ...hit.payload, cached: true, cacheAgeMs: Date.now() - hit.ts });
+  }
+  if (!refresh) {
+    try {
+      const snap = await readJsonBlob(cohortBlobPath(months, maxOrders), null);
+      if (snap && snap.payload && snap.savedAt && Date.now() - snap.savedAt < COHORT_BLOB_MAX_AGE_MS) {
+        COHORT_CACHE.set(cacheKey, { ts: Date.now(), payload: snap.payload });
+        return res.status(200).json({ ...snap.payload, cached: 'snapshot', cacheAgeMs: Date.now() - snap.savedAt });
+      }
+    } catch (_) { /* geen/oude snapshot → live berekenen */ }
   }
 
   const now = new Date();
@@ -152,6 +165,7 @@ export default async function handler(req, res) {
     };
     COHORT_CACHE.set(cacheKey, { ts: Date.now(), payload });
     if (COHORT_CACHE.size > 50) COHORT_CACHE.delete(COHORT_CACHE.keys().next().value);
+    writeJsonBlob(cohortBlobPath(months, maxOrders), { savedAt: Date.now(), payload }).catch(() => {});
     return res.status(200).json(payload);
   } catch (error) {
     console.error('[admin/retour-cohort]', error);

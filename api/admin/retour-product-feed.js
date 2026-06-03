@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 
 /**
  * GET /api/admin/retour-product-feed?format=csv&months=12&adminToken=...
@@ -27,6 +28,9 @@ const API = process.env.SHOPIFY_API_VERSION || '2025-01';
    trekt 1x/dag. ?refresh=1 forceert vers. Default 6 uur. */
 const FEED_CACHE = new Map();
 const FEED_TTL_MS = Number(process.env.RETOUR_FEED_CACHE_MS || 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000;
+/* Persistente snapshot (blob): overleeft koude starts; nachtelijke cron ververst (30u marge). */
+const FEED_BLOB_MAX_AGE_MS = Number(process.env.RETOUR_FEED_BLOB_MAX_AGE_MS || 30 * 60 * 60 * 1000) || 30 * 60 * 60 * 1000;
+const feedBlobPath = (months, maxOrders) => `report-snapshots/retour-product-feed-${months}-${maxOrders}.json`;
 
 function isAuthorized(req) {
   const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
@@ -92,6 +96,15 @@ export default async function handler(req, res) {
   const cacheHit = FEED_CACHE.get(cacheKey);
   if (!refresh && cacheHit && Date.now() - cacheHit.ts < FEED_TTL_MS) {
     return formatOut(cacheHit.rows, { scanned: cacheHit.scanned, truncated: cacheHit.truncated, cached: true });
+  }
+  if (!refresh) {
+    try {
+      const snap = await readJsonBlob(feedBlobPath(months, maxOrders), null);
+      if (snap && Array.isArray(snap.rows) && snap.savedAt && Date.now() - snap.savedAt < FEED_BLOB_MAX_AGE_MS) {
+        FEED_CACHE.set(cacheKey, { ts: Date.now(), rows: snap.rows, scanned: snap.scanned, truncated: snap.truncated });
+        return formatOut(snap.rows, { scanned: snap.scanned, truncated: snap.truncated, cached: 'snapshot' });
+      }
+    } catch (_) { /* geen/oude snapshot → live berekenen */ }
   }
 
   const now = new Date();
@@ -160,6 +173,7 @@ export default async function handler(req, res) {
 
     FEED_CACHE.set(cacheKey, { ts: Date.now(), rows, scanned, truncated });
     if (FEED_CACHE.size > 50) FEED_CACHE.delete(FEED_CACHE.keys().next().value);
+    writeJsonBlob(feedBlobPath(months, maxOrders), { savedAt: Date.now(), rows, scanned, truncated }).catch(() => {});
     return formatOut(rows, { scanned, truncated });
   } catch (error) {
     console.error('[admin/retour-product-feed]', error);
