@@ -1,9 +1,17 @@
 import { put } from '@vercel/blob';
-import { handleCors, setCorsHeaders } from '../lib/cors.js';
+import { handleCors, setCorsHeaders, requireAdmin } from '../lib/cors.js';
 
+/**
+ * GET /api/test-blob — smoke-test voor Vercel Blob.
+ *
+ * Vereist ADMIN_TOKEN (was eerder publiek → DoS-risico: elke call maakte
+ * een nieuwe blob, kostte storage + lekte blob.url).
+ */
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
+
+  if (requireAdmin(req, res)) return;
 
   try {
     if (!process.env.BLOB_READ_WRITE_TOKEN) {

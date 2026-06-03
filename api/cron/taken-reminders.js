@@ -15,19 +15,13 @@ import { generateDueInstances, todayNL } from '../../lib/taken-store.js';
 import { getAllOfficeUsers } from '../../lib/office-users-store.js';
 import { resolveGroupMails } from '../../lib/user-groups-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
-
-function isAuthorized(req) {
-  const cronSecret = process.env.CRON_SECRET || '';
-  if (!cronSecret) return true;
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  return token === cronSecret || req.query.secret === cronSecret;
-}
+import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 async function handler(req, res) {
   if (!['GET', 'POST'].includes(req.method)) {
     return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   }
-  if (!isAuthorized(req)) {
+  if (!isCronAuthorized(req)) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
   }
 

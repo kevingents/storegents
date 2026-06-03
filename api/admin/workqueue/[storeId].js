@@ -1,10 +1,12 @@
 import { appendAudit, canTransition, getWorkflow, updateWorkflow, validateWorkflowStatus } from '../../../lib/admin-workqueue/store.js';
 import { sendError } from '../../../lib/api-error.js';
 import { setRequestHeaders, withRequestLog } from '../../../lib/request-context.js';
+import { requireAdmin } from '../../../lib/cors.js';
 
 export default async function handler(req, res) {
   const ctx = withRequestLog(req, 'admin/workqueue'); setRequestHeaders(res, ctx.requestId);
   if (req.method !== 'PATCH') return sendError(res, 405, { message: 'Alleen PATCH is toegestaan.', source: 'workqueue_api', endpoint: req.url });
+  if (requireAdmin(req, res)) return;
   const { storeId } = req.query || {};
   const { workflowStatus, lastHandledBy = null, note = null } = req.body || {};
   if (!storeId || !validateWorkflowStatus(workflowStatus)) return sendError(res, 400, { message: 'Ongeldige input.', source: 'workqueue_api', endpoint: req.url, details: { storeId, workflowStatus } });

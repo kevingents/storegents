@@ -8,7 +8,7 @@ function clean(value) {
 
 function isAuthorized(req) {
   const adminToken = String(process.env.ADMIN_TOKEN || '').trim();
-  if (!adminToken) return true;
+  if (!adminToken) return false;
   const token = String(
     req.headers['x-admin-token'] ||
     req.headers['x-admin-pin'] ||

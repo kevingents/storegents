@@ -210,8 +210,4 @@ async function runHandler(req, res) {
   }
 }
 
-export default trackedCron(
-  'run-report-schedules',
-  { description: 'Stuur geplande rapportages naar ontvangers — elke 15 minuten' },
-  runHandler
-);
+export default trackedCron('run-report-schedules', runHandler);
