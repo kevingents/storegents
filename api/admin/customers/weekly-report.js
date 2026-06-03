@@ -2,6 +2,7 @@ import { getCustomers, getTransactions } from '../../../lib/srs-customers-client
 import { listBranches, getStoreNameByBranchId, getBranchIdByStore } from '../../../lib/branch-metrics.js';
 import { handleCors, setCorsHeaders } from '../../../lib/cors.js';
 import { getTargetsForPeriod, attachTargetsToRow, countReceiptsByBranch } from '../../../lib/customer-target-helpers.js';
+import { readTargetsUpdatedAt } from '../../../lib/kpi-targets-store.js';
 import { readLedger, aggregateLedger } from '../../../lib/srs-retail-ledger.js';
 
 const REPORT_CACHE_TTL_MS = Math.max(
@@ -797,7 +798,13 @@ export default async function handler(req, res) {
     });
   }
 
-  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|deep-receipts-v2`;
+  /* Targets-versie als deel van de cache-key: zodra een target wordt opgeslagen
+     in KPI-beheer verandert kpi-config.updatedAt en mist de cache → user ziet
+     direct het effect i.p.v. tot 10 min te wachten. Fail-safe: bij leesfout
+     gewoon doorgaan (cache blijft TTL-only). */
+  let targetsVersion = '';
+  try { targetsVersion = await readTargetsUpdatedAt(); } catch { /* niets — TTL volstaat */ }
+  const cacheKey = `${dateFrom}|${dateTo}|${branchId || 'all'}|${store || ''}|t:${targetsVersion}|deep-receipts-v2`;
   const cached = reportCache.get(cacheKey);
 
   if (!refresh && cached && Date.now() - cached.createdAt < REPORT_CACHE_TTL_MS) {
