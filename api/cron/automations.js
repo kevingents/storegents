@@ -36,4 +36,13 @@ async function handler(req, res) {
   }
 }
 
-export default trackedCron('automations', handler);
+/* 4 schedules (birthday/winback/replenishment/custom) gebruikten dezelfde
+   tracked-key 'automations' → cron-overzicht kon niet zien welke gefaald was.
+   Dispatch maakt per request een aparte trackedCron met key 'automations:${id}'
+   zodat elke automation zijn eigen geschiedenis krijgt in het overzicht. */
+async function dispatch(req, res) {
+  const id = String(req.query?.id || 'unknown').trim() || 'unknown';
+  return trackedCron(`automations:${id}`, handler)(req, res);
+}
+
+export default dispatch;
