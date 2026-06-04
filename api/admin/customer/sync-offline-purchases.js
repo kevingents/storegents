@@ -46,6 +46,18 @@ export default async function handler(req, res) {
   if (requireAdmin(req, res)) return;
   if (req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen POST.' });
 
+  /* PAUSE: offline-sync is uit via env. Zet OFFLINE_SYNC_PAUSED=1 in Vercel
+     om alle calls te blokkeren (handmatige UI én eventuele cron). Met dezelfde
+     env naar leeg/0/false zet je de sync weer aan zonder code-deploy. */
+  const paused = ['1', 'true', 'yes', 'on'].includes(String(process.env.OFFLINE_SYNC_PAUSED || '').trim().toLowerCase());
+  if (paused) {
+    return res.status(503).json({
+      success: false,
+      paused: true,
+      message: 'Offline order-sync is gepauzeerd. Zet env OFFLINE_SYNC_PAUSED=0 in Vercel om te hervatten.'
+    });
+  }
+
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
   const customerId = clean(body.customerId);
   const email = clean(body.email);
