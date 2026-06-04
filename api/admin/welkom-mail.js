@@ -104,7 +104,7 @@ export default async function handler(req, res) {
       const storeCfg = cfg.stores?.[store] || {};
       /* Echte welkom-template gebruiken (Spotler-stijl) zodat de test exact
          lijkt op wat een klant krijgt. Fake customer met test-voornaam. */
-      const { buildWelkomMailHtml, buildSenderFromHeader, tryGoogleOpeningHours } =
+      const { buildWelkomMailHtml, buildSenderFromHeader, tryGoogleOpeningHours, getCustomerPersonalization } =
         await import('../../lib/welkom-mail-automation.js');
       const fromHeader = buildSenderFromHeader(store, storeCfg);
       /* Google-fetch indien mogelijk, anders fallback op handmatige. */
@@ -113,7 +113,17 @@ export default async function handler(req, res) {
         const gh = await tryGoogleOpeningHours(store, storeCfg);
         if (gh) mailOpts = { googleHoursHtml: gh.html, googleMapsUrl: gh.googleMapsUrl };
       } catch {}
-      const fakeCustomer = { firstName: clean(body.testFirstName) || 'Kevin' };
+      const fakeCustomer = {
+        firstName: clean(body.testFirstName) || 'Kevin',
+        customerId: clean(body.testCustomerId)  /* optioneel: echte klant-ID voor personalisatie preview */
+      };
+      /* Als de gebruiker een echte customerId meegeeft: haal punten +
+         aankoopgeschiedenis op zodat de preview de personalisatie toont. */
+      if (fakeCustomer.customerId) {
+        try {
+          mailOpts.personalization = await getCustomerPersonalization(fakeCustomer);
+        } catch {}
+      }
       const html = buildWelkomMailHtml(fakeCustomer, store, storeCfg, mailOpts);
       try {
         const r = await sendMail({
