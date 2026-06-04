@@ -18,6 +18,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { resolveAccess } from '../../lib/access-check.js';
 import { getActiveShift } from '../../lib/shift-session-store.js';
 import { findPersonnelForLogin } from '../../lib/srs-personnel-client.js';
+import { authenticateOfficeUser, getAllOfficeUsers } from '../../lib/office-users-store.js';
 import { isRiskyAction } from '../../lib/risky-actions-config.js';
 import { issueConfirmToken } from '../../lib/confirm-token-store.js';
 
@@ -41,10 +42,11 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     const actionKey = String(body.actionKey || '').trim();
     const kassacode = String(body.kassacode || body.pin || '').trim();
+    const password = String(body.password || '').trim();
     const payload = body.payload && typeof body.payload === 'object' ? body.payload : {};
 
     if (!actionKey) return res.status(400).json({ success: false, message: 'actionKey verplicht.' });
-    if (!kassacode) return res.status(400).json({ success: false, message: 'Kassacode verplicht.' });
+    if (!kassacode && !password) return res.status(400).json({ success: false, message: 'Kassacode of wachtwoord verplicht.' });
 
     /* Check of de actie überhaupt risky is */
     const risk = await isRiskyAction(actionKey, payload);
@@ -72,18 +74,47 @@ export default async function handler(req, res) {
       });
     }
 
-    /* Kassacode opnieuw verifiëren tegen DE personeelnr van de actieve shift —
-       geen "andere collega keurt het goed" toestaan zonder expliciete switch. */
-    const verified = await findPersonnelForLogin({
-      personnelId: shift.personnelId,
-      posLoginCode: kassacode
-    });
-    if (!verified || String(verified.personnelId) !== String(shift.personnelId)) {
-      return res.status(401).json({
-        success: false,
-        code: 'bad-kassacode',
-        message: 'Kassacode klopt niet bij de actieve medewerker.'
+    /* Kassacode/wachtwoord opnieuw verifiëren tegen DE actieve shift-medewerker —
+       geen "andere collega keurt het goed" toestaan zonder expliciete switch.
+       Office-shift = personnelGroupId 'office' → wachtwoord. SRS-shift → kassacode. */
+    const isOfficeShift = shift.personnelGroupId === 'office' || String(shift.personnelId).startsWith('office-');
+    if (isOfficeShift) {
+      if (!password) {
+        return res.status(400).json({
+          success: false,
+          code: 'password-required',
+          message: 'Bevestig deze handeling met je wachtwoord.'
+        });
+      }
+      /* Look up email vanuit office-user store via personnelId (= userId). */
+      const allUsers = await getAllOfficeUsers().catch(() => []);
+      const officeUser = (allUsers || []).find((u) => String(u.userId) === String(shift.personnelId));
+      if (!officeUser || !officeUser.email) {
+        return res.status(401).json({ success: false, code: 'office-user-missing', message: 'Office-user niet gevonden.' });
+      }
+      const ok = await authenticateOfficeUser(officeUser.email, password);
+      if (!ok) {
+        return res.status(401).json({ success: false, code: 'bad-password', message: 'Wachtwoord klopt niet.' });
+      }
+    } else {
+      if (!kassacode) {
+        return res.status(400).json({
+          success: false,
+          code: 'kassacode-required',
+          message: 'Bevestig deze handeling met je kassacode.'
+        });
+      }
+      const verified = await findPersonnelForLogin({
+        personnelId: shift.personnelId,
+        posLoginCode: kassacode
       });
+      if (!verified || String(verified.personnelId) !== String(shift.personnelId)) {
+        return res.status(401).json({
+          success: false,
+          code: 'bad-kassacode',
+          message: 'Kassacode klopt niet bij de actieve medewerker.'
+        });
+      }
     }
 
     /* Geef confirm-token uit */
