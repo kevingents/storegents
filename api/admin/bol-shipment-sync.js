@@ -8,7 +8,7 @@
  */
 
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { pushBolShipments, readBolShipmentsState } from '../../lib/bol-shipment-push.js';
+import { pushBolShipments, readBolShipmentsState, markBolOrderShippedManual } from '../../lib/bol-shipment-push.js';
 
 export const maxDuration = 180;
 
@@ -32,6 +32,23 @@ export default async function handler(req, res) {
       runCount: state.runCount || 0,
       shipped: state.shipped || {}
     });
+  }
+
+  /* Handmatige enkel-order mark (body { bolOrderId, trackAndTrace, transporterCode? }) */
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (req.method === 'POST' && body.bolOrderId && body.trackAndTrace) {
+    try {
+      const r = await markBolOrderShippedManual(body.bolOrderId, {
+        trackAndTrace: body.trackAndTrace,
+        transporterCode: body.transporterCode || 'DHLFORYOU',
+        shipmentReference: body.shipmentReference || '',
+        shippingMethod: body.shippingMethod || ''
+      });
+      return res.status(200).json(r);
+    } catch (e) {
+      console.error('[admin/bol-shipment-sync manual-mark]', e);
+      return res.status(500).json({ success: false, message: e.message || 'Manual mark mislukt.' });
+    }
   }
 
   try {

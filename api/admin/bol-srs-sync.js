@@ -33,6 +33,10 @@ export default async function handler(req, res) {
       runCount: state.runCount || 0,
       counter,
       pushed: state.pushed || {},
+      /* URL-template voor "Open in SRS" deeplink. Via env zodat admin kan
+         configureren zonder code-wijziging. {orderid} wordt vervangen door
+         BOL-NNNN. Voorbeeld: https://srs.gents.nl/orders/{orderid} */
+      srsOrderUrlTemplate: process.env.SRS_ORDER_URL_TEMPLATE || '',
       recent: Object.entries(state.pushed || {})
         .map(([bolOrderId, info]) => ({ bolOrderId, ...info }))
         .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
@@ -40,8 +44,12 @@ export default async function handler(req, res) {
     });
   }
 
+  /* POST body kan een specifieke bolOrderId bevatten voor 1-order force-push */
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const onlyBolOrderId = body.bolOrderId || req.query?.bolOrderId || '';
+
   try {
-    const result = await pushBolOrdersToSrs({ dryRun, maxPerRun, force });
+    const result = await pushBolOrdersToSrs({ dryRun, maxPerRun, force, onlyBolOrderId });
     return res.status(200).json(result);
   } catch (e) {
     console.error('[admin/bol-srs-sync]', e);
