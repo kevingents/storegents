@@ -257,7 +257,7 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/cron/bol-shopify-sync",
+      "path": "/api/cron/bol-srs-sync",
       "schedule": "20 * * * *"
     }
   ]
