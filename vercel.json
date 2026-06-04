@@ -257,6 +257,10 @@
       "schedule": "15 * * * *"
     },
     {
+      "path": "/api/cron/pak-mail",
+      "schedule": "45 7 * * *"
+    },
+    {
       "path": "/api/cron/bol-orders",
       "schedule": "0 * * * *"
     },
