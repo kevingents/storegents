@@ -253,6 +253,10 @@
       "schedule": "30 6 * * *"
     },
     {
+      "path": "/api/cron/welkom-mail",
+      "schedule": "15 * * * *"
+    },
+    {
       "path": "/api/cron/bol-orders",
       "schedule": "0 * * * *"
     },
