@@ -14,6 +14,7 @@
 import { buildBolStockPlan, readBolStockPlan, isStockPlanFresh, runBolStockSync, refreshBolOfferMap } from '../../lib/bol-stock-sync.js';
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
+import { readBolStockFailures } from '../../lib/bol-stock-failures-store.js';
 
 export const maxDuration = 300;
 
@@ -26,8 +27,17 @@ export default async function handler(req, res) {
       const refresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
       let plan = refresh ? null : await readBolStockPlan();
       if (!plan || !isStockPlanFresh(plan)) plan = await buildBolStockPlan();
+      const failures = await readBolStockFailures();
       res.setHeader('Cache-Control', 'no-store, max-age=0');
-      return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), ...plan });
+      return res.status(200).json({
+        success: true,
+        bolGekoppeld: isBolConfigured(),
+        failedCount: Object.keys(failures.failed || {}).length,
+        failed: failures.failed || {},
+        lastAbortReason: failures.lastAbortReason || null,
+        lastAbortAt: failures.lastAbortAt || null,
+        ...plan
+      });
     }
 
     if (req.method === 'POST') {

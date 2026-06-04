@@ -241,12 +241,12 @@
       "schedule": "25 4 * * *"
     },
     {
-      "path": "/api/cron/bol-stock?map=1",
+      "path": "/api/cron/bol-stock?map=1&_=mapRefresh",
       "schedule": "40 5 * * *"
     },
     {
       "path": "/api/cron/bol-stock",
-      "schedule": "0 12,18 * * *"
+      "schedule": "30 * * * *"
     },
     {
       "path": "/api/cron/bol-insights",
