@@ -104,14 +104,18 @@ export default async function handler(req, res) {
       const storeCfg = cfg.stores?.[store] || {};
       /* Echte welkom-template gebruiken (Spotler-stijl) zodat de test exact
          lijkt op wat een klant krijgt. Fake customer met test-voornaam. */
-      const { buildWelkomMailHtml, buildSenderFromHeader, tryGoogleOpeningHours, getCustomerPersonalization } =
+      const { buildWelkomMailHtml, buildSenderFromHeader, tryGoogleOpeningHours, tryGoogleReviews, getCustomerPersonalization } =
         await import('../../lib/welkom-mail-automation.js');
       const fromHeader = buildSenderFromHeader(store, storeCfg);
-      /* Google-fetch indien mogelijk, anders fallback op handmatige. */
+      /* Parallel: openingstijden + reviews ophalen voor preview. */
       let mailOpts = {};
       try {
-        const gh = await tryGoogleOpeningHours(store, storeCfg);
-        if (gh) mailOpts = { googleHoursHtml: gh.html, googleMapsUrl: gh.googleMapsUrl };
+        const [gh, gr] = await Promise.all([
+          tryGoogleOpeningHours(store, storeCfg).catch(() => null),
+          tryGoogleReviews(store, storeCfg).catch(() => null)
+        ]);
+        if (gh) { mailOpts.googleHoursHtml = gh.html; mailOpts.googleMapsUrl = gh.googleMapsUrl; }
+        if (gr) mailOpts.googleReviews = gr;
       } catch {}
       const fakeCustomer = {
         firstName: clean(body.testFirstName) || 'Kevin',
@@ -143,6 +147,31 @@ export default async function handler(req, res) {
       if (!email) return res.status(400).json({ success: false, message: 'email verplicht.' });
       await markWelkomMailSent(email, { store: clean(body.store), branchId: clean(body.branchId) });
       return res.status(200).json({ success: true, markedSent: email });
+    }
+
+    if (action === 'test-google-reviews') {
+      const store = clean(body.store) || 'GENTS Amsterdam';
+      const cfg = await getWelkomMailConfig();
+      const storeCfg = cfg.stores?.[store] || {};
+      try {
+        const { getGoogleReviewsForLocation } = await import('../../lib/google-shopify-opening-hours.js');
+        const data = await getGoogleReviewsForLocation({
+          placeId: clean(storeCfg.googlePlaceId),
+          branchId: clean(storeCfg.branchId),
+          store
+        }, { language: 'nl', timeoutMs: 12000, minRating: 4, max: 3 });
+        return res.status(200).json({
+          success: true,
+          placeId: data.placeId,
+          name: data.name,
+          rating: data.rating,
+          userRatingCount: data.userRatingCount,
+          writeReviewUrl: data.writeReviewUrl,
+          reviews: data.reviews
+        });
+      } catch (e) {
+        return res.status(400).json({ success: false, message: e.message || 'Google reviews fetch mislukt.' });
+      }
     }
 
     if (action === 'test-google-hours') {
