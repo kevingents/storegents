@@ -10,6 +10,7 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { pushBolOrdersToSrs, readBolSrsPushedState } from '../../lib/bol-srs-push.js';
 import { readBolOrderCounter } from '../../lib/bol-order-counter.js';
+import { readBolSrsFailures } from '../../lib/bol-srs-failures-store.js';
 
 export const maxDuration = 180;
 
@@ -25,14 +26,20 @@ export default async function handler(req, res) {
   const maxPerRun = Number(req.query?.max || 50);
 
   if (req.method === 'GET' && !dryRun) {
-    const [state, counter] = await Promise.all([readBolSrsPushedState(), readBolOrderCounter()]);
+    const [state, counter, failures] = await Promise.all([
+      readBolSrsPushedState(),
+      readBolOrderCounter(),
+      readBolSrsFailures()
+    ]);
     return res.status(200).json({
       success: true,
       pushedCount: Object.keys(state.pushed || {}).length,
+      failedCount: Object.keys(failures.failed || {}).length,
       updatedAt: state.updatedAt,
       runCount: state.runCount || 0,
       counter,
       pushed: state.pushed || {},
+      failed: failures.failed || {},
       /* URL-template voor "Open in SRS" deeplink. Via env zodat admin kan
          configureren zonder code-wijziging. {orderid} wordt vervangen door
          BOL-NNNN. Voorbeeld: https://srs.gents.nl/orders/{orderid} */
