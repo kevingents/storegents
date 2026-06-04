@@ -86,25 +86,33 @@ export default async function handler(req, res) {
       if (!to) return res.status(400).json({ success: false, message: 'to verplicht.' });
       const cfg = await getWelkomMailConfig();
       const storeCfg = cfg.stores?.[store] || {};
-      const domain = (process.env.GENTS_MAIL_DOMAIN || 'mail.gents.nl');
-      const lp = clean(storeCfg.fromLocalPart || 'hallo');
+      const domain = (process.env.GENTS_MAIL_DOMAIN || 'gents.mail.nl');
+      const lp = clean(storeCfg.fromLocalPart || 'hallo').toLowerCase().replace(/[^a-z0-9._-]/g, '');
       const fromAddr = `${lp}@${domain}`;
+      const fromHeader = `${store} <${fromAddr}>`;
+      /* Voor test: stuur de echte welkom-template (zoals klant zou krijgen)
+         met een [TEST] prefix. Geeft meteen visuele preview van de mail. */
+      const { runWelkomMailAutomation } = await import('../../lib/welkom-mail-automation.js');
+      void runWelkomMailAutomation; /* alleen import-ref voor coherentie */
       const html = baseMailHtml({
         title: 'Welkom bij GENTS (test)',
-        intro: 'Test-mail',
-        bodyHtml: `<p style="font:400 14px/1.55 Inter,system-ui,sans-serif">Dit is een testmail van het welkom-mail-systeem voor <strong>${store}</strong>.</p>
-          <p style="font:400 14px/1.55 Inter,system-ui,sans-serif;color:#475569">Onderwerp dat gebruikt zou worden: <em>${clean(storeCfg.subject) || `Welkom bij ${store}`}</em></p>
-          ${storeCfg.voucherCode ? `<p style="font:400 14px/1.55 Inter,system-ui,sans-serif">Voucher die gebruikt zou worden: <code>${storeCfg.voucherCode}</code></p>` : ''}`,
-        footer: 'Test verstuurd vanuit /api/admin/welkom-mail?action=test-mail'
+        intro: 'Test-mail — preview van de welkom-mail',
+        bodyHtml: `<p style="font:400 14px/1.55 Inter,system-ui,sans-serif">Test van welkom-mail voor <strong>${store}</strong> · onderwerp <em>${clean(storeCfg.subject) || `Welkom bij ${store}`}</em></p>
+          <p style="font:400 13px/1.5 Inter,system-ui,sans-serif;color:#475569">Inhoud-blokken zoals geconfigureerd in admin:</p>
+          ${clean(storeCfg.openingHours) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Openingstijden</strong><br>${clean(storeCfg.openingHours)}</div>` : ''}
+          ${clean(storeCfg.alterationsInfo) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Vermaakkosten</strong><br>${clean(storeCfg.alterationsInfo)}</div>` : ''}
+          ${clean(storeCfg.loyaltyInfo) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Punten sparen voor vouchers</strong><br>${clean(storeCfg.loyaltyInfo)}</div>` : ''}
+          ${storeCfg.voucherCode ? `<p>Voucher: <code>${storeCfg.voucherCode}</code></p>` : ''}`,
+        footer: `Verstuurd vanuit ${fromHeader} via /api/admin/welkom-mail?action=test-mail`
       });
       try {
         const r = await sendMail({
           to,
           subject: `[TEST] ${clean(storeCfg.subject) || `Welkom bij ${store}`}`,
           html,
-          from: `GENTS ${store.replace('GENTS ', '')} <${fromAddr}>`
+          from: fromHeader
         });
-        return res.status(200).json({ success: true, sentTo: to, messageId: r?.id || r?.messageId || '', from: fromAddr });
+        return res.status(200).json({ success: true, sentTo: to, messageId: r?.id || r?.messageId || '', from: fromHeader });
       } catch (e) {
         return res.status(500).json({ success: false, message: e.message || 'Test-mail mislukt.' });
       }
