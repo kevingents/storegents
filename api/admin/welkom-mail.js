@@ -16,7 +16,9 @@ import {
   saveWelkomMailConfig,
   saveStoreConfig,
   readWelkomMailStats,
-  markWelkomMailSent
+  markWelkomMailSent,
+  getStoreDefaults,
+  STORE_DEFAULTS
 } from '../../lib/welkom-mail-store.js';
 import { sendMail, baseMailHtml } from '../../lib/gents-mailer.js';
 
@@ -139,6 +141,113 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, sentTo: to, messageId: r?.id || r?.messageId || '', from: fromHeader });
       } catch (e) {
         return res.status(500).json({ success: false, message: e.message || 'Test-mail mislukt.' });
+      }
+    }
+
+    if (action === 'preview') {
+      /* Render de welkom-mail HTML zonder echte send. Voor iframe-overlay
+         in admin-modal. Gebruikt fake customer + optionele klant-ID voor
+         live personalisatie (punten + suggested products). */
+      const store = clean(body.store) || 'GENTS Amsterdam';
+      const cfg = await getWelkomMailConfig();
+      const storeCfg = cfg.stores?.[store] || {};
+      const { buildWelkomMailHtml, tryGoogleOpeningHours, tryGoogleReviews, getCustomerPersonalization } =
+        await import('../../lib/welkom-mail-automation.js');
+      let mailOpts = {};
+      try {
+        const [gh, gr] = await Promise.all([
+          tryGoogleOpeningHours(store, storeCfg).catch(() => null),
+          tryGoogleReviews(store, storeCfg).catch(() => null)
+        ]);
+        if (gh) { mailOpts.googleHoursHtml = gh.html; mailOpts.googleMapsUrl = gh.googleMapsUrl; }
+        if (gr) mailOpts.googleReviews = gr;
+      } catch {}
+      const fakeCustomer = {
+        firstName: clean(body.testFirstName) || 'Voornaam',
+        customerId: clean(body.testCustomerId)
+      };
+      if (fakeCustomer.customerId) {
+        try { mailOpts.personalization = await getCustomerPersonalization(fakeCustomer); } catch {}
+      }
+      const html = buildWelkomMailHtml(fakeCustomer, store, storeCfg, mailOpts);
+      return res.status(200).json({ success: true, html, store, hasPersonalization: !!mailOpts.personalization });
+    }
+
+    if (action === 'get-defaults') {
+      /* Geeft alle default-waarden voor 1 winkel terug, zodat de UI per
+         veld een "Reset naar default" knop kan tonen. */
+      const store = clean(body.store) || clean(req.query?.store) || 'GENTS Amsterdam';
+      const defaults = getStoreDefaults(store);
+      return res.status(200).json({ success: true, store, defaults, globalDefaults: STORE_DEFAULTS });
+    }
+
+    if (action === 'copy-config') {
+      /* Kopieer config van fromStore → toStore voor de gedeelde velden
+         (templates, CTA, openingstijden-fallback, vermaakkosten, loyalty).
+         Winkel-specifieke velden (branchId, sender*, googlePlaceId, signature*)
+         worden NIET gekopieerd zodat per-winkel data intact blijft. */
+      const fromStore = clean(body.fromStore);
+      const toStore = clean(body.toStore);
+      if (!fromStore || !toStore || fromStore === toStore) {
+        return res.status(400).json({ success: false, message: 'fromStore + toStore verplicht en verschillend.' });
+      }
+      const cfg = await getWelkomMailConfig();
+      const src = cfg.stores?.[fromStore];
+      if (!src) return res.status(404).json({ success: false, message: `Bron-winkel ${fromStore} niet gevonden.` });
+      const SHARED_FIELDS = [
+        'subject', 'logoUrl', 'heroImageUrl', 'heroImageLink',
+        'ctaLabel', 'ctaUrl',
+        'openingHours', 'alterationsInfo', 'loyaltyInfo'
+      ];
+      const patch = {};
+      for (const field of SHARED_FIELDS) {
+        if (src[field] != null) patch[field] = src[field];
+      }
+      const updated = await saveStoreConfig(toStore, patch);
+      return res.status(200).json({ success: true, copied: SHARED_FIELDS, fromStore, toStore, config: updated });
+    }
+
+    if (action === 'domain-status') {
+      /* Check Resend domain-verification status voor het sender-domein.
+         Voorkomt surprises bij eerste run (mail bouncet als domein niet
+         geverifieerd is). */
+      const store = clean(body.store) || 'GENTS Amsterdam';
+      const cfg = await getWelkomMailConfig();
+      const storeCfg = cfg.stores?.[store] || {};
+      const senderEmail = clean(storeCfg.senderEmail);
+      if (!senderEmail) return res.status(200).json({ success: true, store, status: 'unknown', message: 'Geen senderEmail geconfigureerd.' });
+      const domain = senderEmail.split('@')[1] || '';
+      if (!domain) return res.status(200).json({ success: true, store, status: 'invalid', message: 'Ongeldig sender-email.' });
+
+      if (!process.env.RESEND_API_KEY) {
+        return res.status(200).json({ success: true, store, domain, status: 'unknown', message: 'RESEND_API_KEY niet ingesteld.' });
+      }
+      try {
+        const { Resend } = await import('resend');
+        const resend = new Resend(process.env.RESEND_API_KEY);
+        const list = await resend.domains.list();
+        const items = Array.isArray(list?.data?.data) ? list.data.data
+          : Array.isArray(list?.data) ? list.data : [];
+        const found = items.find((d) => clean(d.name).toLowerCase() === domain.toLowerCase());
+        if (!found) {
+          return res.status(200).json({
+            success: true, store, domain, status: 'not-added',
+            message: `Domein ${domain} niet toegevoegd in Resend — voeg het toe en verifieer DNS.`
+          });
+        }
+        const rs = clean(found.status).toLowerCase();
+        const verified = rs === 'verified';
+        return res.status(200).json({
+          success: true, store, domain,
+          status: verified ? 'verified' : rs || 'pending',
+          message: verified
+            ? 'Domein geverifieerd — sender werkt.'
+            : `Resend status: ${rs || 'pending'}. Check DNS (SPF + DKIM + MX) en klik Verify.`,
+          resendDomainId: found.id || null,
+          region: found.region || ''
+        });
+      } catch (e) {
+        return res.status(200).json({ success: true, store, domain, status: 'error', message: e?.message?.slice(0, 200) || 'Resend domains.list() faalde.' });
       }
     }
 
