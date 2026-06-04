@@ -72,6 +72,10 @@ export default async function handler(req, res) {
       if (body.subject != null) patch.subject = clean(body.subject).slice(0, 200);
       if (body.fromLocalPart != null) patch.fromLocalPart = clean(body.fromLocalPart).toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 60);
       if (body.voucherCode != null) patch.voucherCode = clean(body.voucherCode).toUpperCase().slice(0, 30);
+      if (body.addressLine != null) patch.addressLine = clean(body.addressLine).slice(0, 300);
+      if (body.openingHours != null) patch.openingHours = clean(body.openingHours).slice(0, 300);
+      if (body.alterationsInfo != null) patch.alterationsInfo = clean(body.alterationsInfo).slice(0, 800);
+      if (body.loyaltyInfo != null) patch.loyaltyInfo = clean(body.loyaltyInfo).slice(0, 800);
       const cfg = await saveStoreConfig(store, patch);
       return res.status(200).json({ success: true, config: cfg });
     }
