@@ -52,7 +52,14 @@ export default async function handler(req, res) {
     }
 
     if (action === 'run-now') {
-      const out = await runWelkomMailAutomation({ dryRun: false, onlyStore: clean(body.onlyStore) });
+      /* Optionele batch-rate per call: client kan progress-bar bouwen door
+         in batches van bv. 10 te roepen (idempotent via sent-blob). */
+      const batchCap = Number(body.maxPerRun) > 0 ? Math.min(500, Math.floor(Number(body.maxPerRun))) : undefined;
+      const out = await runWelkomMailAutomation({
+        dryRun: false,
+        onlyStore: clean(body.onlyStore),
+        maxPerRun: batchCap
+      });
       return res.status(200).json({ success: true, ...out });
     }
 
