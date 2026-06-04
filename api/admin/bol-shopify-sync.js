@@ -26,13 +26,25 @@ export default async function handler(req, res) {
   /* GET zonder dryRun → alleen state retourneren */
   if (req.method === 'GET' && !dryRun) {
     const state = await readBolShopifyPushedState();
+    const shopDomain = (process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    /* Volledige pushed-map voor UI: per orderId het Shopify-order-info zodat de
+       UI per Bol-order een 'Gepusht' badge + link kan tonen. */
+    const pushed = state.pushed || {};
+    const pushedEnriched = {};
+    for (const [orderId, info] of Object.entries(pushed)) {
+      pushedEnriched[orderId] = {
+        ...info,
+        adminUrl: (info?.shopifyOrderId && shopDomain) ? `https://${shopDomain}/admin/orders/${info.shopifyOrderId}` : ''
+      };
+    }
     return res.status(200).json({
       success: true,
-      pushedCount: Object.keys(state.pushed || {}).length,
+      pushedCount: Object.keys(pushed).length,
       updatedAt: state.updatedAt,
       runCount: state.runCount || 0,
-      recent: Object.entries(state.pushed || {})
-        .map(([orderId, info]) => ({ orderId, ...info }))
+      pushed: pushedEnriched, /* full map voor UI per-order rendering */
+      recent: Object.values(pushedEnriched)
+        .map((info, idx) => ({ orderId: Object.keys(pushed)[idx], ...info }))
         .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
         .slice(0, 20)
     });
