@@ -70,6 +70,10 @@ export default async function handler(req, res) {
       if (body.enabled != null) patch.enabled = !!body.enabled;
       if (body.branchId != null) patch.branchId = clean(body.branchId);
       if (body.subject != null) patch.subject = clean(body.subject).slice(0, 200);
+      /* Nieuwe persoonlijke-afzender velden (vervangen fromLocalPart). */
+      if (body.senderName != null) patch.senderName = clean(body.senderName).slice(0, 120);
+      if (body.senderEmail != null) patch.senderEmail = clean(body.senderEmail).toLowerCase().slice(0, 120);
+      /* Backwards-compat: fromLocalPart blijft accepteren (oude UI). */
       if (body.fromLocalPart != null) patch.fromLocalPart = clean(body.fromLocalPart).toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 60);
       if (body.voucherCode != null) patch.voucherCode = clean(body.voucherCode).toUpperCase().slice(0, 30);
       if (body.addressLine != null) patch.addressLine = clean(body.addressLine).slice(0, 300);
@@ -77,6 +81,17 @@ export default async function handler(req, res) {
       if (body.alterationsInfo != null) patch.alterationsInfo = clean(body.alterationsInfo).slice(0, 800);
       if (body.loyaltyInfo != null) patch.loyaltyInfo = clean(body.loyaltyInfo).slice(0, 800);
       if (body.googlePlaceId != null) patch.googlePlaceId = clean(body.googlePlaceId).slice(0, 200);
+      /* Visual velden (header logo, hero, CTA). */
+      if (body.logoUrl != null) patch.logoUrl = clean(body.logoUrl).slice(0, 400);
+      if (body.heroImageUrl != null) patch.heroImageUrl = clean(body.heroImageUrl).slice(0, 400);
+      if (body.heroImageLink != null) patch.heroImageLink = clean(body.heroImageLink).slice(0, 400);
+      if (body.ctaLabel != null) patch.ctaLabel = clean(body.ctaLabel).slice(0, 60);
+      if (body.ctaUrl != null) patch.ctaUrl = clean(body.ctaUrl).slice(0, 400);
+      /* Signature velden voor footer. */
+      if (body.signatureName != null) patch.signatureName = clean(body.signatureName).slice(0, 120);
+      if (body.signatureRole != null) patch.signatureRole = clean(body.signatureRole).slice(0, 120);
+      if (body.signaturePhone != null) patch.signaturePhone = clean(body.signaturePhone).slice(0, 60);
+      if (body.signatureMobile != null) patch.signatureMobile = clean(body.signatureMobile).slice(0, 60);
       const cfg = await saveStoreConfig(store, patch);
       return res.status(200).json({ success: true, config: cfg });
     }
@@ -87,25 +102,19 @@ export default async function handler(req, res) {
       if (!to) return res.status(400).json({ success: false, message: 'to verplicht.' });
       const cfg = await getWelkomMailConfig();
       const storeCfg = cfg.stores?.[store] || {};
-      const domain = (process.env.GENTS_MAIL_DOMAIN || 'gents.mail.nl');
-      const lp = clean(storeCfg.fromLocalPart || 'hallo').toLowerCase().replace(/[^a-z0-9._-]/g, '');
-      const fromAddr = `${lp}@${domain}`;
-      const fromHeader = `${store} <${fromAddr}>`;
-      /* Voor test: stuur de echte welkom-template (zoals klant zou krijgen)
-         met een [TEST] prefix. Geeft meteen visuele preview van de mail. */
-      const { runWelkomMailAutomation } = await import('../../lib/welkom-mail-automation.js');
-      void runWelkomMailAutomation; /* alleen import-ref voor coherentie */
-      const html = baseMailHtml({
-        title: 'Welkom bij GENTS (test)',
-        intro: 'Test-mail — preview van de welkom-mail',
-        bodyHtml: `<p style="font:400 14px/1.55 Inter,system-ui,sans-serif">Test van welkom-mail voor <strong>${store}</strong> · onderwerp <em>${clean(storeCfg.subject) || `Welkom bij ${store}`}</em></p>
-          <p style="font:400 13px/1.5 Inter,system-ui,sans-serif;color:#475569">Inhoud-blokken zoals geconfigureerd in admin:</p>
-          ${clean(storeCfg.openingHours) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Openingstijden</strong><br>${clean(storeCfg.openingHours)}</div>` : ''}
-          ${clean(storeCfg.alterationsInfo) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Vermaakkosten</strong><br>${clean(storeCfg.alterationsInfo)}</div>` : ''}
-          ${clean(storeCfg.loyaltyInfo) ? `<div style="margin:10px 0;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><strong>Punten sparen voor vouchers</strong><br>${clean(storeCfg.loyaltyInfo)}</div>` : ''}
-          ${storeCfg.voucherCode ? `<p>Voucher: <code>${storeCfg.voucherCode}</code></p>` : ''}`,
-        footer: `Verstuurd vanuit ${fromHeader} via /api/admin/welkom-mail?action=test-mail`
-      });
+      /* Echte welkom-template gebruiken (Spotler-stijl) zodat de test exact
+         lijkt op wat een klant krijgt. Fake customer met test-voornaam. */
+      const { buildWelkomMailHtml, buildSenderFromHeader, tryGoogleOpeningHours } =
+        await import('../../lib/welkom-mail-automation.js');
+      const fromHeader = buildSenderFromHeader(store, storeCfg);
+      /* Google-fetch indien mogelijk, anders fallback op handmatige. */
+      let mailOpts = {};
+      try {
+        const gh = await tryGoogleOpeningHours(store, storeCfg);
+        if (gh) mailOpts = { googleHoursHtml: gh.html, googleMapsUrl: gh.googleMapsUrl };
+      } catch {}
+      const fakeCustomer = { firstName: clean(body.testFirstName) || 'Kevin' };
+      const html = buildWelkomMailHtml(fakeCustomer, store, storeCfg, mailOpts);
       try {
         const r = await sendMail({
           to,
