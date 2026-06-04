@@ -76,6 +76,7 @@ export default async function handler(req, res) {
       if (body.openingHours != null) patch.openingHours = clean(body.openingHours).slice(0, 300);
       if (body.alterationsInfo != null) patch.alterationsInfo = clean(body.alterationsInfo).slice(0, 800);
       if (body.loyaltyInfo != null) patch.loyaltyInfo = clean(body.loyaltyInfo).slice(0, 800);
+      if (body.googlePlaceId != null) patch.googlePlaceId = clean(body.googlePlaceId).slice(0, 200);
       const cfg = await saveStoreConfig(store, patch);
       return res.status(200).json({ success: true, config: cfg });
     }
@@ -123,6 +124,31 @@ export default async function handler(req, res) {
       if (!email) return res.status(400).json({ success: false, message: 'email verplicht.' });
       await markWelkomMailSent(email, { store: clean(body.store), branchId: clean(body.branchId) });
       return res.status(200).json({ success: true, markedSent: email });
+    }
+
+    if (action === 'test-google-hours') {
+      const store = clean(body.store) || 'GENTS Amsterdam';
+      const cfg = await getWelkomMailConfig();
+      const storeCfg = cfg.stores?.[store] || {};
+      try {
+        const { getGoogleOpeningHoursForLocation } = await import('../../lib/google-shopify-opening-hours.js');
+        const data = await getGoogleOpeningHoursForLocation({
+          placeId: clean(storeCfg.googlePlaceId),
+          branchId: clean(storeCfg.branchId),
+          store
+        }, { language: 'nl', timeoutMs: 12000 });
+        return res.status(200).json({
+          success: true,
+          placeId: data.placeId,
+          name: data.name,
+          address: data.address,
+          googleMapsUrl: data.googleMapsUrl,
+          hoursJson: data.hoursJson,
+          todayText: data.todayText
+        });
+      } catch (e) {
+        return res.status(400).json({ success: false, message: e.message || 'Google fetch mislukt.' });
+      }
     }
 
     return res.status(400).json({ success: false, message: 'Onbekende action.' });
