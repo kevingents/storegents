@@ -25,6 +25,91 @@ const skuKey = (v) => clean(v).toLowerCase();
 
 export const maxDuration = 30;
 
+/**
+ * Live Shopify-call voor 1 specifieke SKU. Returnt ALLE varianten met deze SKU
+ * (kan meerdere zijn = duplicaten) en per variant de inventory-breakdown per
+ * locatie. Zo zien we direct waar de Shopify-voorraad zit en of het klopt.
+ */
+async function fetchShopifyVariantsBySku(sku) {
+  const shop = (process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_SHOP_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const token = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_ADMIN_API_TOKEN || '';
+  const version = process.env.SHOPIFY_API_VERSION || '2025-01';
+  if (!shop || !token) return { configured: false, variants: [], totalInventory: 0 };
+
+  const query = `
+    query VariantBySku($q: String!) {
+      productVariants(first: 50, query: $q) {
+        nodes {
+          id
+          sku
+          title
+          inventoryQuantity
+          inventoryItem {
+            inventoryLevels(first: 50) {
+              nodes {
+                location { id name }
+                quantities(names: ["available"]) { name quantity }
+              }
+            }
+          }
+          product { id title status handle }
+        }
+      }
+    }`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const resp = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+      method: 'POST',
+      headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query, variables: { q: `sku:${sku}` } }),
+      signal: ctrl.signal
+    });
+    if (!resp.ok) {
+      return { configured: true, error: `Shopify ${resp.status}: ${(await resp.text().catch(() => '')).slice(0, 200)}` };
+    }
+    const json = await resp.json();
+    if (json.errors) {
+      return { configured: true, error: `Shopify GraphQL errors: ${JSON.stringify(json.errors).slice(0, 300)}` };
+    }
+    const variants = (json.data?.productVariants?.nodes || []).map((v) => {
+      const idNum = clean(v.id).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+      const productIdNum = clean(v.product?.id).replace(/^gid:\/\/shopify\/Product\//, '');
+      const levels = (v.inventoryItem?.inventoryLevels?.nodes || []).map((lvl) => {
+        const avail = (lvl.quantities || []).find((q) => q.name === 'available');
+        return {
+          locationName: clean(lvl.location?.name),
+          available: Number(avail?.quantity || 0)
+        };
+      }).filter((l) => l.available !== 0); /* skip 0-locaties voor leesbaarheid */
+      return {
+        variantId: idNum,
+        productId: productIdNum,
+        productTitle: clean(v.product?.title),
+        productHandle: clean(v.product?.handle),
+        productStatus: clean(v.product?.status),
+        sku: clean(v.sku),
+        variantTitle: clean(v.title),
+        inventoryQuantity: Number(v.inventoryQuantity || 0),
+        adminUrl: productIdNum ? `https://${shop}/admin/products/${productIdNum}/variants/${idNum}` : '',
+        perLocation: levels
+      };
+    });
+    const totalInventory = variants.reduce((s, v) => s + v.inventoryQuantity, 0);
+    return {
+      configured: true,
+      variants,
+      variantCount: variants.length,
+      totalInventory,
+      duplicate: variants.length > 1
+    };
+  } catch (error) {
+    return { configured: true, error: error?.name === 'AbortError' ? 'Shopify timeout (20s)' : error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
   setCorsHeaders(res, ['GET', 'OPTIONS']);
@@ -37,9 +122,10 @@ export default async function handler(req, res) {
   if (!sku) return res.status(400).json({ success: false, message: 'sku query-parameter verplicht.' });
 
   try {
-    const [voorraadRows, locatieRows] = await Promise.all([
+    const [voorraadRows, locatieRows, shopify] = await Promise.all([
       readVoorraadRows(),
-      readLocatiesRows()
+      readLocatiesRows(),
+      fetchShopifyVariantsBySku(sku)
     ]);
 
     const k = skuKey(sku);
@@ -93,6 +179,22 @@ export default async function handler(req, res) {
       }
     }
 
+    /* Cross-check SRS-magazijn vs Shopify-totaal — beschrijf het verschil
+       expliciet zodat de admin direct ziet waar het mismatcht. */
+    const shopifyTotal = Number(shopify?.totalInventory || 0);
+    const srsShopifyDiff = shopifyTotal - magazijn;
+    const srsShopifyDiagnose = !shopify?.configured
+      ? 'Shopify niet geconfigureerd in env — kan vergelijking niet doen.'
+      : shopify?.error
+        ? `Shopify-call mislukte: ${shopify.error}`
+        : shopify?.duplicate
+          ? `${shopify.variantCount} Shopify-varianten met dezelfde SKU — voorraad wordt opgeteld, dat verklaart vaak een verschil.`
+          : srsShopifyDiff === 0
+            ? 'SRS-magazijn = Shopify-totaal. Klopt.'
+            : srsShopifyDiff > 0
+              ? `Shopify (${shopifyTotal}) > SRS-magazijn (${magazijn}) — Shopify mogelijk uit-sync (verkoop niet ge-decreased) of voorraad op een verkeerde Shopify-locatie geboekt.`
+              : `Shopify (${shopifyTotal}) < SRS-magazijn (${magazijn}) — voorraad in magazijn maar Shopify denkt dat hij op is (sync nog niet gedraaid?).`;
+
     return res.status(200).json({
       success: true,
       sku,
@@ -114,6 +216,13 @@ export default async function handler(req, res) {
         locatieRowsForSku: matchingLocaties.length,
         totalVoorraadRows: (voorraadRows || []).length,
         totalLocatieRows: (locatieRows || []).length
+      },
+      shopify,
+      srsVsShopify: {
+        srsMagazijn: magazijn,
+        shopifyTotal,
+        verschil: srsShopifyDiff,
+        diagnose: srsShopifyDiagnose
       }
     });
   } catch (error) {
