@@ -14,16 +14,17 @@ import { buildShopifyStockSnapshots } from '../../lib/shopify-stock-snapshot-bui
  */
 export const maxDuration = 300;
 
+/* Versie-stempel: bevestigt dat de quantities(names:["available"])-fix live is.
+   Zie je dit veld NIET in de response, dan draait nog de oude build. */
+const CODE_VERSION = 'shopify-quantities-v2';
+
 async function handler(req, res) {
   try {
     const out = await buildShopifyStockSnapshots();
-    if (!out.ok) {
-      return res.status(200).json({ success: false, ...out, ts: new Date().toISOString() });
-    }
-    return res.status(200).json({ success: true, ...out, ts: new Date().toISOString() });
+    return res.status(200).json({ success: out.ok !== false, codeVersion: CODE_VERSION, ...out, ts: new Date().toISOString() });
   } catch (e) {
     console.error('[cron/shopify-stock-snapshot]', e);
-    return res.status(500).json({ success: false, message: e.message });
+    return res.status(500).json({ success: false, codeVersion: CODE_VERSION, message: e.message });
   }
 }
 
