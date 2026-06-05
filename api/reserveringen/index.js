@@ -23,32 +23,30 @@ import { getFulfillments, setFulfillmentBranch } from '../../lib/srs-weborders-m
 function clean(value) { return String(value || '').trim(); }
 
 async function verifyStockInStore(store, barcode, sku, quantity) {
-  /* Re-check voorraad bij submit zodat geen race wordt geriskeerd. */
+  /* Re-check voorraad bij submit (race-preventie bij laatste-stuk).
+     Voorraad-bron = Shopify LIVE (single source of truth), NIET de 20-min
+     snapshot — bij het reserveren van het laatste stuk moet de check vers zijn. */
   try {
     const mod = await import('../../lib/branch-metrics.js');
     const branches = typeof mod.listBranches === 'function' ? (mod.listBranches() || []) : [];
     const match = branches.find((b) => String(b.store || '').trim().toLowerCase() === store.trim().toLowerCase());
     if (!match) return { ok: false, reason: 'branch-onbekend' };
 
-    const stockMod = await import('../../lib/srs-stock-snapshot-store.js');
-    const fn = stockMod.readBranchSnapshot;
-    if (typeof fn !== 'function') return { ok: true, reason: 'stock-check-niet-beschikbaar', skipped: true };
-    const snap = await fn(String(match.branchId));
-    const rows = Array.isArray(snap?.rows) ? snap.rows : Array.isArray(snap?.items) ? snap.items : [];
-    const bc = String(barcode || '').trim().toLowerCase();
-    const sk = String(sku || '').trim().toLowerCase();
-    const hit = rows.find((r) => {
-      const rb = String(r.barcode || '').trim().toLowerCase();
-      const rs = String(r.sku || '').trim().toLowerCase();
-      return (bc && rb === bc) || (sk && rs === sk);
-    });
-    const stock = Number(hit?.quantity ?? hit?.pieces ?? hit?.voorraad ?? 0);
-    if (stock < quantity) {
-      return { ok: false, reason: 'onvoldoende-voorraad', stock, requested: quantity };
+    const { getStockByBarcode, getStockBySku } = await import('../../lib/shopify-stock-source.js');
+    let stock = 0;
+    if (clean(barcode)) {
+      stock = await getStockByBarcode(barcode, { branchId: match.branchId });
     }
-    return { ok: true, stock };
+    /* Fallback op SKU als barcode niets vond (Shopify-variant zonder EAN). */
+    if (stock <= 0 && clean(sku)) {
+      stock = await getStockBySku(sku, { branchId: match.branchId });
+    }
+    if (stock < quantity) {
+      return { ok: false, reason: 'onvoldoende-voorraad', stock, requested: quantity, bron: 'shopify' };
+    }
+    return { ok: true, stock, bron: 'shopify' };
   } catch (error) {
-    /* Bij snapshot-fout fail-open want we willen winkel niet blokkeren. Log
+    /* Bij Shopify-fout fail-open want we willen winkel niet blokkeren. Log
        wel de reden voor monitoring. */
     return { ok: true, reason: 'stock-check-error', error: error.message };
   }

@@ -93,12 +93,8 @@
       "schedule": "0 3 * * *"
     },
     {
-      "path": "/api/cron/srs-stock-delta-import",
-      "schedule": "*/5 6-22 * * *"
-    },
-    {
-      "path": "/api/cron/srs-stock-delta-import?mode=full",
-      "schedule": "30 2 * * *"
+      "path": "/api/cron/shopify-stock-snapshot",
+      "schedule": "*/20 6-22 * * *"
     },
     {
       "path": "/api/cron/monthly-omnichannel-winner",
