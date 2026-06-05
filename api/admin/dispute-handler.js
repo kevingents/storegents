@@ -11,7 +11,8 @@ import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import {
   fetchOpenDisputes,
   handleDispute,
-  handleAllOpenDisputes
+  handleAllOpenDisputes,
+  debugGetEvidence
 } from '../../lib/shopify-dispute-handler.js';
 import { getReturnRequests } from '../../lib/returnista-client.js';
 
@@ -119,6 +120,14 @@ export default async function handler(req, res) {
       ]);
       const result = await handleAllOpenDisputes(allReturnRequests, { dryRun, submit, maxDisputes: 50 });
       return res.status(200).json({ success: true, ...result });
+    }
+
+    /* Debug: haal raw dispute-evidence op via GET (geen mutaties). */
+    if (action === 'get-evidence') {
+      const disputeId = clean(body.disputeId || req.query?.disputeId);
+      if (!disputeId) return res.status(400).json({ success: false, message: 'disputeId verplicht.' });
+      const result = await debugGetEvidence(disputeId);
+      return res.status(200).json({ success: !!result.ok, ...result });
     }
 
     return res.status(400).json({ success: false, message: 'Onbekende action.' });
