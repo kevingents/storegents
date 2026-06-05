@@ -123,6 +123,17 @@ export default async function handler(req, res) {
     }
 
     /* Debug: haal raw dispute-evidence op via GET (geen mutaties). */
+    /* Toon welke scopes het huidige Shopify-token heeft. */
+    if (action === 'token-scopes') {
+      const { getShopifyCfg } = await import('../../lib/shopify-dispute-handler.js');
+      const cfg = getShopifyCfg();
+      const resp = await fetch(`https://${cfg.domain}/admin/oauth/access_scopes.json`, {
+        headers: { 'X-Shopify-Access-Token': cfg.token, Accept: 'application/json' }
+      });
+      const data = await resp.json().catch(() => ({}));
+      return res.status(200).json({ ok: resp.ok, status: resp.status, scopes: data?.access_scopes, domain: cfg.domain });
+    }
+
     if (action === 'get-evidence') {
       const disputeId = clean(body.disputeId || req.query?.disputeId);
       if (!disputeId) return res.status(400).json({ success: false, message: 'disputeId verplicht.' });
