@@ -10,7 +10,7 @@
  */
 
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { getBolConfig, invalidateBolToken, bolGet, bolOrdersVersion } from '../../lib/bol-client.js';
+import { getBolConfig, invalidateBolToken, bolGet, bolOrdersVersion, bolOffersVersion } from '../../lib/bol-client.js';
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
@@ -43,7 +43,7 @@ export default async function handler(req, res) {
      krijgen we 401/403 direct. */
   try {
     const t0 = Date.now();
-    const data = await bolGet('/offers', { query: { page: 1 } });
+    const data = await bolGet('/offers', { query: { page: 1 }, version: bolOffersVersion() });
     report.checks.push({
       name: 'offers-list',
       ok: true,
@@ -73,7 +73,7 @@ export default async function handler(req, res) {
      Krijgen we 403, dan zit het token mogelijk in verkeerde scope/demo. */
   try {
     const t0 = Date.now();
-    await bolGet('/shared/process-status/0');
+    await bolGet('/shared/process-status/0', { version: bolOffersVersion() });
     report.checks.push({ name: 'process-status-scope', ok: true, ms: Date.now() - t0, hint: 'endpoint reachable' });
   } catch (e) {
     const msg = String(e?.message || '');
