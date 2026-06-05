@@ -95,9 +95,10 @@ export default async function handler(req, res) {
       if (!disputeId) return res.status(400).json({ success: false, message: 'disputeId verplicht.' });
 
       /* Haal alle open disputes op en vind de juiste. */
+      const from180 = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const [allDisputes, allReturnRequests] = await Promise.all([
         fetchOpenDisputes({ limit: 50 }),
-        getReturnRequests({ maxRecords: 1000 }).catch(() => [])
+        getReturnRequests({ maxRecords: 2000, createdFrom: from180 }).catch(() => [])
       ]);
       const dispute = allDisputes.find((d) => d.id === disputeId || d.id.endsWith(`/${disputeId}`));
       if (!dispute) return res.status(404).json({ success: false, message: `Dispute ${disputeId} niet gevonden of niet meer openstaand.` });
