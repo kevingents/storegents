@@ -67,7 +67,7 @@ export default async function handler(req, res) {
           returnistaMatches: matched.length,
           returnistaResolutions: matched.map((r) => r.requestedResolution || r.resolution),
           returnistaStatuses: matched.map((r) => r.status),
-          alreadySubmitted: d.disputeEvidence?.submitted || false
+          alreadySubmitted: false /* wordt bepaald bij preview/handle */
         };
       });
       return res.status(200).json({
