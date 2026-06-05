@@ -28,9 +28,9 @@ async function handler(req, res) {
     if (refreshMap) await refreshBolOfferMap();
     const out = await runBolStockSync({ dryRun: false, onlyChanged: true });
 
-    /* Mail bij sanity-abort OF EAN-fouten. Hergebruikt BOL_SRS_NOTIFY_EMAILS
-       env zodat 1 lijst alle bol-failures bewaakt. */
-    const shouldMail = out?.aborted || (Number(out?.fouten) > 0);
+    /* Mail bij sanity-abort OF EAN-fouten OF stale offer-map. Hergebruikt
+       BOL_SRS_NOTIFY_EMAILS env zodat 1 lijst alle bol-failures bewaakt. */
+    const shouldMail = out?.aborted || (Number(out?.fouten) > 0) || out?.stale || out?.mapWarning;
     if (shouldMail) {
       try {
         const to = String(process.env.BOL_SRS_NOTIFY_EMAILS || process.env.BOL_STOCK_NOTIFY_EMAILS || process.env.MAINTAINER_EMAIL || '')
@@ -38,7 +38,19 @@ async function handler(req, res) {
         if (to.length) {
           const allFailures = await readBolStockFailures();
           let subject, intro, bodyHtml;
-          if (out.aborted) {
+          if (out.stale) {
+            subject = `[GENTS] Bol-voorraadsync — offer-export geblokkeerd (403)`;
+            intro = `De cron kan de bol offer-map niet meer verversen — Bol returnt 403 op /shared/process-status. ${out.message || ''}`;
+            const diaList = Array.isArray(out.diagnose) ? out.diagnose.map((d) => `<li>${d}</li>`).join('') : '';
+            bodyHtml = `<div style="padding:14px;background:#fef2f2;color:#7f1d1d;border-radius:8px;font-size:13px"><strong>Actie nodig:</strong><ol style="margin:8px 0 0;padding-left:20px">${diaList}</ol></div>
+              <p style="margin-top:14px;font-size:13px"><strong>Snelle check:</strong> roep <code>GET /api/admin/bol-diagnose</code> aan met je admin-token. De output toont direct of het BOL_DEMO env, credentials of scope-issue is.</p>
+              <p style="margin-top:8px;font-size:12.5px;color:#475569">Tot deze fix actief is loopt de stock-sync verder met de gecachte offer-map (zolang die &lt; 7 dagen oud is). Nieuwe offers in bol worden tijdelijk gemist.</p>`;
+          } else if (out.mapWarning) {
+            subject = `[GENTS] Bol-voorraadsync — offer-map ververst niet, cache gebruikt`;
+            intro = `De cron kon de offer-map niet verversen maar gebruikt de gecachte versie. ${out.mapWarning}`;
+            bodyHtml = `<div style="padding:14px;background:#fef9c3;color:#854d0e;border-radius:8px;font-size:13px">${out.mapWarning}</div>
+              <p style="margin-top:14px;font-size:13px">Run <code>GET /api/admin/bol-diagnose</code> om de root-cause te zien. Tot dan: ${out.gepusht || 0} EANs gesynced, ${out.fouten || 0} fouten.</p>`;
+          } else if (out.aborted) {
             subject = `[GENTS] Bol-voorraadsync ABORTED — veiligheidsguard`;
             intro = `De cron heeft de sync afgebroken (anders zou bol-voorraad foutief leeg gezet worden). Reden:`;
             bodyHtml = `<div style="padding:14px;background:#fef2f2;color:#7f1d1d;border-radius:8px;font-family:monospace;font-size:13px">${out.reason || 'onbekend'}</div>
