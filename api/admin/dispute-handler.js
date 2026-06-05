@@ -46,28 +46,33 @@ export default async function handler(req, res) {
         returnistaError = e.message;
         console.warn('[dispute-handler] getReturnRequests fout:', e.message);
       }
-      /* Vereenvoudigde matching-stats voor overview. */
+      /* Vereenvoudigde matching-stats voor overview.
+         REST API geeft order_id (numeriek) ipv order-naam; we matchen op beide. */
       const enriched = disputes.map((d) => {
-        const orderName = d.order?.name || '';
+        const orderName = d.order?.name || (d.order?.orderId ? `#${d.order.orderId}` : '');
+        const orderId = String(d.order?.orderId || '');
         const nr = orderName.replace(/^#/, '').toLowerCase();
         const matched = returnRequests.filter((r) => {
-          const rNr = clean(r.purchaseOrderNumber || '').replace(/^#/, '').toLowerCase();
-          return rNr === nr;
+          const rNr = clean(r.purchaseOrderNumber || r.shopifyOrderNr || '').replace(/^#/, '').toLowerCase();
+          const rId = clean(r.shopifyOrderId || '');
+          return (nr && rNr === nr) || (orderId && rId === orderId);
         });
         return {
           id: d.id,
+          gid: d.gid,
           status: d.status,
           type: d.type,
           amount: d.amount,
           evidenceDueBy: d.evidenceDueBy,
           evidenceSentOn: d.evidenceSentOn,
-          orderName,
-          customerEmail: d.order?.customer?.email || d.order?.email,
+          orderName: orderName || `order ${orderId}`,
+          orderId,
+          customerEmail: d.order?.customer?.email || d.order?.email || '',
           reason: d.reasonDetails?.reason,
           returnistaMatches: matched.length,
           returnistaResolutions: matched.map((r) => r.requestedResolution || r.resolution),
           returnistaStatuses: matched.map((r) => r.status),
-          alreadySubmitted: false /* wordt bepaald bij preview/handle */
+          alreadySubmitted: !!d.evidenceSentOn
         };
       });
       return res.status(200).json({
