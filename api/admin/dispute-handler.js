@@ -28,11 +28,24 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      /* Geef overview van open disputes + Returnista-matches. */
-      const [disputes, returnRequests] = await Promise.all([
-        fetchOpenDisputes({ limit: 50 }),
-        getReturnRequests({ maxRecords: 1000 }).catch(() => [])
-      ]);
+      /* Geef overview van open disputes + Returnista-matches.
+         Fouten per stap worden apart gevangen zodat we altijd een nuttige
+         response terugkrijgen i.p.v. een blinde 500. */
+      let disputes = [], disputeError = null;
+      let returnRequests = [], returnistaError = null;
+
+      try {
+        disputes = await fetchOpenDisputes({ limit: 50 });
+      } catch (e) {
+        disputeError = e.message;
+        console.error('[dispute-handler] fetchOpenDisputes fout:', e.message);
+      }
+      try {
+        returnRequests = await getReturnRequests({ maxRecords: 1000 });
+      } catch (e) {
+        returnistaError = e.message;
+        console.warn('[dispute-handler] getReturnRequests fout:', e.message);
+      }
       /* Vereenvoudigde matching-stats voor overview. */
       const enriched = disputes.map((d) => {
         const orderName = d.order?.name || '';
@@ -58,9 +71,10 @@ export default async function handler(req, res) {
         };
       });
       return res.status(200).json({
-        success: true,
+        success: !disputeError,
         count: disputes.length,
-        disputes: enriched
+        disputes: enriched,
+        errors: { disputes: disputeError, returnista: returnistaError }
       });
     }
 
