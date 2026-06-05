@@ -24,8 +24,11 @@ async function handler(req, res) {
 
   try {
     const result = await pushBolOrdersToSrs({ dryRun, maxPerRun });
-    /* Mail bij failures (alleen als er nieuwe failures zijn in deze run). */
-    if (!dryRun && result?.summary?.failed > 0) {
+    /* Mail bij geblokkeerde orders: harde fails ÉN "geen SRS-SKU"-overslagen.
+       Die laatste verdwenen voorheen geruisloos (geen mail, geen failure-store),
+       waardoor orders ongemerkt nooit in SRS belandden. */
+    const blockedCount = (result?.summary?.failed || 0) + (result?.summary?.skippedNoItems || 0);
+    if (!dryRun && blockedCount > 0) {
       try {
         await bumpBolSrsFailuresRunCount();
         const all = await readBolSrsFailures();
@@ -39,8 +42,8 @@ async function handler(req, res) {
               <td style="padding:6px 8px;color:#7f1d1d">${String(r.error || '').slice(0, 400)}</td>
             </tr>`).join('');
           const html = baseMailHtml({
-            title: `Bol-SRS push: ${failuresInThisRun.length} order(s) faalden`,
-            intro: `In de laatste cron-run zijn ${result.summary.pushed} order(s) succesvol gepusht en <strong>${result.summary.failed} faalden</strong>. Totaal nog open in failure-store: ${Object.keys(all.failed || {}).length}.`,
+            title: `Bol→SRS: ${failuresInThisRun.length} order(s) niet doorgezet`,
+            intro: `In de laatste cron-run zijn ${result.summary.pushed} order(s) succesvol naar SRS gepusht. <strong>${result.summary.failed} faalden</strong> en <strong>${result.summary.skippedNoItems} overgeslagen (geen SRS-SKU-koppeling)</strong>. Totaal nog open in de failure-store: ${Object.keys(all.failed || {}).length}. Koppel ontbrekende producten in Shopify (barcode = bol-EAN, SKU = SRS-artikelnummer) en de eerstvolgende cron pusht ze alsnog.`,
             bodyHtml: `<table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead><tr style="background:#f1f5f9"><th style="padding:6px 8px;text-align:left">Bol-orderId</th><th style="padding:6px 8px;text-align:left">SRS-id</th><th style="padding:6px 8px;text-align:left">Error</th></tr></thead>
               <tbody>${rows}</tbody>
@@ -49,7 +52,7 @@ async function handler(req, res) {
           });
           await sendMail({
             to,
-            subject: `[GENTS] Bol→SRS push: ${failuresInThisRun.length} order(s) faalden`,
+            subject: `[GENTS] Bol→SRS: ${failuresInThisRun.length} order(s) niet doorgezet`,
             html
           });
         }
