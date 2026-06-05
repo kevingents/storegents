@@ -83,8 +83,36 @@ export default async function handler(req, res) {
       dryRun
     });
 
-    /* Order niet in de bol-orders-cache (mogelijk te oud)? */
+    /* Niets verwerkt (processed===0)? Onderscheid de drie oorzaken — anders
+       krijg je de misleidende "niet in cache" terwijl de order allang in SRS
+       staat (al-gepusht) of bewust is geannuleerd. */
     if (result?.summary && result.summary.processed === 0) {
+      const s = result.summary;
+      if (s.skippedAlready > 0) {
+        /* Order staat al in SRS. (De vroege pushed-state-check kan dit missen
+           door blob-propagatie-vertraging; de interne push-loop ziet 'm wél.) */
+        const fresh = await readBolSrsPushedState().catch(() => ({ pushed: {} }));
+        const info = (fresh.pushed || {})[bolOrderId];
+        return res.status(200).json({
+          success: true,
+          skipped: true,
+          bolOrderId,
+          requestedSrsOrderId: srsOrderId || null,
+          alreadyPushedAs: info?.srsOrderId || null,
+          message: `Deze bol-order staat al in SRS als ${info?.srsOrderId || '(onbekend nummer)'} — hij mist dus niet. Gebruik force=true alleen als je 'm bewust dubbel wilt aanmaken.`,
+          result
+        });
+      }
+      if (s.skippedCancelled > 0) {
+        return res.status(200).json({
+          success: true,
+          cancelled: true,
+          bolOrderId,
+          requestedSrsOrderId: srsOrderId || null,
+          message: 'Deze bol-order is geannuleerd — daarom niet naar SRS gepusht.',
+          result
+        });
+      }
       return res.status(200).json({
         success: true,
         bolOrderId,
