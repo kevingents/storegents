@@ -17,7 +17,7 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 import { readBolOrders } from '../../lib/bol-orders.js';
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
-import { bolGet } from '../../lib/bol-client.js';
+import { bolGet, bolOrdersVersion } from '../../lib/bol-client.js';
 
 export const maxDuration = 60;
 
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
       /* Live detail-call */
       let detailResult;
       try {
-        const detail = await bolGet(`/orders/${encodeURIComponent(orderId)}`);
+        const detail = await bolGet(`/orders/${encodeURIComponent(orderId)}`, { version: bolOrdersVersion() });
         detailResult = { ok: true, raw: detail };
       } catch (e) {
         detailResult = { ok: false, error: e.message || 'detail-call mislukt' };

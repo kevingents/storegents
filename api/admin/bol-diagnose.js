@@ -10,7 +10,7 @@
  */
 
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
-import { getBolConfig, invalidateBolToken, bolGet } from '../../lib/bol-client.js';
+import { getBolConfig, invalidateBolToken, bolGet, bolOrdersVersion } from '../../lib/bol-client.js';
 
 export default async function handler(req, res) {
   if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
@@ -58,7 +58,7 @@ export default async function handler(req, res) {
   /* Check 2: orders-list (andere endpoint, andere scope-eis) */
   try {
     const t0 = Date.now();
-    const data = await bolGet('/orders', { query: { status: 'OPEN' } });
+    const data = await bolGet('/orders', { query: { status: 'OPEN' }, version: bolOrdersVersion() });
     report.checks.push({
       name: 'orders-list',
       ok: true,
