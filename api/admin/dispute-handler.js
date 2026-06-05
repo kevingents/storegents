@@ -41,7 +41,10 @@ export default async function handler(req, res) {
         console.error('[dispute-handler] fetchOpenDisputes fout:', e.message);
       }
       try {
-        returnRequests = await getReturnRequests({ maxRecords: 1000 });
+        /* 180 dagen terug — disputes kunnen verwijzen naar retouren van
+           6 maanden geleden. 90 dagen is te krap voor oudere inquiries. */
+        const from180 = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        returnRequests = await getReturnRequests({ maxRecords: 2000, createdFrom: from180 });
       } catch (e) {
         returnistaError = e.message;
         console.warn('[dispute-handler] getReturnRequests fout:', e.message);
@@ -109,8 +112,9 @@ export default async function handler(req, res) {
     if (action === 'handle-all') {
       const dryRun = body.dryRun !== false; /* default DRY-RUN */
       const submit = !dryRun && !!body.submit;
+      const from180 = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const [allReturnRequests] = await Promise.all([
-        getReturnRequests({ maxRecords: 2000 }).catch(() => [])
+        getReturnRequests({ maxRecords: 2000, createdFrom: from180 }).catch(() => [])
       ]);
       const result = await handleAllOpenDisputes(allReturnRequests, { dryRun, submit, maxDisputes: 50 });
       return res.status(200).json({ success: true, ...result });
