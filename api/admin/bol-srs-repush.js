@@ -41,6 +41,7 @@ export default async function handler(req, res) {
     const dryRun = truthy(body.dryRun);
     const force = truthy(body.force);
     const srsOrderId = clean(body.srsOrderId);
+    const weborderUser = clean(body.weborderUser); /* override SRS-login (bepaalt webshop), bv. Bol_1088 */
     let bolOrderId = clean(body.bolOrderId);
 
     /* BOL-NNNN → bol-marketplace-id via de teller-history. */
@@ -80,7 +81,8 @@ export default async function handler(req, res) {
       onlyBolOrderId: bolOrderId,
       force: force || dryRun,
       maxPerRun: 1,
-      dryRun
+      dryRun,
+      weborderUser
     });
 
     /* Niets verwerkt (processed===0)? Onderscheid de drie oorzaken — anders
