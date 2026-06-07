@@ -59,8 +59,8 @@ export default async function handler(req, res) {
     getGoogleAdsCampaigns({ from, to }).catch((e) => ({ ok: false, platform: 'google', campaigns: [], splits: null, spend: 0, error: e.message || 'Ads-fout' }))
   ]);
 
-  /* Top-campagnes per emmer (max 8) zodat de payload klein blijft. */
-  const topPer = (bucket) => (google.campaigns || []).filter((c) => c.bucket === bucket).slice(0, 8);
+  /* Campagnes per emmer (max 40) — genoeg om per winkel/stad te filteren. */
+  const topPer = (bucket) => (google.campaigns || []).filter((c) => c.bucket === bucket).slice(0, 40);
   const googleOut = {
     ok: !!google.ok,
     spend: google.spend || 0,
