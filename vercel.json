@@ -265,6 +265,10 @@
       "schedule": "20 * * * *"
     },
     {
+      "path": "/api/cron/marketing-advisor-mail",
+      "schedule": "0 7 1 * *"
+    },
+    {
       "path": "/api/cron/bol-shipment-sync",
       "schedule": "40 * * * *"
     }
