@@ -30,14 +30,40 @@ const CACHE_MS = 6 * 60 * 60 * 1000;
 const ymd = (d) => d.toISOString().slice(0, 10);
 const r2 = (n) => (n == null ? null : Math.round((Number(n) || 0) * 100) / 100);
 
-/* Robuust JSON uit een Claude-antwoord halen: strip markdown-fences, probeer
-   direct, anders het stuk tussen de eerste { en laatste }. */
+/* Sluit afgekapte JSON netjes af: sluit een open string, verwijder een trailing
+   komma en sluit alle nog-open accolades/blokhaken (truncatie-reparatie). */
+function closeTruncatedJson(s) {
+  let inStr = false, esc = false;
+  const stack = [];
+  let out = '';
+  for (let k = 0; k < s.length; k++) {
+    const ch = s[k];
+    out += ch;
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+  if (inStr) out += '"';
+  out = out.replace(/,\s*$/, '');
+  while (stack.length) out += stack.pop();
+  return out;
+}
+
+/* Robuust JSON uit een Claude-antwoord halen: strip fences/preamble, probeer
+   direct, dan tot de laatste }, dan met truncatie-reparatie. */
 function parseJsonLoose(text) {
   if (!text) return null;
   let t = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  const i = t.indexOf('{');
+  if (i > 0) t = t.slice(i); /* preamble vóór de JSON weghalen */
   try { return JSON.parse(t); } catch (_) {}
-  const i = t.indexOf('{'), j = t.lastIndexOf('}');
-  if (i >= 0 && j > i) { try { return JSON.parse(t.slice(i, j + 1)); } catch (_) {} }
+  const j = t.lastIndexOf('}');
+  if (j > 0) { try { return JSON.parse(t.slice(0, j + 1)); } catch (_) {} }
+  try { return JSON.parse(closeTruncatedJson(t)); } catch (_) {}
   return null;
 }
 
@@ -134,11 +160,13 @@ Geef JSON met EXACT deze velden:
   "aanbevelingen": ["<concrete, uitvoerbare actie>", "..."],
   "benchmark": [{"metric":"<bv. Conversie>","gents":"<waarde>","benchmark":"<typische fashion-range NL>","oordeel":"<onder/op/boven niveau>"}, "..."],
   "vragenVoorBureau": ["<kritische vraag om aan het bureau te stellen>", "..."]
-}`;
+}
+
+Houd het BEKNOPT zodat het in één JSON-object past: max 4 sterke punten, max 4 zorgen, max 5 aanbevelingen, max 5 benchmark-rijen, max 4 vragen. Elke regel is één korte zin (geen lange alinea's).`;
 
     let advice = null, raw = '';
     try {
-      const out = await claudeMessage({ system, user, maxTokens: 3000, temperature: 0.4 });
+      const out = await claudeMessage({ system, user, maxTokens: 4096, temperature: 0.4 });
       raw = String(out?.text || '');
       advice = parseJsonLoose(raw);
     } catch (e) {
