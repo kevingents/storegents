@@ -30,6 +30,17 @@ const CACHE_MS = 6 * 60 * 60 * 1000;
 const ymd = (d) => d.toISOString().slice(0, 10);
 const r2 = (n) => (n == null ? null : Math.round((Number(n) || 0) * 100) / 100);
 
+/* Robuust JSON uit een Claude-antwoord halen: strip markdown-fences, probeer
+   direct, anders het stuk tussen de eerste { en laatste }. */
+function parseJsonLoose(text) {
+  if (!text) return null;
+  let t = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  try { return JSON.parse(t); } catch (_) {}
+  const i = t.indexOf('{'), j = t.lastIndexOf('}');
+  if (i >= 0 && j > i) { try { return JSON.parse(t.slice(i, j + 1)); } catch (_) {} }
+  return null;
+}
+
 function rangeAndPrev(period) {
   const now = new Date();
   const days = period === 'week' ? 7 : (period === 'kwartaal' || period === 'quarter') ? 90 : (period === 'jaar' || period === 'year') ? 365 : 30;
@@ -99,7 +110,7 @@ export default async function handler(req, res) {
     ]);
     const targets = marketingTargets(cfg);
 
-    const system = 'Je bent een kritische, ervaren marketing-data-analist. Je beoordeelt namens GENTS — een Nederlands herenmode-merk met een webshop (gents.nl) én circa 19 fysieke winkels — of hun EXTERNE marketingbureau goed werk levert. Wees eerlijk, concreet en cijfer-onderbouwd; vermijd holle marketingtaal. Benchmark tegen typische cijfers voor fashion e-commerce in Nederland. Antwoord UITSLUITEND met geldige JSON, zonder tekst eromheen.';
+    const system = 'Je bent een kritische, ervaren marketing-data-analist. Je beoordeelt namens GENTS — een Nederlands herenmode-merk met een webshop (gents.nl) én circa 19 fysieke winkels — of hun EXTERNE marketingbureau goed werk levert. Wees eerlijk, concreet en cijfer-onderbouwd; vermijd holle marketingtaal. Benchmark tegen typische cijfers voor fashion e-commerce in Nederland. Antwoord met UITSLUITEND één geldig JSON-object: begin je antwoord met { en eindig met }. Geen inleiding, geen uitleg, geen markdown-fences (```).';
 
     const user = `Marketingdata GENTS, periode "${period}" (${ymd(from)} t/m ${ymd(to)}), met de vorige even lange periode ter vergelijking. Alle bedragen in euro.
 
@@ -127,15 +138,14 @@ Geef JSON met EXACT deze velden:
 
     let advice = null, raw = '';
     try {
-      const out = await claudeMessage({ system, user, maxTokens: 1800, temperature: 0.4 });
+      const out = await claudeMessage({ system, user, maxTokens: 3000, temperature: 0.4 });
       raw = String(out?.text || '');
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (m) advice = JSON.parse(m[0]);
+      advice = parseJsonLoose(raw);
     } catch (e) {
       return res.status(200).json({ success: false, message: `Analist kon geen advies genereren: ${e.message || e}`, period });
     }
     if (!advice) {
-      return res.status(200).json({ success: false, message: 'Analist gaf geen leesbaar advies terug.', period, raw: raw.slice(0, 400) });
+      return res.status(200).json({ success: false, message: 'Analist gaf geen leesbaar advies terug.', period, raw: raw.slice(0, 1200) });
     }
 
     const payload = {
