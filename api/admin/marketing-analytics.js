@@ -37,14 +37,22 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
   const period = String(req.query.period || 'month').toLowerCase();
+  const qFrom = String(req.query.from || '').trim();
+  const qTo = String(req.query.to || '').trim();
   const refresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
 
-  const hit = CACHE.get(period);
+  const cacheKey = `${period}|${qFrom}|${qTo}`;
+  const hit = CACHE.get(cacheKey);
   if (!refresh && hit && Date.now() - hit.ts < TTL_MS) {
     return res.status(200).json({ ...hit.payload, cached: true, cacheAgeMs: Date.now() - hit.ts });
   }
 
-  const { from, to } = computeRange(period);
+  /* Expliciete datums (from/to) winnen van de periode-naam — zo volgt deze call
+     exact dezelfde range als POAS en running-ads. */
+  const validRange = qFrom && qTo && !Number.isNaN(Date.parse(qFrom)) && !Number.isNaN(Date.parse(qTo));
+  const { from, to } = validRange
+    ? { from: new Date(`${qFrom}T00:00:00`), to: new Date(`${qTo}T23:59:59`) }
+    : computeRange(period);
 
   const [ga4, google] = await Promise.all([
     getGa4Traffic({ from, to }).catch((e) => ({ ok: false, byChannel: [], error: e.message || 'GA4-fout' })),
@@ -70,7 +78,7 @@ export default async function handler(req, res) {
     google: googleOut
   };
 
-  CACHE.set(period, { ts: Date.now(), payload });
+  CACHE.set(cacheKey, { ts: Date.now(), payload });
   if (CACHE.size > 20) CACHE.delete(CACHE.keys().next().value);
   return res.status(200).json({ ...payload, cached: false });
 }
