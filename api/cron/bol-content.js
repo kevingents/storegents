@@ -25,7 +25,7 @@ async function handler(req, res) {
     /* Families aanvullen — alleen als ingeschakeld (Instellingen). */
     let families = null;
     if (configured && settings.familiesAuto) {
-      try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 80) }); } catch (e) { families = { error: e.message }; }
+      try { families = await ensureBolFamilies({ dryRun: false, maxCheck: Number(process.env.BOL_FAMILIES_MAX || 80), items: plan.items }); } catch (e) { families = { error: e.message }; }
     }
 
     /* Volledige content-push — alleen als ingeschakeld (Instellingen). */
@@ -33,7 +33,7 @@ async function handler(req, res) {
       return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, gepusht: 0, autonoom: false, configured, families, refreshedAt: plan.refreshedAt });
     }
     const maxPush = Number(process.env.BOL_AUTO_CONTENT_MAX || 300);
-    const out = await runBolContentAuto({ dryRun: false, maxPush });
+    const out = await runBolContentAuto({ dryRun: false, maxPush, items: plan.items });
     return res.status(200).json({ success: true, totaal: plan.coverage?.totaal || 0, autonoom: true, families, ...out, refreshedAt: plan.refreshedAt });
   } catch (error) {
     console.error('[bol-content cron]', error);
