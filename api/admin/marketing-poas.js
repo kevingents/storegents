@@ -81,6 +81,7 @@ async function poasForRange(from, to) {
     adSpendOk: g.ok || m.ok,
     adSpendError: errors.length ? errors.join(' · ') : null,
     poas: (usable && fin.brutowinst != null) ? r2(fin.brutowinst / adSpend) : null,
+    nettoPoas: (usable && fin.nettowinst != null) ? r2(fin.nettowinst / adSpend) : null,
     roas: (usable && fin.nettoOmzetIncl != null) ? r2(fin.nettoOmzetIncl / adSpend) : null
   };
 }
