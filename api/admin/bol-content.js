@@ -16,6 +16,7 @@ import { pushBolContent, runBolContentAuto, discoverBolCatalog, ensureBolFamilie
 import { isBolConfigured } from '../../lib/bol-client.js';
 import { getBolSettings } from '../../lib/bol-settings-store.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
+import { readJsonBlob } from '../../lib/json-blob-store.js';
 
 /* Welke live-write-actie vereist welke veiligheidstoggle (Instellingen → bol). */
 const LIVE_CONTENT_TOGGLE = { push: 'contentAuto', auto: 'contentAuto', families: 'familiesAuto' };
@@ -32,7 +33,12 @@ export default async function handler(req, res) {
       let plan = refresh ? null : await readBolContentPlan();
       if (!plan || !isPlanFresh(plan)) plan = await buildBolContentPlan();
       res.setHeader('Cache-Control', 'no-store, max-age=0');
-      return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), ...plan });
+      /* Push-voortgang: hoeveel content er live naar bol is gestuurd + wanneer. */
+      const pushState = await readJsonBlob('marketplace/bol-content-state.json', { byEan: {} }).catch(() => ({ byEan: {} }));
+      const pushedByEan = (pushState && pushState.byEan) || {};
+      let laatstePush = null;
+      for (const e of Object.keys(pushedByEan)) { const at = pushedByEan[e] && pushedByEan[e].at; if (at && (!laatstePush || at > laatstePush)) laatstePush = at; }
+      return res.status(200).json({ success: true, bolGekoppeld: isBolConfigured(), pushStatus: { gepushtTotaal: Object.keys(pushedByEan).length, laatstePush }, ...plan });
     }
 
     if (req.method === 'POST') {
