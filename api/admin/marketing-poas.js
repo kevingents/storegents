@@ -13,7 +13,7 @@
 
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 import { computePoasForRange } from '../../lib/poas-compute.js';
-import { getGoogleAdsSpend } from '../../lib/google-ads-spend.js';
+import { getGoogleAdsCampaigns } from '../../lib/google-ads-spend.js';
 import { getMetaAdsSpend } from '../../lib/meta-ads-spend.js';
 import { readPortalConfig, savePortalConfig, marketingTargets } from '../../lib/portal-config-store.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
@@ -60,19 +60,23 @@ function lastMonthRanges(n) {
 async function poasForRange(from, to) {
   const [fin, g, m] = await Promise.all([
     computePoasForRange({ from, to }),
-    getGoogleAdsSpend({ from, to }),
+    getGoogleAdsCampaigns({ from, to }),
     getMetaAdsSpend({ from, to })
   ]);
-  const googleSpend = g.ok ? g.spend : null;
+  /* Online ad spend = Shopping-advertenties + Meta. Winkel-advertenties (de stad-
+     campagnes) sturen de FYSIEKE winkels aan en tellen NIET mee in de online
+     POAS/ROAS — die hebben hun eigen ROAS op het Winkel-dashboard. */
+  const googleShoppingSpend = g.ok ? (g.splits?.shopping?.spend || 0) : null;
+  const googleWinkelSpend = g.ok ? (g.splits?.winkel?.spend || 0) : null;
   const metaSpend = m.ok ? m.spend : null;
-  /* Totale ad spend = som van de gekoppelde kanalen (Google + Meta). Geen enkel
-     kanaal gekoppeld → null (POAS/ROAS niet te berekenen). */
-  const adSpend = (g.ok || m.ok) ? r2((googleSpend || 0) + (metaSpend || 0)) : null;
+  const adSpend = (g.ok || m.ok) ? r2((googleShoppingSpend || 0) + (metaSpend || 0)) : null;
   const usable = adSpend && adSpend > 0;
   const errors = [!g.ok && g.error, !m.ok && m.error].filter(Boolean);
   return {
     ...fin,
-    adSpend, googleSpend, metaSpend,
+    adSpend,
+    googleSpend: googleShoppingSpend, /* online = Shopping-spend */
+    googleShoppingSpend, googleWinkelSpend, metaSpend,
     googleOk: g.ok, metaOk: m.ok,
     adSpendOk: g.ok || m.ok,
     adSpendError: errors.length ? errors.join(' · ') : null,
