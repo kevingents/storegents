@@ -12,7 +12,7 @@
  * Auth: admin-token vereist.
  */
 
-import { readVoorraadRows } from '../../lib/srs-voorraad-store.js';
+import { readVoorraadRows, readSrsVoorraadRows } from '../../lib/srs-voorraad-store.js';
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { readJsonBlob, writeJsonBlob } from '../../lib/json-blob-store.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
@@ -26,10 +26,16 @@ export default async function handler(req, res) {
   if (!requireAdmin(req, res)) return;
 
   try {
-    const [rows, cache] = await Promise.all([
+    /* Filiaal 701 (fotoshoot/uitleen) is een interne SRS-branch zonder Shopify-
+       locatie. De Shopify-voorraad-snapshot dropt 'm uit rows-latest.json, dus
+       lezen we de rauwe SRS-voorraad. Val terug op rows-latest.json zolang de
+       SRS-kopie er nog niet is (eerste SRS-import na deploy). */
+    const [srsRows, fallbackRows, cache] = await Promise.all([
+      readSrsVoorraadRows().catch(() => []),
       readVoorraadRows().catch(() => []),
       readProductsCache().catch(() => null)
     ]);
+    const rows = (Array.isArray(srsRows) && srsRows.some((r) => String(r.filiaalNummer) === FILIAAL)) ? srsRows : fallbackRows;
 
     /* Voorraad op 701 per SKU (som). */
     const at701 = new Map();
