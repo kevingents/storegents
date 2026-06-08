@@ -182,6 +182,38 @@ export default async function handler(req, res) {
     const herkomstRows = buildHerkomst(openDragers, closedDragers);
     const historyVanaf = closedDragers.reduce((min, c) => (c.closedAt && (!min || c.closedAt < min)) ? c.closedAt : min, null);
 
+    /* Per herkomst-winkel: WELKE artikelen gingen naar de bak — uit de
+       itemBarcodes van de LOPENDE dragers (afgesloten bewaren geen item-detail).
+       Verrijkt met product-info uit de cache. */
+    const itemsByHerkomst = new Map();
+    for (const dr of openDragers) {
+      const best = clean(dr.bestemming);
+      if (best !== '708' && best !== '707') continue;
+      const hk = clean(dr.herkomst) || '?';
+      let m = itemsByHerkomst.get(hk);
+      if (!m) { m = new Map(); itemsByHerkomst.set(hk, m); }
+      for (const raw of (dr.itemBarcodes || [])) {
+        const bc = clean(raw);
+        const key = `${bc}::${best}`;
+        const cur = m.get(key);
+        if (cur) { cur.aantal += 1; continue; }
+        const i = info(bc);
+        m.set(key, {
+          barcode: bc,
+          title: clean(i.title) || bc || '—',
+          article: clean(i.articleNumber),
+          color: clean(i.color),
+          size: clean(i.size),
+          bestemming: best === '708' ? 'afkeur' : 'herstel',
+          aantal: 1
+        });
+      }
+    }
+    for (const row of herkomstRows) {
+      const m = itemsByHerkomst.get(row.filiaal);
+      row.items = m ? [...m.values()].sort((a, b) => b.aantal - a.aantal).slice(0, 150) : [];
+    }
+
     return res.status(200).json({
       success: true,
       generatedAt: new Date().toISOString(),
