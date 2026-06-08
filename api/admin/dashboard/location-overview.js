@@ -8,7 +8,7 @@ import { setRequestHeaders, withRequestLog } from '../../../lib/request-context.
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || (globalThis.crypto?.randomUUID?.() || String(Math.random()));
 const BRANCH_LOCATION_MAP = {
-  '97': 'GENTS Magazijn',
+  '97': 'Uitlevertafel',
   '99': 'GENTS Magazijn',
   '700': 'GENTS Showroom'
 };
