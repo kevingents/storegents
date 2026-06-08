@@ -23,11 +23,41 @@ import {
 import { readVoorraadRows } from '../../lib/srs-voorraad-store.js';
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { getStoreNameByBranchId } from '../../lib/branch-metrics.js';
+import { readDragers } from '../../lib/srs-dragers-import.js';
+import { readDragersHistory } from '../../lib/srs-dragers-history-store.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
 
 const clean = (v) => String(v == null ? '' : v).trim();
 const lc = (v) => clean(v).toLowerCase();
 const BAK = { 708: 'Afkeur / derving', 707: 'Klachten / herstel' };
+
+/* Herkomst-attributie uit de verplaatsingen (dragers): welke winkel stuurde
+   voorraad naar afkeur (708) of herstel (707). Combineert lopende dragers met
+   de history (afgesloten dragers, rolling 365 dagen). Geeft de retroactieve
+   herkomst die de derving-meldingen missen. */
+function buildHerkomst(openList, closedList) {
+  const map = new Map();
+  const add = (d, isOpen) => {
+    const best = clean(d.bestemming);
+    if (best !== '708' && best !== '707') return;
+    const hk = clean(d.herkomst) || '?';
+    let e = map.get(hk);
+    if (!e) {
+      e = { filiaal: hk, store: clean(d.herkomstNaam) || getStoreNameByBranchId(hk) || `Filiaal ${hk}`,
+        afkeurStuks: 0, afkeurDragers: 0, herstelStuks: 0, herstelDragers: 0, lopend: 0, afgesloten: 0 };
+      map.set(hk, e);
+    }
+    const stuks = Number(d.regels) || 0;
+    if (best === '708') { e.afkeurStuks += stuks; e.afkeurDragers += 1; }
+    else { e.herstelStuks += stuks; e.herstelDragers += 1; }
+    if (isOpen) e.lopend += 1; else e.afgesloten += 1;
+  };
+  for (const d of (openList || [])) add(d, true);
+  for (const d of (closedList || [])) add(d, false);
+  return [...map.values()]
+    .map((e) => ({ ...e, totaalStuks: e.afkeurStuks + e.herstelStuks, totaalDragers: e.afkeurDragers + e.herstelDragers }))
+    .sort((a, b) => b.totaalStuks - a.totaalStuks);
+}
 
 function parseBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
@@ -70,10 +100,12 @@ export default async function handler(req, res) {
 
     const from = clean(req.query?.from);
     const to = clean(req.query?.to);
-    const [requests, voorraadRows, cache] = await Promise.all([
+    const [requests, voorraadRows, cache, dragersSnap, dragersHist] = await Promise.all([
       listRequests({ derving: true, from: from || undefined, to: to || undefined }).catch(() => []),
       readVoorraadRows().catch(() => []),
-      readProductsCache().catch(() => null)
+      readProductsCache().catch(() => null),
+      readDragers().catch(() => ({ list: [] })),
+      readDragersHistory().catch(() => ({ closed: [] }))
     ]);
     const byBarcode = cache?.byBarcode || {};
     const info = (sku) => byBarcode[lc(sku)] || {};
@@ -144,6 +176,12 @@ export default async function handler(req, res) {
     }
     onverklaard.sort((a, b) => b.voorraad - a.voorraad);
 
+    /* ── 4. Herkomst uit verplaatsingen (welke winkel stuurde naar 708/707) ── */
+    const openDragers = dragersSnap?.list || [];
+    const closedDragers = dragersHist?.closed || [];
+    const herkomstRows = buildHerkomst(openDragers, closedDragers);
+    const historyVanaf = closedDragers.reduce((min, c) => (c.closedAt && (!min || c.closedAt < min)) ? c.closedAt : min, null);
+
     return res.status(200).json({
       success: true,
       generatedAt: new Date().toISOString(),
@@ -167,6 +205,15 @@ export default async function handler(req, res) {
         total: onverklaard.length,
         stuks: onverklaard.reduce((n, x) => n + x.voorraad, 0),
         items: onverklaard.slice(0, 300)
+      },
+      herkomst: {
+        beschikbaar: (openDragers.length + closedDragers.length) > 0,
+        rows: herkomstRows,
+        totaalStuks: herkomstRows.reduce((n, r) => n + r.totaalStuks, 0),
+        totaalAfkeur: herkomstRows.reduce((n, r) => n + r.afkeurStuks, 0),
+        totaalHerstel: herkomstRows.reduce((n, r) => n + r.herstelStuks, 0),
+        lopend: openDragers.filter((d) => d.bestemming === '708' || d.bestemming === '707').length,
+        historyVanaf
       }
     });
   } catch (e) {
