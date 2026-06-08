@@ -33,7 +33,7 @@ Toegestane schema (kies precies één trigger-type):
     "hour": 0-23,                       // default 8
     "bericht": "<reminder-tekst>",
     // bij event:
-    "event": "online-zonder-foto"
+    "event": "online-zonder-foto" | "new-bol-order"
   },
   "actie": { "email": true, "notificatie": true }
 }
@@ -42,6 +42,7 @@ Regels:
 - "mail me als voorraad van X op 0/leeg komt" => stock-threshold, query=X, operator lte, waarde 0.
 - "elke week reminder om de foto's te checken" => schedule, freq weekly, bericht="Foto's checken".
 - "seintje als een artikel online komt zonder foto" => event, event=online-zonder-foto.
+- "mail me bij een nieuwe bol bestelling" / "seintje bij een nieuwe bol order" => event, event=new-bol-order.
 - Verzin geen andere trigger-types of events. Twijfel je over de query/artikel: neem letterlijk over wat de gebruiker noemt.`;
 
 function extractJson(text) {

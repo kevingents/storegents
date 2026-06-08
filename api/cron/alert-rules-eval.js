@@ -3,6 +3,7 @@ import { listRules, markFired, updateRuleState } from '../../lib/alert-rules-sto
 import { evaluateRule, buildWarehouseIds } from '../../lib/alert-rules-eval.js';
 import { readVoorraadRows } from '../../lib/srs-voorraad-store.js';
 import { readProductAudit } from '../../lib/shopify-product-audit.js';
+import { readBolOrders } from '../../lib/bol-orders.js';
 import { sendGentsMail } from '../../lib/resend-mailer.js';
 import { createNotification } from '../../lib/store-notifications-store.js';
 
@@ -23,17 +24,19 @@ async function handler(req, res) {
     if (!rules.length) return res.status(200).json({ success: true, evaluated: 0, fired: 0 });
 
     const needsStock = rules.some((r) => r.trigger?.type === 'stock-threshold');
-    const needsAudit = rules.some((r) => r.trigger?.type === 'event');
-    const [voorraadRows, audit] = await Promise.all([
+    const needsAudit = rules.some((r) => r.trigger?.type === 'event' && r.trigger?.event !== 'new-bol-order');
+    const needsBol = rules.some((r) => r.trigger?.type === 'event' && r.trigger?.event === 'new-bol-order');
+    const [voorraadRows, audit, bolOrders] = await Promise.all([
       needsStock ? readVoorraadRows() : Promise.resolve([]),
-      needsAudit ? readProductAudit() : Promise.resolve(null)
+      needsAudit ? readProductAudit() : Promise.resolve(null),
+      needsBol ? readBolOrders() : Promise.resolve(null)
     ]);
 
     /* NL-lokale datum/tijd. */
     const nl = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Amsterdam' }));
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Amsterdam' });
     const ctx = {
-      voorraadRows, audit, warehouseIds: buildWarehouseIds(),
+      voorraadRows, audit, bolOrders, warehouseIds: buildWarehouseIds(),
       today, weekday: nl.getDay(), dayOfMonth: nl.getDate(), hour: nl.getHours()
     };
 
@@ -47,9 +50,12 @@ async function handler(req, res) {
       const bodyText = r.message || rule.naam;
       const htmlBody = `<p>${escapeHtml(bodyText).replace(/\n/g, '<br>')}</p><p style="color:#64748b;font-size:12px">Slimme alert: <strong>${escapeHtml(rule.naam)}</strong></p>`;
 
+      const mailTo = String(rule.ownerEmail || '').trim() || String(process.env.ALERT_RULES_FALLBACK_EMAIL || '').trim();
       try {
-        if (rule.actie?.email !== false && rule.ownerEmail) {
-          await sendGentsMail({ to: rule.ownerEmail, subject, html: htmlBody, text: bodyText, type: 'slimme-alert', meta: { ruleId: rule.id } });
+        if (rule.actie?.email !== false && mailTo) {
+          await sendGentsMail({ to: mailTo, subject, html: htmlBody, text: bodyText, type: 'slimme-alert', meta: { ruleId: rule.id } });
+        } else if (rule.actie?.email !== false) {
+          console.warn('[alert-rules-eval] geen ontvanger (ownerEmail leeg + geen ALERT_RULES_FALLBACK_EMAIL) — regel', rule.id, rule.naam);
         }
       } catch (e) { console.error('[alert-rules-eval] mail faalde', rule.id, e.message); }
 
