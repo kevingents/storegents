@@ -114,6 +114,11 @@ export default async function handler(req, res) {
     const index = await readRevenueIndex();
     let branchIds = Array.isArray(index?.branchIds) ? index.branchIds.map(String) : [];
 
+    /* De cron schrijft branch 90 (webshop) wel als blob, maar de index lijst
+       'm niet (webshop is "intern"). Altijd als kandidaat toevoegen, anders
+       mist de webshop-omzet volledig. */
+    if (!branchIds.includes(WEBSHOP_BRANCH)) branchIds.push(WEBSHOP_BRANCH);
+
     /* Scope: expliciete branchId, of winkelnaam → branchId (werkt ook voor
        "GENTS Webshop" → 90, omdat we matchen op getStoreNameByBranchId). */
     if (branchIdFilter) {
