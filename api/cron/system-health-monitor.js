@@ -86,10 +86,10 @@ async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ success: false, message: 'Alleen GET/POST.' });
   if (!isAuthorized(req)) return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
 
-  /* Roep system-health aan */
-  const host = req.headers['host'];
-  const proto = req.headers['x-forwarded-proto'] || 'https';
-  const baseUrl = `${proto}://${host}`;
+  /* Roep system-health aan. NIET req.host gebruiken: bij cron-invocaties resolvet
+     die naar het frontend-domein (portal.gents.nl, verhuisd), waardoor we HTML
+     i.p.v. JSON terugkrijgen. Vaste backend-URL (env-override mogelijk). */
+  const baseUrl = (process.env.CRON_DISPATCH_BASE_URL || 'https://storegents.vercel.app').replace(/\/$/, '');
   const adminToken = process.env.ADMIN_TOKEN || '';
 
   let healthData;
