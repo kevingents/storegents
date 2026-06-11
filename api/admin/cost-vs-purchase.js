@@ -13,6 +13,7 @@
  */
 import { readProductCost } from '../../lib/product-cost-store.js';
 import { getPurchaseOrders } from '../../lib/srs-purchase-orders-client.js';
+import { listOrders } from '../../lib/inkoop-store.js';
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
 
 export const maxDuration = 60;
@@ -27,35 +28,52 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ success: false, message: 'Alleen GET is toegestaan.' });
 
   try {
-    const days = Math.min(1095, Math.max(30, Number(req.query.days) || 365));
+    const days = Math.min(1095, Math.max(7, Number(req.query.days) || 30));
 
     /* 1) Kostprijs per EAN/SKU uit de cost-store (uit de verkopen-export). */
     const cost = await readProductCost();
     const bySku = (cost && cost.bySku) || {};
 
-    /* 2) Laatste inkoopprijs (PurchasePrice) per barcode én sku uit de inkooporders. */
+    /* 2) Laatste inkoopprijs per barcode én sku — uit twee bronnen, nieuwste wint. */
     let poError = '';
     let ordersScanned = 0;
-    const inkoopByKey = new Map(); /* key(barcode|sku) -> { inkoop, orderDate, supplier, orderNr } */
+    let portalOrders = 0;
+    const inkoopByKey = new Map(); /* key(barcode|sku) -> { inkoop, orderDate, supplier, orderNr, bron } */
     const upsert = (key, entry) => {
-      if (!key) return;
+      if (!key || !entry.inkoop) return;
       const prev = inkoopByKey.get(key);
       if (!prev || String(entry.orderDate || '') > String(prev.orderDate || '')) inkoopByKey.set(key, entry);
     };
+
+    /* 2a) Portal-inkooporders (inkoop-store blob): de ÉCHT ingevoerde inkoopprijs. Snel, geen SOAP. */
+    try {
+      const orders = await listOrders({});
+      portalOrders = orders.length;
+      for (const o of orders) {
+        for (const l of (o.lines || [])) {
+          const entry = { inkoop: Number(l.purchasePrice || 0), orderDate: o.orderDate || o.createdAt || '', supplier: o.supplierName || '', orderNr: o.orderNr || '', bron: 'portal' };
+          upsert(String(l.barcode || '').trim(), entry);
+          upsert(String(l.sku || '').trim(), entry);
+        }
+      }
+    } catch (e) {
+      /* portal-inkoop optioneel — geen blocker */
+    }
+
+    /* 2b) SRS-inkooporders (laatste `days`, best-effort — kan timeouten; portal-data blijft dan staan). */
     try {
       const po = await getPurchaseOrders({ days, status: 'all' });
       const orders = Array.isArray(po) ? po : (po.orders || []);
       ordersScanned = orders.length;
       for (const o of orders) {
         for (const p of (o.products || [])) {
-          const inkoop = Number(p.purchasePrice || 0);
-          const entry = { inkoop, orderDate: o.orderDate || '', supplier: (o.supplier && o.supplier.name) || '', orderNr: o.orderNr || '' };
+          const entry = { inkoop: Number(p.purchasePrice || 0), orderDate: o.orderDate || '', supplier: (o.supplier && o.supplier.name) || '', orderNr: o.orderNr || '', bron: 'srs' };
           upsert(String(p.barcode || '').trim(), entry);
           upsert(String(p.sku || '').trim(), entry);
         }
       }
     } catch (e) {
-      poError = (e && e.message) || 'Inkooporders niet beschikbaar.';
+      poError = (e && e.message) || 'SRS-inkooporders niet beschikbaar (portal-inkoop wel gebruikt).';
     }
 
     /* 3) Join: alle SKU's die in de kostprijs- OF inkoopprijs-bron voorkomen. */
@@ -89,6 +107,7 @@ export default async function handler(req, res) {
         supplier: (poEntry && poEntry.supplier) || '',
         orderNr: (poEntry && poEntry.orderNr) || '',
         orderDate: (poEntry && poEntry.orderDate) || '',
+        inkoopBron: (poEntry && poEntry.bron) || '',
         costAt: (c && c.at) || ''
       });
     }
@@ -112,6 +131,7 @@ export default async function handler(req, res) {
       success: true,
       days,
       ordersScanned,
+      portalOrders,
       summary,
       rows: rows.slice(0, 5000),
       truncated: rows.length > 5000,
