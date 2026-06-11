@@ -48,9 +48,12 @@ export default async function handler(req, res) {
     });
   }
 
-  const host = req.headers["host"];
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const baseUrl = `${proto}://${host}`;
+  // NIET req.host gebruiken voor de fan-out: bij Vercel-cron-invocaties op
+  // storegents resolvet host soms naar het frontend-domein (portal.gents.nl is
+  // verhuisd naar de Next-portal), waardoor de calls de frontend raken i.p.v. de
+  // backend-cron-endpoints → HTML i.p.v. JSON en de job draait nooit. Gebruik een
+  // stabiele backend-URL (env-override mogelijk).
+  const baseUrl = (process.env.CRON_DISPATCH_BASE_URL || "https://storegents.vercel.app").replace(/\/$/, "");
   const secret = String(process.env.CRON_SECRET || "").trim();
   const authHeader = secret ? { Authorization: `Bearer ${secret}` } : {};
 
