@@ -2,6 +2,7 @@ import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getLocationsMap } from '../../lib/shopify-locations.js';
 import { getCustomers } from '../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../lib/branch-metrics.js';
+import { applyStoreScope } from '../../lib/caller-store-scope.js';
 
 /**
  * GET /api/admin/store-customer-overview?period=month
@@ -386,6 +387,11 @@ export default async function handler(req, res) {
       return bScore - aScore;
     });
 
+    /* Winkel-scope: een store-gebonden gebruiker (bv. shop_manager) ziet alléén
+       zijn eigen winkels — ook al injecteert de portal de admin-token. Master-
+       admin/interne tools sturen geen x-user-stores mee → geen beperking. */
+    const scopedStores = applyStoreScope(req, stores, (s) => s.store);
+
     /* Channel split headline */
     const totalCount = totalOnline + totalStore;
     const channelSplit = {
@@ -410,7 +416,7 @@ export default async function handler(req, res) {
       srsBranchesWithData: srsData.byBranchId.size,
       channelSplit,
       channelTrend,
-      stores
+      stores: scopedStores
     });
   } catch (error) {
     console.error('[admin/store-customer-overview]', error);
