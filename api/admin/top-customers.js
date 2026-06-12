@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { readReportCache, writeReportCache } from '../../lib/gents-report-cache-store.js';
 
 /**
  * GET /api/admin/top-customers?period=month|week|year&limit=10&metric=spend|count
@@ -82,6 +83,24 @@ export default async function handler(req, res) {
   const groupBy = clean(req.query.groupBy || '').toLowerCase(); /* 'store' = per-winkel breakdown */
   const storeFilter = clean(req.query.store).toLowerCase();
   const { from, to } = computeRange(period);
+
+  /* Cache voor het standaard (globale) topklanten-overzicht — dit doet een zware
+     live Shopify-scan (~25s). Per-winkel/gefilterde varianten blijven live.
+     ?refresh=1 forceert verse berekening (cron). */
+  const forceRefresh = ['1', 'true'].includes(clean(req.query.refresh).toLowerCase());
+  const cacheable = !groupBy && !storeFilter;
+  const cacheKey = `${period}-${metric}`;
+  if (cacheable && !forceRefresh) {
+    const cached = await readReportCache('top-customers', cacheKey, 0);
+    if (cached?.data?.customers) {
+      return res.status(200).json({
+        ...cached.data,
+        customers: cached.data.customers.slice(0, limit),
+        cached: true,
+        refreshedAt: cached.cachedAt,
+      });
+    }
+  }
 
   /* Helper: detecteer winkel-naam uit order */
   function deriveStoreFromOrder(o) {
@@ -191,11 +210,11 @@ export default async function handler(req, res) {
       avgOrder: c.orders ? moneyNumber(c.spend / c.orders) : 0
     }));
 
-    const sorted = list.sort((a, b) => {
+    const fullSorted = list.sort((a, b) => {
       if (metric === 'count') return b.orders - a.orders;
       if (metric === 'net') return b.netSpend - a.netSpend;
       return b.spend - a.spend;
-    }).slice(0, limit);
+    });
 
     const totals = {
       ordersScanned: orders.length,
@@ -204,14 +223,21 @@ export default async function handler(req, res) {
       avgOrder: orders.length ? moneyNumber(list.reduce((s, c) => s + c.spend, 0) / orders.length) : 0
     };
 
-    return res.status(200).json({
+    const result = {
       success: true,
       period,
       metric,
       range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
-      totals,
-      customers: sorted
-    });
+      totals
+    };
+    /* Cache de volledige top-50 (ongelimiteerd) zodat elke limit eruit te slicen
+       is; per-winkel/gefilterde varianten cachen we niet. */
+    if (cacheable) {
+      try { await writeReportCache('top-customers', cacheKey, { ...result, customers: fullSorted.slice(0, 50) }); }
+      catch (e) { console.warn('[top-customers] cache-write:', e.message); }
+    }
+
+    return res.status(200).json({ ...result, customers: fullSorted.slice(0, limit), cached: false });
   } catch (error) {
     console.error('[admin/top-customers]', error);
     return res.status(200).json({

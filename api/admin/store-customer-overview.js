@@ -3,6 +3,7 @@ import { getLocationsMap } from '../../lib/shopify-locations.js';
 import { getCustomers } from '../../lib/srs-customers-client.js';
 import { listBranches, getStoreNameByBranchId } from '../../lib/branch-metrics.js';
 import { applyStoreScope } from '../../lib/caller-store-scope.js';
+import { readReportCache, writeReportCache } from '../../lib/gents-report-cache-store.js';
 
 /**
  * GET /api/admin/store-customer-overview?period=month
@@ -204,6 +205,24 @@ export default async function handler(req, res) {
   const maxOrders = Math.max(200, Math.min(3000, Number(req.query.maxOrders || 1500)));
   const { from, to, lookbackFrom } = computeRange(period);
 
+  /* Cache: deze overview doet een zware live Shopify-scan (~40s). Een cron
+     ververst 'm periodiek (api/cron/customer-overview-refresh) en de pagina leest
+     hier de cache → instant. ?refresh=1 forceert een verse berekening (cron). */
+  const forceRefresh = ['1', 'true'].includes(clean(req.query.refresh).toLowerCase());
+  if (!forceRefresh) {
+    const cached = await readReportCache('store-customer-overview', period, 0);
+    if (cached?.data?.stores) {
+      const stores = applyStoreScope(req, cached.data.stores, (s) => s.store);
+      return res.status(200).json({
+        ...cached.data,
+        stores,
+        cached: true,
+        refreshedAt: cached.cachedAt,
+        ageMinutes: Math.round((cached.ageMs || 0) / 60000),
+      });
+    }
+  }
+
   try {
     /* Parallel: Shopify orders (huidige + lookback) + SRS inschrijvingen + Shopify Locations */
     const [orders, srsData, locationsMap] = await Promise.all([
@@ -387,11 +406,6 @@ export default async function handler(req, res) {
       return bScore - aScore;
     });
 
-    /* Winkel-scope: een store-gebonden gebruiker (bv. shop_manager) ziet alléén
-       zijn eigen winkels — ook al injecteert de portal de admin-token. Master-
-       admin/interne tools sturen geen x-user-stores mee → geen beperking. */
-    const scopedStores = applyStoreScope(req, stores, (s) => s.store);
-
     /* Channel split headline */
     const totalCount = totalOnline + totalStore;
     const channelSplit = {
@@ -405,7 +419,10 @@ export default async function handler(req, res) {
       totalSpend: moneyNumber(totalOnlineSpend + totalStoreSpend)
     };
 
-    return res.status(200).json({
+    /* Volledige (ongescopede) uitkomst → cache, zodat 'm voor elke gebruiker
+       herbruikbaar is. De winkel-scope (shop_manager ziet alleen eigen winkels)
+       passen we PAS bij het serveren toe. */
+    const result = {
       success: true,
       period,
       range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
@@ -416,7 +433,15 @@ export default async function handler(req, res) {
       srsBranchesWithData: srsData.byBranchId.size,
       channelSplit,
       channelTrend,
-      stores: scopedStores
+      stores
+    };
+    try { await writeReportCache('store-customer-overview', period, result); }
+    catch (e) { console.warn('[store-customer-overview] cache-write:', e.message); }
+
+    return res.status(200).json({
+      ...result,
+      stores: applyStoreScope(req, stores, (s) => s.store),
+      cached: false
     });
   } catch (error) {
     console.error('[admin/store-customer-overview]', error);
