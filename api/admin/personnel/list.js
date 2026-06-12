@@ -70,10 +70,15 @@ export default async function handler(req, res) {
   const includeInactive = String(req.query.includeInactive || '') === '1';
 
   try {
-    /* Widen SRS personnel range tijdelijk via env-vars wanneer kantoor-IDs
-       buiten standaardrange vallen. SRS_PERSONNEL_ID_FROM/TO bepalen scope. */
+    /* SRS personnel-range. BELANGRIJK: een (verouderde) SRS_PERSONNEL_ID_TO mag
+       de lijst NIET naar beneden afknijpen — die stond op 999 en sloot iedereen
+       met personeelsnr >= 1000 buiten (bv. Vince #1014, kantoor #1088). De env
+       mag de range alleen verder OPrekken, nooit onder de veilige bodem van
+       9999 (GENTS-nummers blijven voorlopig 4-cijferig). */
+    const FLOOR_TO = 9999;
+    const envTo = parseInt(process.env.SRS_PERSONNEL_ID_TO || '0', 10);
     const srsFrom = String(process.env.SRS_PERSONNEL_ID_FROM || '1').trim();
-    const srsTo = String(process.env.SRS_PERSONNEL_ID_TO || '9999').trim();
+    const srsTo = String(Math.max(Number.isFinite(envTo) ? envTo : 0, FLOOR_TO));
 
     const [persons, permsMap, officeUsers] = await Promise.all([
       getPersonnel({ from: srsFrom, to: srsTo }).catch((e) => {
