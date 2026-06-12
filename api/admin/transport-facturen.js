@@ -1,25 +1,23 @@
-import { parseDhlInvoiceText } from '../../lib/dhl-invoice-parser.js';
-import { getInvoices, saveInvoice, removeInvoice } from '../../lib/dhl-invoices-store.js';
+import { ingestDhlInvoice } from '../../lib/dhl-invoice-ingest.js';
+import { getInvoices, removeInvoice, markInvoiceSeen } from '../../lib/dhl-invoices-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 /**
  * /api/admin/transport-facturen — DHL-facturen (echte aantallen + kosten).
- *   GET                          → { success, invoices }
+ *   GET                          → { success, invoices, newCount }
  *   POST { pdfBase64 }           → lees PDF, parse, verrijk (consument/zakelijk), bewaar
+ *   POST { markSeen }            → markeer factuur (of '*' = alle) als gezien
  *   DELETE ?id=                  → verwijder een factuur
  *
  * De DHL-factuur is de complete, kost-accurate bron (alle zendingen + gefactureerde
- * bedragen) — i.t.t. de handmatige SendCloud-portal-labels.
+ * bedragen) — i.t.t. de handmatige SendCloud-portal-labels. De extract→parse→verrijk
+ * →bewaar-keten zit in lib/dhl-invoice-ingest.js, gedeeld met de e-mail-inbound.
  */
 
 export const config = { maxDuration: 30 };
 
 function clean(v) {
   return String(v || '').trim();
-}
-function round(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
 function isAuthorized(req) {
@@ -34,33 +32,6 @@ function isAuthorized(req) {
     ''
   ).replace(/^Bearer\s+/i, '');
   return token === adminToken;
-}
-
-/** consument (For You / Parcel Connect) vs zakelijk/intern (Europlus e.d.). */
-function serviceCategory(name) {
-  const s = clean(name).toLowerCase();
-  if (s.includes('for you') || s.includes('foryou') || s.includes('parcel connect')) return 'consument';
-  return 'zakelijk';
-}
-
-function enrich(parsed) {
-  const services = (parsed.services || []).map((s) => ({ ...s, category: serviceCategory(s.service) }));
-  const sum = (cat) =>
-    services
-      .filter((s) => s.category === cat)
-      .reduce((a, s) => ({ count: a.count + s.count, cost: round(a.cost + s.total) }), { count: 0, cost: 0 });
-  const consument = sum('consument');
-  const zakelijk = sum('zakelijk');
-  const total = parsed.totalShipments || services.reduce((a, s) => a + s.count, 0);
-  const pct = (n) => (total ? Math.round((n / total) * 1000) / 10 : 0);
-  return {
-    ...parsed,
-    services,
-    breakdown: {
-      consument: { ...consument, pct: pct(consument.count) },
-      zakelijk: { ...zakelijk, pct: pct(zakelijk.count) },
-    },
-  };
 }
 
 function parseBody(req) {
@@ -79,7 +50,9 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      return res.status(200).json({ success: true, invoices: await getInvoices() });
+      const invoices = await getInvoices();
+      const newCount = invoices.filter((i) => !i.seenAt).length;
+      return res.status(200).json({ success: true, invoices, newCount });
     }
 
     if (req.method === 'DELETE') {
@@ -89,33 +62,26 @@ export default async function handler(req, res) {
 
     if (req.method === 'POST') {
       const body = parseBody(req);
+
+      /* Markeer als gezien (factuur-id of '*' voor alles). */
+      if (body.markSeen) {
+        const changed = await markInvoiceSeen(clean(body.markSeen));
+        return res.status(200).json({ success: true, changed });
+      }
+
       const b64 = clean(body.pdfBase64).replace(/^data:[^,]*,/, '');
       if (!b64) return res.status(400).json({ success: false, message: 'pdfBase64 is verplicht.' });
 
-      let text = '';
       try {
-        // unpdf is serverless-vriendelijk (i.t.t. pdf-parse) en lazy-geïmporteerd
-        // zodat een eventueel laad-probleem alleen de ingest raakt, niet GET.
-        const { extractText, getDocumentProxy } = await import('unpdf');
-        const pdf = await getDocumentProxy(new Uint8Array(Buffer.from(b64, 'base64')));
-        const result = await extractText(pdf, { mergePages: true });
-        text = result?.text || '';
-      } catch (e) {
-        return res.status(400).json({ success: false, message: `PDF kon niet gelezen worden: ${e.message}` });
-      }
-
-      const parsed = parseDhlInvoiceText(text);
-      if (!parsed.totalShipments && !parsed.invoiceNumber) {
-        return res.status(422).json({
-          success: false,
-          message: 'Geen herkenbare DHL-factuur (factuurnummer/zendingen niet gevonden).',
+        const saved = await ingestDhlInvoice(Buffer.from(b64, 'base64'), {
+          source: clean(body.source) || 'upload',
+          addedBy: clean(body.employeeName) || 'portaal',
         });
+        return res.status(200).json({ success: true, invoice: saved });
+      } catch (e) {
+        const status = e.code === 'NOT_DHL' ? 422 : e.code === 'PDF_UNREADABLE' ? 400 : 500;
+        return res.status(status).json({ success: false, message: e.message });
       }
-
-      const saved = await saveInvoice(
-        enrich({ ...parsed, source: clean(body.source) || 'upload', addedBy: clean(body.employeeName) || 'portaal' })
-      );
-      return res.status(200).json({ success: true, invoice: saved });
     }
 
     return res.status(405).json({ success: false, message: 'Methode niet toegestaan.' });
