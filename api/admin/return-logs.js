@@ -1,4 +1,4 @@
-import { getSrsReturnLogs } from '../../lib/srs-return-log-store.js';
+import { getSrsReturnLogs, saveSrsReturnLogs } from '../../lib/srs-return-log-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 /**
@@ -38,6 +38,7 @@ function isAuthorized(req) {
 
 function clean(value) { return String(value || '').trim(); }
 function moneyNumber(value) { return Math.round(Number(value || 0) * 100) / 100; }
+function safeJson(s) { try { return JSON.parse(s); } catch { return {}; } }
 
 function parseDate(value) {
   if (!value) return null;
@@ -137,16 +138,48 @@ function computeTotals(rows) {
 }
 
 export default async function handler(req, res) {
-  if (handleCors(req, res, ['GET', 'OPTIONS'])) return;
-  setCorsHeaders(res, ['GET', 'OPTIONS']);
+  if (handleCors(req, res, ['GET', 'POST', 'OPTIONS'])) return;
+  setCorsHeaders(res, ['GET', 'POST', 'OPTIONS']);
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-
-  if (req.method !== 'GET') {
-    return res.status(405).json({ success: false, message: 'Alleen GET.' });
-  }
 
   if (!isAuthorized(req)) {
     return res.status(401).json({ success: false, message: 'Niet bevoegd.' });
+  }
+
+  /* POST: eenmalige reparatie van false-negatives — retouren die SRS wél als
+     'completed' verwerkte maar door een parse-bug als mislukt zijn gelogd
+     (status bevatte de hele XML-blob i.p.v. "completed"). Idempotent. */
+  if (req.method === 'POST') {
+    const body = typeof req.body === 'string' ? safeJson(req.body) : (req.body || {});
+    if (clean(body.action) !== 'repair-completed-status') {
+      return res.status(400).json({ success: false, message: 'Onbekende actie.' });
+    }
+    try {
+      const logs = await getSrsReturnLogs({ strict: true });
+      let changed = 0;
+      const fixed = [];
+      for (const log of logs) {
+        if (!log.success && /completed/i.test(String(log.status || '')) && clean(log.srsTransactionId)) {
+          log.success = true;
+          log.status = 'completed';
+          log.message = 'Retour verwerkt in SRS.';
+          log.error = '';
+          log.srsCancelled = true;
+          if (!log.srsCancelledAt) log.srsCancelledAt = log.createdAt || null;
+          changed += 1;
+          fixed.push({ orderNr: log.orderNr, srsTransactionId: log.srsTransactionId });
+        }
+      }
+      if (changed) await saveSrsReturnLogs(logs);
+      return res.status(200).json({ success: true, changed, total: logs.length, fixed });
+    } catch (error) {
+      console.error('[admin/return-logs repair]', error);
+      return res.status(500).json({ success: false, message: error.message || 'Reparatie mislukt.' });
+    }
+  }
+
+  if (req.method !== 'GET') {
+    return res.status(405).json({ success: false, message: 'Alleen GET of POST.' });
   }
 
   try {
