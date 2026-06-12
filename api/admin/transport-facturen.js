@@ -1,4 +1,3 @@
-import { PDFParse } from 'pdf-parse';
 import { parseDhlInvoiceText } from '../../lib/dhl-invoice-parser.js';
 import { getInvoices, saveInvoice, removeInvoice } from '../../lib/dhl-invoices-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
@@ -95,10 +94,12 @@ export default async function handler(req, res) {
 
       let text = '';
       try {
-        const parser = new PDFParse({ data: Buffer.from(b64, 'base64') });
-        const result = await parser.getText();
+        // unpdf is serverless-vriendelijk (i.t.t. pdf-parse) en lazy-geïmporteerd
+        // zodat een eventueel laad-probleem alleen de ingest raakt, niet GET.
+        const { extractText, getDocumentProxy } = await import('unpdf');
+        const pdf = await getDocumentProxy(new Uint8Array(Buffer.from(b64, 'base64')));
+        const result = await extractText(pdf, { mergePages: true });
         text = result?.text || '';
-        await parser.destroy();
       } catch (e) {
         return res.status(400).json({ success: false, message: `PDF kon niet gelezen worden: ${e.message}` });
       }
