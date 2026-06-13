@@ -1,5 +1,6 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 import { getFulfillments } from '../../lib/srs-weborders-message-client.js';
+import { stockBySkus } from '../../lib/sku-stock.js';
 
 /**
  * GET /api/admin/order-trail?orderNr=12345
@@ -35,6 +36,7 @@ const STATUS_LABEL = {
   completed: 'Verzonden',
   shipped: 'Verzonden',
   fulfilled: 'Verzonden',
+  processed: 'Verzonden',
 };
 
 export default async function handler(req, res) {
@@ -75,6 +77,17 @@ export default async function handler(req, res) {
     const active = list.filter((f) => !f.unavailable);
     const current = active.length ? active[active.length - 1] : (list[list.length - 1] || null);
 
+    /* Voorraad per winkel voor de artikelen van deze order (SRS-snapshots).
+       Zo zie je naar welke winkel je 'm kunt sturen die 'm écht heeft, i.p.v.
+       de bounce. Faalt dit, dan tonen we de route gewoon zonder voorraad. */
+    const skus = [...new Set(list.map((f) => f.sku).filter(Boolean))];
+    let stockBySku = {};
+    try {
+      stockBySku = await stockBySkus(skus);
+    } catch (e) {
+      console.error('[admin/order-trail] stock lookup failed', e?.message || e);
+    }
+
     return res.status(200).json({
       success: true,
       orderNr,
@@ -83,6 +96,8 @@ export default async function handler(req, res) {
       storeChain,
       current,
       fulfillments: list,
+      skus,
+      stockBySku,
     });
   } catch (error) {
     console.error('[admin/order-trail]', error);
