@@ -1,5 +1,5 @@
-import { ingestDhlInvoice } from '../../lib/dhl-invoice-ingest.js';
-import { getInvoices, removeInvoice, markInvoiceSeen } from '../../lib/dhl-invoices-store.js';
+import { ingestDhlInvoice, parseDhlInvoice } from '../../lib/dhl-invoice-ingest.js';
+import { getInvoices, removeInvoice, markInvoiceSeen, saveInvoices } from '../../lib/dhl-invoices-store.js';
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
 
 /**
@@ -69,14 +69,27 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, changed });
       }
 
+      /* Bulk-opslaan van al-geparste facturen in ÉÉN write. Voorkomt dataverlies
+         bij meerdere uploads (losse saveInvoice-calls verliezen data door de
+         eventually-consistent blob-list). Client: parse elk los (parseOnly),
+         verzamel, en stuur de objecten hier in één keer. */
+      if (Array.isArray(body.bulkSave)) {
+        const result = await saveInvoices(body.bulkSave);
+        return res.status(200).json({ success: true, ...result });
+      }
+
       const b64 = clean(body.pdfBase64).replace(/^data:[^,]*,/, '');
       if (!b64) return res.status(400).json({ success: false, message: 'pdfBase64 is verplicht.' });
 
       try {
-        const saved = await ingestDhlInvoice(Buffer.from(b64, 'base64'), {
-          source: clean(body.source) || 'upload',
-          addedBy: clean(body.employeeName) || 'portaal',
-        });
+        const meta = { source: clean(body.source) || 'upload', addedBy: clean(body.employeeName) || 'portaal' };
+        const bytes = Buffer.from(b64, 'base64');
+        /* parseOnly: parse + verrijk, maar NIET opslaan (voor bulk-flow). */
+        if (body.parseOnly) {
+          const invoice = await parseDhlInvoice(bytes, meta);
+          return res.status(200).json({ success: true, parsed: true, invoice });
+        }
+        const saved = await ingestDhlInvoice(bytes, meta);
         return res.status(200).json({ success: true, invoice: saved });
       } catch (e) {
         const status = e.code === 'NOT_DHL' ? 422 : e.code === 'PDF_UNREADABLE' ? 400 : 500;
