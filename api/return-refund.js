@@ -635,6 +635,11 @@ export default async function handler(req, res) {
   const reasonChecked = body.reasonChecked === true || body.reason_checked === true;
   const crossSellMade = body.crossSellMade === true || body.cross_sell_made === true;
   const crossSellAmount = Number(body.crossSellAmount ?? body.cross_sell_amount ?? 0) || 0;
+  /* Ruil: klant nam een ander artikel mee i.p.v. geld terug. Optioneel het
+     vervangende artikel + waarde. Voor de ruil-vs-retour-cijfers per winkel. */
+  const exchange = body.exchange === true || body.ruil === true;
+  const exchangeItem = String(body.exchangeItem || body.ruilArtikel || '').trim();
+  const exchangeAmount = Number(body.exchangeAmount ?? body.ruil_bedrag ?? 0) || 0;
   const selectedItems = normalizeSelectedItems(body.items || body.selectedItems || body.refundItems);
 
   /* SRS-restock: of het artikel teruggeboekt mag worden op het meldende filiaal.
@@ -888,6 +893,9 @@ export default async function handler(req, res) {
         reasonChecked,
         crossSellMade,
         crossSellAmount,
+        exchange,
+        exchangeItem,
+        exchangeAmount,
         customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
         customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
         customerId: String(order.customer?.id || ''),
@@ -938,6 +946,9 @@ export default async function handler(req, res) {
         reasonChecked,
         crossSellMade,
         crossSellAmount,
+        exchange,
+        exchangeItem,
+        exchangeAmount,
         customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
         customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
         customerId: String(order.customer?.id || ''),
@@ -966,6 +977,9 @@ export default async function handler(req, res) {
         reasonChecked,
         crossSellMade,
         crossSellAmount,
+        exchange,
+        exchangeItem,
+        exchangeAmount,
         customerEmail: String(order.email || order.contact_email || order.customer?.email || ''),
         customerName: String(order.customer?.first_name || '') + ' ' + String(order.customer?.last_name || ''),
         customerId: String(order.customer?.id || ''),

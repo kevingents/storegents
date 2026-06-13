@@ -85,6 +85,9 @@ function lineRowsFromLog(log) {
     reasonChecked: Boolean(log.reasonChecked),
     crossSellMade: Boolean(log.crossSellMade),
     crossSellAmount: moneyNumber(log.crossSellAmount),
+    exchange: Boolean(log.exchange),
+    exchangeItem: clean(log.exchangeItem),
+    exchangeAmount: moneyNumber(log.exchangeAmount),
     reason: clean(item.reason || log.reason || ''),
     message: clean(log.message),
     error: clean(log.error),
@@ -103,6 +106,8 @@ function computeTotals(rows) {
     amount: 0,
     crossSellCount: 0,
     crossSellAmount: 0,
+    exchangeCount: 0,
+    exchangeAmount: 0,
     reasonCheckedCount: 0,
     uniqueOrders: new Set(),
     uniqueCustomers: new Set(),
@@ -115,6 +120,8 @@ function computeTotals(rows) {
     totals.amount += Number(row.amount || 0);
     if (row.crossSellMade) totals.crossSellCount += 1;
     totals.crossSellAmount += Number(row.crossSellAmount || 0);
+    if (row.exchange) totals.exchangeCount += 1;
+    totals.exchangeAmount += Number(row.exchangeAmount || 0);
     if (row.reasonChecked) totals.reasonCheckedCount += 1;
     if (row.orderNr) totals.uniqueOrders.add(row.orderNr);
     if (row.store) totals.uniqueStores.add(row.store);
@@ -129,6 +136,9 @@ function computeTotals(rows) {
     crossSellCount: totals.crossSellCount,
     crossSellAmount: moneyNumber(totals.crossSellAmount),
     crossSellRate: totals.total ? Math.round((totals.crossSellCount / totals.total) * 100) : 0,
+    exchangeCount: totals.exchangeCount,
+    exchangeAmount: moneyNumber(totals.exchangeAmount),
+    exchangeRate: totals.total ? Math.round((totals.exchangeCount / totals.total) * 100) : 0,
     reasonCheckedCount: totals.reasonCheckedCount,
     reasonCheckedRate: totals.total ? Math.round((totals.reasonCheckedCount / totals.total) * 100) : 0,
     uniqueOrders: totals.uniqueOrders.size,
