@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders, requireAdmin } from '../../lib/cors.js';
+import { callerStoreScope } from '../../lib/caller-store-scope.js';
 
 export const maxDuration = 60;
 
@@ -66,8 +67,12 @@ export default async function handler(req, res) {
     return res.status(200).json(emptyResponse(msg));
   }
 
+  /* Winkel-scope (shop_manager): alleen eigen winkels — ook in de cacheKey. */
+  const scope = callerStoreScope(req);
+  const allowedStores = scope ? new Set(scope.map((s) => String(s).toLowerCase())) : null;
+
   const refresh = ['1', 'true'].includes(String(req.query.refresh || ''));
-  const cacheKey = `${period}|${customFrom}|${customTo}|${storeFilter}`;
+  const cacheKey = `${period}|${customFrom}|${customTo}|${storeFilter}|scope=${scope ? scope.join(',') : ''}`;
   const cacheHit = REVENUE_CACHE.get(cacheKey);
   if (!refresh && cacheHit && Date.now() - cacheHit.ts < REVENUE_TTL_MS) {
     return res.status(200).json({ ...cacheHit.payload, cached: true, cacheAgeMs: Date.now() - cacheHit.ts });
@@ -77,8 +82,8 @@ export default async function handler(req, res) {
     const current  = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.from, range.to);
     const previous = await fetchShopifyOrders(shopifyDomain, shopifyToken, apiVersion, range.prevFrom, range.prevTo);
 
-    const cur = aggregate(current, storeFilter, range);
-    const prev = aggregate(previous, storeFilter, range);
+    const cur = aggregate(current, storeFilter, range, allowedStores);
+    const prev = aggregate(previous, storeFilter, range, allowedStores);
     /* Trend op netRevenue (na retouren + annuleringen) — eerlijkere vergelijking */
     const trendPct = prev.netRevenue ? Number((((cur.netRevenue - prev.netRevenue) / prev.netRevenue) * 100).toFixed(1)) : null;
 
@@ -154,7 +159,7 @@ async function fetchShopifyOrders(domain, token, apiVersion, from, to, maxOrders
   return orders;
 }
 
-function aggregate(orders, storeFilter, range) {
+function aggregate(orders, storeFilter, range, allowedStores = null) {
   let totalRevenue = 0;
   let refundedRevenue = 0;  /* refunds op NIET-geannuleerde orders */
   let netRevenue = 0;       /* per order berekend, vermijdt dubbelaftrek */
@@ -173,6 +178,8 @@ function aggregate(orders, storeFilter, range) {
 
     const store = inferStore(o);
     if (storeFilter && store !== storeFilter) return;
+    /* Winkel-scope (shop_manager): alleen eigen winkels. */
+    if (allowedStores && !allowedStores.has(String(store || '').toLowerCase())) return;
 
     const total = Number(o.total_price || 0);
     const refunded = (o.refunds || []).reduce((s, rf) => s + (rf.transactions || []).reduce((ss, tx) => ss + Number(tx.amount || 0), 0), 0);

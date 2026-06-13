@@ -7,6 +7,7 @@ import {
   getStoreNameByBranchId,
   isWarehouseStore
 } from '../../lib/branch-metrics.js';
+import { callerStoreScope } from '../../lib/caller-store-scope.js';
 
 /**
  * GET /api/admin/revenue-srs-cached?period=today|week|month|year[&store=|&branchId=]
@@ -126,6 +127,17 @@ export default async function handler(req, res) {
     } else if (storeFilter) {
       const match = branchIds.filter((bid) => getStoreNameByBranchId(bid) === storeFilter);
       branchIds = match.length ? match : [];
+    }
+
+    /* Winkel-scope: een store-gebonden gebruiker (bv. shop_manager) ziet alléén
+       de omzet van zijn eigen winkel(s) — ook al injecteert de portal de admin-
+       token. De BFF stuurt de winkelset uit de ondertekende sessie mee
+       (x-user-stores); master-admin stuurt niets → geen beperking. Beperkt óók
+       een expliciete store/branchId-keuze, zodat tamperen niet helpt. */
+    const scope = callerStoreScope(req);
+    if (scope) {
+      const allow = new Set(scope.map((s) => String(s).toLowerCase()));
+      branchIds = branchIds.filter((bid) => allow.has(String(getStoreNameByBranchId(bid) || '').toLowerCase()));
     }
 
     const perStore = [];

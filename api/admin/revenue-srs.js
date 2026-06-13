@@ -5,6 +5,7 @@ import {
   getStoreNameByBranchId,
   isWarehouseStore
 } from '../../lib/branch-metrics.js';
+import { callerStoreScope } from '../../lib/caller-store-scope.js';
 
 /**
  * GET /api/admin/revenue-srs?period=today|week|month|year
@@ -67,7 +68,7 @@ function computeRange(period, now = new Date()) {
   return { from, until, prevFrom, prevUntil };
 }
 
-function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders = true } = {}) {
+function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders = true, allowedStores = null } = {}) {
   /* Splitsing bruto vs retour:
      - SRS levert item.charged als NEGATIEF voor retour-lijnen.
      - Een transactie met netto negative tx.total = puur retour-bon.
@@ -105,6 +106,8 @@ function aggregate(transactions, storeFilter, branchIdFilter, { excludeWeborders
 
     const storeName = getStoreNameByBranchId(branchId);
     if (storeFilter && storeName !== storeFilter) continue;
+    /* Winkel-scope (shop_manager): alleen eigen winkels. */
+    if (allowedStores && !allowedStores.has(String(storeName || '').toLowerCase())) continue;
 
     /* Bonnen-filter (winkel-omzet): alleen PURE POS-aankopen tellen mee.
        Business-regel: alle omzet gekocht in de winkel gaat naar de winkel.
@@ -286,7 +289,12 @@ export default async function handler(req, res) {
   const includeWeborders = String(req.query.includeWeborders || '') === '1';
   const excludeWeborders = !includeWeborders;
 
-  const cacheKey = `${period}|${iso(range.from)}|${iso(range.until)}|${storeFilter}|${branchIdFilter}|excl=${excludeWeborders}`;
+  /* Winkel-scope (shop_manager): alleen eigen winkels — ook in de cacheKey, zodat
+     een gescopede gebruiker nooit de all-stores-cache van een ander krijgt. */
+  const scope = callerStoreScope(req);
+  const allowedStores = scope ? new Set(scope.map((s) => String(s).toLowerCase())) : null;
+
+  const cacheKey = `${period}|${iso(range.from)}|${iso(range.until)}|${storeFilter}|${branchIdFilter}|excl=${excludeWeborders}|scope=${scope ? scope.join(',') : ''}`;
   const cached = cache.get(cacheKey);
   if (cached && (Date.now() - cached.at) < CACHE_TTL_MS) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -298,8 +306,8 @@ export default async function handler(req, res) {
       fetchPeriod(range.prevFrom, range.prevUntil)
     ]);
 
-    const cur = aggregate(current, storeFilter, branchIdFilter, { excludeWeborders });
-    const prev = aggregate(previous, storeFilter, branchIdFilter, { excludeWeborders });
+    const cur = aggregate(current, storeFilter, branchIdFilter, { excludeWeborders, allowedStores });
+    const prev = aggregate(previous, storeFilter, branchIdFilter, { excludeWeborders, allowedStores });
     const trendPct = prev.totalRevenue
       ? Number((((cur.totalRevenue - prev.totalRevenue) / prev.totalRevenue) * 100).toFixed(1))
       : null;
@@ -309,6 +317,8 @@ export default async function handler(req, res) {
     const branches = listBranches({ includeInternal: false });
     const existingStores = new Set(cur.perStore.map((s) => s.store));
     for (const b of branches) {
+      /* Niet de 0-omzet-winkels van bùiten de scope terug toevoegen. */
+      if (allowedStores && !allowedStores.has(String(b.store || '').toLowerCase())) continue;
       if (!existingStores.has(b.store) && !isWarehouseStore(b.store)) {
         cur.perStore.push({
           store: b.store,
