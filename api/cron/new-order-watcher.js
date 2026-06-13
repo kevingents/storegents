@@ -17,7 +17,7 @@
  */
 
 import { createNotification } from '../../lib/store-notifications-store.js';
-import { getSubscriptionsForStores, removeSubscriptionByEndpoint } from '../../lib/push-subscriptions-store.js';
+import { sendPushToStores as sendWebPush } from '../../lib/web-push-sender.js';
 import { sendPushToStores, pushowlConfigured } from '../../lib/pushowl-client.js';
 import { getSeenIds, markSeen } from '../../lib/notifications-watermark-store.js';
 import { listBranches } from '../../lib/branch-metrics.js';
@@ -26,28 +26,6 @@ import { isCronAuthorized } from '../../lib/cron-auth.js';
 
 function isAuthorized(req) {
   return isCronAuthorized(req);
-}
-
-async function sendPushBestEffort(subscription, payload) {
-  try {
-    const webpush = await import('web-push');
-    const wp = webpush.default || webpush;
-    const vapidPublic = process.env.VAPID_PUBLIC_KEY;
-    const vapidPrivate = process.env.VAPID_PRIVATE_KEY;
-    if (!vapidPublic || !vapidPrivate) return { sent: false, reason: 'no-vapid' };
-    wp.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:klantenservice@gents.nl', vapidPublic, vapidPrivate);
-    await wp.sendNotification(
-      { endpoint: subscription.endpoint, keys: subscription.keys },
-      JSON.stringify(payload)
-    );
-    return { sent: true };
-  } catch (error) {
-    if (error.statusCode === 410 || error.statusCode === 404) {
-      await removeSubscriptionByEndpoint(subscription.endpoint).catch(() => {});
-      return { sent: false, reason: 'expired', removed: true };
-    }
-    return { sent: false, reason: error.message };
-  }
 }
 
 async function fetchInternal(req, path) {
@@ -87,12 +65,9 @@ async function checkStorePickups(req, store) {
         link: '/pages/winkel-portaal',
         createdBy: 'cron:new-order-watcher'
       });
-      /* Web Push (eigen SW) — werkt niet in Shopify maar best-effort */
+      /* Web Push naar de portal-app (eigen SW) — speelt ook een bel (sound:true). */
       try {
-        const subs = await getSubscriptionsForStores([store]);
-        await Promise.all(subs.map(s => sendPushBestEffort(s, {
-          id: notif.id, title: notif.title, body: notif.body, severity: notif.severity, link: notif.link
-        })));
+        await sendWebPush([store], { title: notif.title, body: notif.body, url: '/openstaande-orders', tag: `pickup-${store}`, sound: true });
       } catch (e) { console.error('[push pickup]', e.message); }
       /* PushOwl push — werkt wel in Shopify */
       if (pushowlConfigured()) {
@@ -139,10 +114,7 @@ async function checkStoreWeborders(req, store, branchId = '', label = '') {
         createdBy: 'cron:new-order-watcher'
       });
       try {
-        const subs = await getSubscriptionsForStores([store]);
-        await Promise.all(subs.map(s => sendPushBestEffort(s, {
-          id: notif.id, title: notif.title, body: notif.body, severity: notif.severity, link: notif.link
-        })));
+        await sendWebPush([store], { title: notif.title, body: notif.body, url: '/openstaande-orders', tag: `weborder-${store}`, sound: true });
       } catch (e) { console.error('[push weborder]', e.message); }
       if (pushowlConfigured()) {
         try {
