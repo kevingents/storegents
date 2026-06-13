@@ -9,17 +9,15 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * webhook verwerkt de PDF-bijlage automatisch (parse → opslaan), zodat de
  * transport-verdeling/-facturen vanzelf bijgewerkt worden.
  *
- * Setup in Resend dashboard:
- *   1. Domains → kies/voeg een SUBDOMEIN toe voor ontvangen (bv. inbound.gents.nl),
- *      óf gebruik het gratis default-adres dat Resend geeft (…@<account>.resend.app)
- *      als je geen DNS wilt aanpassen.
- *   2. Voeg het MX-record toe dat Resend toont (laagste priority) — alléén op het
- *      subdomein, zodat je gewone mail op gents.nl ongemoeid blijft.
- *   3. Webhooks → Add Endpoint:
- *        URL:    https://storegents.vercel.app/api/webhooks/resend-inbound
- *        Event:  email.received
- *      Kopieer de Signing Secret (whsec_…) → Vercel env RESEND_INBOUND_WEBHOOK_SECRET
- *      (valt terug op RESEND_WEBHOOK_SECRET als die niet apart gezet is).
+ * Setup:
+ *   1. Ontvangstadres: gebruik het gratis Resend-default-domein (geen DNS nodig),
+ *      bv. dhl@<account>.resend.app. (Eigen subdomein kan ook, met MX-record op
+ *      alléén dat subdomein zodat gents.nl-mail ongemoeid blijft.)
+ *   2. Webhook (event email.received → deze endpoint) — via POST /webhooks API of
+ *      het dashboard. URL: https://storegents.vercel.app/api/webhooks/resend-inbound
+ *   3. Zet de teruggegeven signing-secret (whsec_…) in Vercel als
+ *      RESEND_INBOUND_WEBHOOK_SECRET. Zónder die secret accepteert deze endpoint
+ *      ongeverifieerd (de Attachments-API valideert het email_id sowieso).
  *
  * Resend levert bij inbound alléén metadata in de webhook (geen bijlage-bytes).
  * De PDF halen we op via de Attachments-API:
@@ -103,9 +101,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ received: false, error: 'Body niet leesbaar.' });
   }
 
-  const secret = String(
-    process.env.RESEND_INBOUND_WEBHOOK_SECRET || process.env.RESEND_WEBHOOK_SECRET || ''
-  ).trim();
+  /* Alléén de eigen signing-secret van DEZE (inbound) webhook — NIET terugvallen
+     op RESEND_WEBHOOK_SECRET: dat is de secret van de andere (verzend-events)
+     endpoint en zou de handtekening laten falen → 401. Zonder secret accepteren
+     we ongeverifieerd (de Attachments-API valideert het email_id sowieso, dus
+     een vervalste POST kan geen factuur injecteren). */
+  const secret = String(process.env.RESEND_INBOUND_WEBHOOK_SECRET || '').trim();
   if (secret) {
     const ok = verifySvixSignature(
       secret,
