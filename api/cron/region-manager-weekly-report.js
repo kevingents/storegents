@@ -6,6 +6,7 @@ import { getRegionReportConfig } from '../../lib/region-report-config-store.js';
 import { addCurrentOverdueOrder, addLoggedWeeklyOverdueOrders, ensureWeeklyStoreRow } from '../../lib/region-weekly-overdue-memory.js';
 import { addSnapshotWeeklyOverdueOrders } from '../../lib/weekly-overdue-snapshot-store.js';
 import { getDragerCache, summarizeDragers } from '../../lib/srs-dragers-store.js';
+import { getOrderCancellations, cancellationLineRows } from '../../lib/order-cancellation-store.js';
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
 function setNoStore(res) {
@@ -107,6 +108,37 @@ function metricFromScoreboard(row = {}) {
   };
 }
 
+/* Skips per winkel: hoe vaak een winkel een orderregel niet-leverbaar meldde
+   (SRS cancel/unavailable-fulfillment) in de periode. Bron: order-cancellations
+   (gevuld door de srs-cancellations-nightly cron, één record per skip met de
+   meldende winkel + SRS-datum). Telt álle skips, ook als 'ie elders wél geleverd is. */
+function skipsByStore(rows = [], { dateFrom = '', dateTo = '', stores = [] } = {}) {
+  const storeSet = new Set((stores || []).map((s) => String(s || '').trim()));
+  const from = dateFrom ? new Date(dateFrom) : null;
+  const to = dateTo ? new Date(dateTo) : null;
+  const toExclusive = to && !Number.isNaN(to.getTime())
+    ? new Date(to.getFullYear(), to.getMonth(), to.getDate() + 1)
+    : null;
+  const map = new Map();
+  for (const row of rows) {
+    const store = String(row.store || row.lastResponsibleStore || '').trim();
+    if (!store || !storeSet.has(store)) continue;
+    const raw = row.createdAt || row.processedAt || row.updatedAt;
+    const d = raw ? new Date(raw) : null;
+    if (!d || Number.isNaN(d.getTime())) continue;
+    if (from && d < from) continue;
+    if (toExclusive && d >= toExclusive) continue;
+    if (!map.has(store)) map.set(store, { store, skips: 0, items: 0, _orders: new Set() });
+    const m = map.get(store);
+    m.skips += 1;
+    m.items += number(row.quantity || 1);
+    if (row.orderNr) m._orders.add(String(row.orderNr));
+  }
+  return Array.from(map.values())
+    .map((m) => ({ store: m.store, skips: m.skips, items: m.items, orders: m._orders.size }))
+    .sort((a, b) => b.skips - a.skips || a.store.localeCompare(b.store, 'nl'));
+}
+
 function exchangeTotalsByStore(exchangeRows = []) {
   const map = new Map();
   for (const row of exchangeRows) {
@@ -117,7 +149,7 @@ function exchangeTotalsByStore(exchangeRows = []) {
   return Array.from(map.values()).sort((a, b) => b.overdueExchanges - a.overdueExchanges || a.store.localeCompare(b.store, 'nl'));
 }
 
-function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows }) {
+function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows, skipStores = [] }) {
   const stores = new Set(region.stores || []);
   const metrics = scoreboardRows.filter((row) => stores.has(row.store)).map(metricFromScoreboard);
   const overdueStores = Array.from(overdueByStore.values()).filter((row) => stores.has(row.store) && row.overdueCount > 0);
@@ -133,6 +165,7 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows })
     metrics,
     overdueStores,
     dragerStores,
+    skipStores,
     totals: {
       labelCreated: metrics.reduce((sum, row) => sum + row.labelCreated, 0),
       customersWithEmail: metrics.reduce((sum, row) => sum + row.customersWithEmail, 0),
@@ -144,7 +177,10 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows })
       processedAfterOverdue: overdueStores.reduce((sum, row) => sum + Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)), 0),
       openDragers: dragerStores.reduce((sum, row) => sum + number(row.openCount), 0),
       teLateDragers: dragerStores.reduce((sum, row) => sum + number(row.overdueCount), 0),
-      winkelsMetDragers: dragerStores.length
+      winkelsMetDragers: dragerStores.length,
+      skips: skipStores.reduce((sum, row) => sum + number(row.skips), 0),
+      skipItems: skipStores.reduce((sum, row) => sum + number(row.items), 0),
+      winkelsMetSkips: skipStores.length
     }
   };
 }
@@ -159,7 +195,9 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
        overdueExchanges-vlag blijft gerespecteerd voor backwards-compat). */
     openDragers: region.sections?.openDragers !== false && region.sections?.overdueExchanges !== false,
     customerSignups: region.sections?.customerSignups !== false,
-    shippingLabels: region.sections?.shippingLabels !== false
+    shippingLabels: region.sections?.shippingLabels !== false,
+    /* Skips = hoe vaak een winkel niet-leverbaar meldde (bounce). Default aan. */
+    skips: region.sections?.skips !== false
   };
 
   const metricRows = summary.metrics.sort((a, b) => a.store.localeCompare(b.store, 'nl'));
@@ -172,7 +210,8 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
     summary.totals.overdueOrders === 0 &&
     summary.totals.labelCreated === 0 &&
     summary.totals.customerRegistrations === 0 &&
-    summary.totals.openDragers === 0;
+    summary.totals.openDragers === 0 &&
+    summary.totals.skips === 0;
   const hasWarnings = (diagnostics.scoreboardWarnings || []).length > 0 ||
                       (diagnostics.cronWarnings || []).length > 0;
   const dq = diagnostics.scoreboardDataQuality || {};
@@ -209,6 +248,10 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
     totalsRows.push({ label: 'Nu nog te laat', value: summary.totals.currentOverdueOrders });
     totalsRows.push({ label: 'Verwerkt na te laat', value: summary.totals.processedAfterOverdue });
   }
+  if (sections.skips) {
+    totalsRows.push({ label: 'Niet-leverbaar gemeld (skips)', value: summary.totals.skips });
+    totalsRows.push({ label: 'Winkels met skips', value: summary.totals.winkelsMetSkips });
+  }
   if (sections.shippingLabels) totalsRows.push({ label: 'Labels', value: summary.totals.labelCreated });
   if (sections.customerSignups) {
     totalsRows.push({ label: 'Klanten met e-mail', value: summary.totals.customersWithEmail });
@@ -239,6 +282,14 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
       { label: 'Verwerkt na te laat', value: (row) => Math.max(0, number(row.overdueCount) - number(row.currentOverdueCount)) },
       { label: 'Oudste huidige', value: (row) => row.oldestAgeHours ? `${row.oldestAgeHours} uur` : '-' }
     ]) : '<p style="color:#3a4a5a;">Geen te late orders in deze regio geregistreerd.</p>'}` : ''}
+    ${sections.skips ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Niet-leverbaar gemeld (skips per winkel)</h2>
+    <p style="color:#3a4a5a;font-size:13px;margin:0 0 8px;">Hoe vaak een winkel een orderregel niet-leverbaar meldde, waardoor de order naar een andere winkel ging. Veel skips = vaak geen voorraad of niet opgepakt.</p>
+    ${(summary.skipStores || []).length ? rowsTable(summary.skipStores, [
+      { label: 'Winkel', value: (row) => row.store },
+      { label: 'Skips', value: (row) => row.skips },
+      { label: 'Artikelen', value: (row) => row.items },
+      { label: 'Orders', value: (row) => row.orders }
+    ]) : '<p style="color:#3a4a5a;">Geen skips geregistreerd in deze periode.</p>'}` : ''}
     ${(sections.shippingLabels || sections.customerSignups) ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">${sections.shippingLabels && sections.customerSignups ? 'Labels en klantinschrijvingen' : sections.shippingLabels ? 'Verzendlabels' : 'Klantinschrijvingen'}</h2>
     ${rowsTable(metricRows, [
       { label: 'Winkel', value: (row) => row.store },
@@ -317,6 +368,12 @@ async function handler(req, res) {
   let dragerRows = [];
   try { dragerRows = await getDragerCache(); } catch (error) { warnings.push(`dragers niet beschikbaar: ${error.message}`); }
 
+  /* Skips (niet-leverbaar gemeld) per winkel: alle annulering-regels één keer
+     inlezen, daarna per regio op periode + winkels filteren. */
+  let cancellationRows = [];
+  try { cancellationRows = cancellationLineRows(await getOrderCancellations()); }
+  catch (error) { warnings.push(`skips/annuleringen niet beschikbaar: ${error.message}`); }
+
   const results = [];
   for (const region of config.regions || []) {
     if (onlyRegion && region.id !== onlyRegion && region.name !== onlyRegion) continue;
@@ -344,7 +401,9 @@ async function handler(req, res) {
        mail-log) — zo telt "te laat in periode" ook resolved orders mee. */
     await addSnapshotWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo, ensureWeeklyStoreRow });
 
-    const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows });
+    const skipStores = skipsByStore(cancellationRows, { dateFrom, dateTo, stores: region.stores || [] });
+
+    const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows, skipStores });
     if (!region.email) {
       results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', period: periodLabel, totals: summary.totals });
       continue;
@@ -352,7 +411,7 @@ async function handler(req, res) {
 
     const html = baseMailHtml({
       title: `Weekrapport ${region.name}`,
-      intro: `Rapportage over ${periodLabel} — te late orders, labels, klantinschrijvingen en openstaande dragers.`,
+      intro: `Rapportage over ${periodLabel} — te late orders, skips (niet-leverbaar gemeld), labels, klantinschrijvingen en openstaande dragers.`,
       bodyHtml: reportHtml(summary, dateFrom, dateTo, periodLabel, {
         scoreboardWarnings,
         scoreboardDataQuality,
@@ -366,7 +425,7 @@ async function handler(req, res) {
         cc: region.cc,
         subject: `GENTS ${periodLabel === 'vorige maand' ? 'maandrapport' : 'weekrapport'} ${region.name} - ${dateFrom} t/m ${dateTo}`,
         html,
-        text: `Rapportage ${region.name} (${periodLabel}): ${summary.totals.overdueOrders} te late orders, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat.`
+        text: `Rapportage ${region.name} (${periodLabel}): ${summary.totals.overdueOrders} te late orders, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat, ${summary.totals.skips} skips (niet-leverbaar gemeld).`
       });
       await appendMailLog({ type: 'region_manager_weekly_report', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email });
     }
