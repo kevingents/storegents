@@ -69,6 +69,26 @@ function periodRange(period, now = new Date()) {
   }
   return { from: isoDate(startOfPreviousWeek(now)), to: isoDate(endOfPreviousWeek(now)), label: 'vorige week' };
 }
+
+/* Het venster direct vóór wat periodRange teruggeeft — voor de vergelijking
+   "t.o.v. de periode ervoor". Week/2-weken: even lang, direct ervoor.
+   Maand: de kalendermaand ervoor. */
+function previousPeriodRange(period, now = new Date()) {
+  const cur = periodRange(period, now);
+  const from = new Date(cur.from);
+  const to = new Date(cur.to);
+  if (period === 'last-month') {
+    const firstOfCur = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+    const lastPrev = addDays(firstOfCur, -1);
+    const firstPrev = new Date(Date.UTC(lastPrev.getUTCFullYear(), lastPrev.getUTCMonth(), 1));
+    return { from: isoDate(firstPrev), to: isoDate(lastPrev), label: 'maand ervoor' };
+  }
+  const lengthDays = Math.round((to - from) / 86400000) + 1;
+  const prevTo = addDays(from, -1);
+  const prevFrom = addDays(prevTo, -(lengthDays - 1));
+  return { from: isoDate(prevFrom), to: isoDate(prevTo), label: period === 'last-2-weeks' ? '2 weken ervoor' : 'week ervoor' };
+}
+
 function number(value) { return Number.isFinite(Number(value)) ? Number(value) : 0; }
 function esc(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 function orderKey(row = {}) { return String(row.fulfillmentId || row.id || row.orderNr || row.orderNumber || row.orderName || `${row.sku || ''}-${row.createdAt || ''}`).trim(); }
@@ -139,6 +159,28 @@ function skipsByStore(rows = [], { dateFrom = '', dateTo = '', stores = [] } = {
     .sort((a, b) => b.skips - a.skips || a.store.localeCompare(b.store, 'nl'));
 }
 
+/* Voeg de skips van de huidige periode samen met die van de periode ervoor,
+   per winkel, met het verschil. Toont ook winkels die naar 0 zakten (verbetering). */
+function mergeSkipComparison(current = [], previous = []) {
+  const prevMap = new Map(previous.map((r) => [r.store, r.skips]));
+  const curMap = new Map(current.map((r) => [r.store, r]));
+  const stores = new Set([...current.map((r) => r.store), ...previous.map((r) => r.store)]);
+  return [...stores].map((store) => {
+    const c = curMap.get(store) || { skips: 0, items: 0, orders: 0 };
+    const prevSkips = number(prevMap.get(store));
+    return { store, skips: c.skips, items: c.items, orders: c.orders, prevSkips, deltaSkips: c.skips - prevSkips };
+  }).sort((a, b) => b.skips - a.skips || b.prevSkips - a.prevSkips || a.store.localeCompare(b.store, 'nl'));
+}
+
+/* "+3" (meer = slechter) / "-2" (minder = beter) / "0" — als tekst, want
+   rowsTable escapet HTML (geen kleur mogelijk). */
+function deltaLabel(delta) {
+  const d = number(delta);
+  if (d > 0) return `+${d}`;
+  if (d < 0) return `${d}`;
+  return '0';
+}
+
 function exchangeTotalsByStore(exchangeRows = []) {
   const map = new Map();
   for (const row of exchangeRows) {
@@ -180,7 +222,9 @@ function summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows, s
       winkelsMetDragers: dragerStores.length,
       skips: skipStores.reduce((sum, row) => sum + number(row.skips), 0),
       skipItems: skipStores.reduce((sum, row) => sum + number(row.items), 0),
-      winkelsMetSkips: skipStores.length
+      prevSkips: skipStores.reduce((sum, row) => sum + number(row.prevSkips), 0),
+      deltaSkips: skipStores.reduce((sum, row) => sum + number(row.deltaSkips), 0),
+      winkelsMetSkips: skipStores.filter((row) => number(row.skips) > 0).length
     }
   };
 }
@@ -249,7 +293,11 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
     totalsRows.push({ label: 'Verwerkt na te laat', value: summary.totals.processedAfterOverdue });
   }
   if (sections.skips) {
-    totalsRows.push({ label: 'Niet-leverbaar gemeld (skips)', value: summary.totals.skips });
+    const compareLabel = summary.skipCompareLabel || 'periode ervoor';
+    totalsRows.push({
+      label: 'Niet-leverbaar gemeld (skips)',
+      value: `${summary.totals.skips} (${compareLabel}: ${summary.totals.prevSkips}, ${deltaLabel(summary.totals.deltaSkips)})`
+    });
     totalsRows.push({ label: 'Winkels met skips', value: summary.totals.winkelsMetSkips });
   }
   if (sections.shippingLabels) totalsRows.push({ label: 'Labels', value: summary.totals.labelCreated });
@@ -283,13 +331,15 @@ function reportHtml(summary, dateFrom, dateTo, periodLabel = 'vorige week', diag
       { label: 'Oudste huidige', value: (row) => row.oldestAgeHours ? `${row.oldestAgeHours} uur` : '-' }
     ]) : '<p style="color:#3a4a5a;">Geen te late orders in deze regio geregistreerd.</p>'}` : ''}
     ${sections.skips ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">Niet-leverbaar gemeld (skips per winkel)</h2>
-    <p style="color:#3a4a5a;font-size:13px;margin:0 0 8px;">Hoe vaak een winkel een orderregel niet-leverbaar meldde, waardoor de order naar een andere winkel ging. Veel skips = vaak geen voorraad of niet opgepakt.</p>
+    <p style="color:#3a4a5a;font-size:13px;margin:0 0 8px;">Hoe vaak een winkel een orderregel niet-leverbaar meldde, waardoor de order naar een andere winkel ging. Veel skips = vaak geen voorraad of niet opgepakt. "Verschil" vergelijkt met de ${esc(summary.skipCompareLabel || 'periode ervoor')} (+ = meer skips, dus slechter).</p>
     ${(summary.skipStores || []).length ? rowsTable(summary.skipStores, [
       { label: 'Winkel', value: (row) => row.store },
       { label: 'Skips', value: (row) => row.skips },
+      { label: summary.skipCompareLabel || 'Ervoor', value: (row) => row.prevSkips },
+      { label: 'Verschil', value: (row) => deltaLabel(row.deltaSkips) },
       { label: 'Artikelen', value: (row) => row.items },
       { label: 'Orders', value: (row) => row.orders }
-    ]) : '<p style="color:#3a4a5a;">Geen skips geregistreerd in deze periode.</p>'}` : ''}
+    ]) : '<p style="color:#3a4a5a;">Geen skips geregistreerd in deze of de vorige periode.</p>'}` : ''}
     ${(sections.shippingLabels || sections.customerSignups) ? `<h2 style="font-size:18px;color:#0a1f33;margin-top:24px;">${sections.shippingLabels && sections.customerSignups ? 'Labels en klantinschrijvingen' : sections.shippingLabels ? 'Verzendlabels' : 'Klantinschrijvingen'}</h2>
     ${rowsTable(metricRows, [
       { label: 'Winkel', value: (row) => row.store },
@@ -401,9 +451,15 @@ async function handler(req, res) {
        mail-log) — zo telt "te laat in periode" ook resolved orders mee. */
     await addSnapshotWeeklyOverdueOrders(overdueByStore, { dateFrom, dateTo, ensureWeeklyStoreRow });
 
-    const skipStores = skipsByStore(cancellationRows, { dateFrom, dateTo, stores: region.stores || [] });
+    const prev = previousPeriodRange(region.period, now);
+    const skipStores = mergeSkipComparison(
+      skipsByStore(cancellationRows, { dateFrom, dateTo, stores: region.stores || [] }),
+      skipsByStore(cancellationRows, { dateFrom: prev.from, dateTo: prev.to, stores: region.stores || [] })
+    );
 
     const summary = summarizeRegion({ region, scoreboardRows, overdueByStore, dragerRows, skipStores });
+    summary.skipCompareLabel = prev.label;
+    summary.skipComparePeriod = prev;
     if (!region.email) {
       results.push({ region: region.name, skipped: true, reason: 'Geen regiomanager e-mail ingesteld.', period: periodLabel, totals: summary.totals });
       continue;
@@ -425,7 +481,7 @@ async function handler(req, res) {
         cc: region.cc,
         subject: `GENTS ${periodLabel === 'vorige maand' ? 'maandrapport' : 'weekrapport'} ${region.name} - ${dateFrom} t/m ${dateTo}`,
         html,
-        text: `Rapportage ${region.name} (${periodLabel}): ${summary.totals.overdueOrders} te late orders, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat, ${summary.totals.skips} skips (niet-leverbaar gemeld).`
+        text: `Rapportage ${region.name} (${periodLabel}): ${summary.totals.overdueOrders} te late orders, ${summary.totals.currentOverdueOrders} nu nog te laat, ${summary.totals.processedAfterOverdue} verwerkt na te laat, ${summary.totals.skips} skips (${summary.skipCompareLabel || 'ervoor'}: ${summary.totals.prevSkips}, ${deltaLabel(summary.totals.deltaSkips)}).`
       });
       await appendMailLog({ type: 'region_manager_weekly_report', store: region.name, key: `${dateFrom}_${dateTo}`, status: 'sent', recipient: region.email });
     }
