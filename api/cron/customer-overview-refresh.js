@@ -1,11 +1,10 @@
 import { trackedCron } from '../../lib/cron-auto-track.js';
 
 /**
- * Cron: ververs de cache van de zware klanten-overzichten.
- *
- * store-customer-overview (~40s) en top-customers (~25s) doen elk een live
- * Shopify-orders-scan. Deze cron roept ze met ?refresh=1 aan → ze berekenen vers
- * én schrijven de report-cache. De portal-pagina's lezen daarna de cache → instant.
+ * Cron: ververs de cache van de zware report-overzichten (klanten + finance +
+ * marketing). Elk doet een trage live scan (Shopify/externe API's, ~10-40s).
+ * Deze cron roept ze met ?refresh=1 aan → ze berekenen vers én schrijven de
+ * (blob-)cache. De portal-pagina's lezen daarna de cache → instant.
  *
  * Schedule (lib/cron-jobs.js): elk uur tijdens kantooruren.
  */
@@ -39,6 +38,8 @@ async function handler(req, res) {
   const targets = [
     'api/admin/store-customer-overview?period=month&refresh=1',
     'api/admin/top-customers?period=month&metric=spend&refresh=1',
+    'api/admin/shopify-refunds?refresh=1',
+    'api/admin/social-stats?refresh=1',
   ];
 
   const results = await Promise.all(targets.map((t) => refresh(base, token, t)));

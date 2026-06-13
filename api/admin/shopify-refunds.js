@@ -1,4 +1,5 @@
 import { handleCors, setCorsHeaders } from '../../lib/cors.js';
+import { readReportCache, writeReportCache } from '../../lib/gents-report-cache-store.js';
 
 export const maxDuration = 120;
 
@@ -253,6 +254,16 @@ export default async function handler(req, res) {
       return res.status(200).json({ ...hit.payload, cached: true, cacheAgeMs: Date.now() - hit.ts });
     }
 
+    /* L2: persistente blob-cache (overleeft koude serverless-instances, i.t.t. de
+       in-memory L1). Door de cron vers gehouden → koude instance toch instant. */
+    if (!refresh) {
+      const blob = await readReportCache('shopify-refunds', cacheKey, 0);
+      if (blob?.data) {
+        REFUNDS_CACHE.set(cacheKey, { ts: Date.now(), payload: blob.data });
+        return res.status(200).json({ ...blob.data, cached: true, refreshedAt: blob.cachedAt });
+      }
+    }
+
     const result = await fetchRefundsForPeriod({ dateFrom, dateTo, limit });
 
     const payload = {
@@ -267,6 +278,8 @@ export default async function handler(req, res) {
     };
     REFUNDS_CACHE.set(cacheKey, { ts: Date.now(), payload });
     if (REFUNDS_CACHE.size > 80) REFUNDS_CACHE.delete(REFUNDS_CACHE.keys().next().value);
+    try { await writeReportCache('shopify-refunds', cacheKey, payload); }
+    catch (e) { console.warn('[shopify-refunds] cache-write:', e.message); }
     return res.status(200).json(payload);
   } catch (error) {
     console.error('[admin/shopify-refunds]', error);
