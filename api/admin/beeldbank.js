@@ -27,6 +27,7 @@
 import { readProductsCache } from '../../lib/shopify-products-cache.js';
 import { readModelTags } from '../../lib/beeldbank-vision.js';
 import { corsJson, requireAdmin } from '../../lib/request-guards.js';
+import { inStockKeySet } from '../../lib/sku-stock.js';
 
 const clean = (v) => String(v == null ? '' : v).trim();
 const DEFAULT_LIMIT = 120;
@@ -74,12 +75,18 @@ export default async function handler(req, res) {
           imagesCount: images.length,
           images: images.slice(0, 10),
           videos: Array.isArray(v.videos) ? v.videos.filter((x) => x && x.url).slice(0, 5) : [],
-          _colors: new Set()
+          _colors: new Set(),
+          _keys: new Set()
         };
         byProduct.set(pid, entry);
       }
       const col = clean(v.color);
       if (col) entry._colors.add(col);
+      /* Verzamel alle variant-SKU's/barcodes voor de voorraad-check. */
+      const sku = clean(v.sku).toLowerCase();
+      const bc = clean(v.barcode).toLowerCase();
+      if (sku) entry._keys.add(sku);
+      if (bc) entry._keys.add(bc);
     }
 
     /* Beeldbank = alléén producten met minstens één afbeelding. */
@@ -106,8 +113,28 @@ export default async function handler(req, res) {
     const fColor = clean(req.query?.color);
     const fVideo = clean(req.query?.video); /* '1' = met video, '0' = zonder */
     const fModel = clean(req.query?.model); /* '1' = met model/sfeerbeeld, '0' = zonder */
+    const fInStock = clean(req.query?.inStock) === '1'; /* alleen producten met voorraad */
 
     let filtered = all;
+
+    /* Voorraad-filter: bouw één Set van in-voorraad sku's/barcodes (SRS-snapshots)
+       en houd alleen producten met minstens één variant op voorraad. Faalt de
+       snapshot-read, dan slaan we 't filter over i.p.v. een lege beeldbank. */
+    let stockFilterApplied = false;
+    if (fInStock) {
+      try {
+        const stockKeys = await inStockKeySet();
+        if (stockKeys.size) {
+          filtered = filtered.filter((p) => {
+            for (const k of p._keys) if (stockKeys.has(k)) return true;
+            return false;
+          });
+          stockFilterApplied = true;
+        }
+      } catch (e) {
+        console.error('[admin/beeldbank] voorraad-filter overgeslagen', e?.message || e);
+      }
+    }
     if (fCollection) filtered = filtered.filter((p) => p.collections.includes(fCollection));
     if (fColor) filtered = filtered.filter((p) => p.colors.includes(fColor));
     if (fVideo === '1') filtered = filtered.filter((p) => (p.videos || []).length > 0);
@@ -136,12 +163,16 @@ export default async function handler(req, res) {
     const offset = Math.max(0, parseInt(req.query?.offset, 10) || 0);
     const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query?.limit, 10) || DEFAULT_LIMIT));
     const page = filtered.slice(offset, offset + limit);
+    /* Interne hulpset niet meesturen (serialiseert toch als leeg object). */
+    for (const p of page) delete p._keys;
 
     return res.status(200).json({
       success: true,
       refreshedAt: cache.refreshedAt || null,
       total: filtered.length,
       imagesTotal: all.length,
+      inStockOnly: fInStock,
+      stockFilterApplied,
       returned: page.length,
       offset,
       limit,
